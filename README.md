@@ -2,7 +2,7 @@
 
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
-> **⚠️ Pre-Alpha Software** — JellyRip is currently pre-alpha and not fully tested. Expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
+> **⚠️ Pre-Alpha Software** — JellyRip is currently pre-alpha and mostly untested. The maintainer is new to software projects, so expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
 
 Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
@@ -11,7 +11,8 @@ Release notes: [CHANGELOG.md](CHANGELOG.md)
 
 - Development stage: **Pre-Alpha**
 - Stability: **Highly unstable / pre-release quality**
-- Testing status: **Not fully tested**
+- Testing status: **Mostly untested**
+- Maintainer experience: **New to code projects**
 - Recommendation: use on non-critical discs only until stable releases return
 
 ## Installation
