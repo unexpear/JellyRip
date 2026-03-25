@@ -1,5 +1,5 @@
 '''
-JellyRip v1.0.4
+JellyRip v1.0.5
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 Architecture — three strict layers:
@@ -9,11 +9,15 @@ Architecture — three strict layers:
 
 See CONTRIBUTING.md for design rules and contribution guidelines.
 
-Unstable Section (1.0.4 final hotfix)
+Unstable Section (1.0.5)
     - Parser hardening for malformed size/duration fields
     - Safe dictionary access for optional track lists
     - Optional safe_int debug visibility (off by default)
     - Extra guardrails for rare destination path race conditions
+
+Git Status Note
+    - Current public versions are not fully reliable yet.
+    - Fixes are in progress as testing and iteration continue.
 '''
 
 import subprocess
@@ -65,11 +69,21 @@ DEFAULTS = {
     "movies_folder":   r"C:\Media\Movies",
     "log_file":        os.path.expanduser("~/Downloads/rip_log.txt"),
     "opt_drive_index":                0,
+    "opt_safe_mode":                  True,
+    "opt_first_run_done":             False,
     "opt_scan_disc_size":             True,
     "opt_confirm_before_rip":         True,
     "opt_clean_mkv_before_retry":     True,
     "opt_stall_detection":            True,
     "opt_stall_timeout_seconds":      120,
+    "opt_file_stabilization":         True,
+    "opt_stabilize_timeout_seconds":  60,
+    "opt_stabilize_required_polls":   4,
+    "opt_min_rip_size_gb":            1,
+    "opt_expected_size_ratio_pct":    70,
+    "opt_hard_fail_ratio_pct":        40,
+    "opt_smart_low_confidence_threshold": 0.45,
+    "opt_move_verify_retries":        5,
     "opt_auto_retry":                 True,
     "opt_retry_attempts":             3,
     "opt_check_dest_space":           True,
@@ -219,9 +233,39 @@ def make_temp_title():
     return f"TEMP_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
 
+def is_network_path(path):
+    """Best-effort check for UNC or mapped/network drive paths."""
+    try:
+        if not path:
+            return False
+        p = os.path.normpath(path)
+        if p.startswith("\\\\"):
+            return True
+        if platform.system() == "Windows":
+            drive, _ = os.path.splitdrive(p)
+            if drive:
+                root = drive + "\\"
+                try:
+                    import ctypes
+                    drive_type = ctypes.windll.kernel32.GetDriveTypeW(root)
+                    # DRIVE_REMOTE = 4
+                    return int(drive_type) == 4
+                except Exception:
+                    return False
+        else:
+            # Non-Windows fallback: check for common network patterns.
+            # We assume /mnt, /media, /net, cifs, nfs are network paths.
+            if any(x in p.lower() for x in ('/mnt/', '/media/', '/net/', 'cifs', 'nfs')):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def parse_episode_names(name_input):
     if not name_input:
         return []
+
     if '",' in name_input or name_input.count('"') >= 2:
         return [
             x.strip().strip('"')
@@ -625,6 +669,7 @@ class RipperEngine:
         self.abort_event     = threading.Event()
         self.current_process = None
         self._abort_lock     = threading.Lock()
+        self.last_move_error = ""
 
     @property
     def abort_flag(self):
@@ -989,14 +1034,19 @@ class RipperEngine:
         result = [t for t, _score in scored]
 
         # Log scores for debugging edge cases and bad discs
-        # Log scores, capping output on large discs to avoid log spam.
+        # On large discs: show top 20 + always include selected title.
         log_all = len(scored) <= 50
         on_log(
             "Title scores:"
             if log_all else
-            f"Title scores (top 20 of {len(scored)} shown):"
+            f"Title scores (top 20 of {len(scored)} shown, + selected):"
         )
-        for t, score in (scored if log_all else scored[:20]):
+        # Collect titles to log: all or top 20 + best if not in top 20
+        titles_to_log = scored if log_all else scored[:20]
+        if not log_all and scored and scored[0] not in titles_to_log:
+            titles_to_log = titles_to_log + [scored[0]]
+        
+        for t, score in titles_to_log:
             on_log(
                 f"  Title {t['id']+1}: score={score:.3f} | "
                 f"{t['duration']} {t['size']} | "
@@ -1112,6 +1162,19 @@ class RipperEngine:
                 os.remove(f)
                 on_log(
                     f"Removed partial MKV before retry: "
+                    f"{os.path.basename(f)}"
+                )
+            except Exception:
+                pass
+        # Also remove transient partial files from failed attempts.
+        for f in glob.glob(
+            os.path.join(rip_path, "**", "*.partial"),
+            recursive=True
+        ):
+            try:
+                os.remove(f)
+                on_log(
+                    f"Removed transient partial before retry: "
                     f"{os.path.basename(f)}"
                 )
             except Exception:
@@ -1552,15 +1615,77 @@ class RipperEngine:
         except Exception:
             return False
 
+    def _quick_ffprobe_ok(self, path, on_log):
+        """Fast container integrity check: ffprobe must return duration > 0."""
+        try:
+            ffprobe = resolve_ffprobe(
+                os.path.normpath(self.cfg["ffprobe_path"])
+            )
+            proc = subprocess.run(
+                [
+                    ffprobe,
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "json",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if proc.returncode != 0:
+                on_log(
+                    f"ERROR: ffprobe failed for {os.path.basename(path)}"
+                )
+                return False
+            data = json.loads(proc.stdout or "{}")
+            duration = float(data.get("format", {}).get("duration", 0) or 0)
+            if duration <= 0:
+                on_log(
+                    "ERROR: ffprobe duration invalid for "
+                    f"{os.path.basename(path)}"
+                )
+                return False
+            return True
+        except Exception as e:
+            on_log(
+                "ERROR: ffprobe integrity check failed for "
+                f"{os.path.basename(path)}: {e}"
+            )
+            return False
+
     def move_file_atomic(self, source, final_path, on_log):
         """
         Move a file safely using copy+rename (atomic move).
         Preserves timestamps via shutil.copystat.
         Falls back to direct shutil.move if opt_atomic_move is off.
         Cleans up .partial file on abort or failure.
+        REQUIRES: Source must be fully written (verified by move start check).
         """
+        self.last_move_error = ""
         if not os.path.exists(source):
             on_log(f"Missing file: {source}")
+            self.last_move_error = "Move failed — source file is missing."
+            return False
+
+        # Verify source has stopped growing before accepting move.
+        try:
+            size_before = os.path.getsize(source)
+            time.sleep(1.0)
+            size_after = os.path.getsize(source)
+            if size_before != size_after:
+                on_log(
+                    f"ERROR: Source file still growing before move "
+                    f"({size_before} -> {size_after} bytes). "
+                    f"Stabilization failed."
+                )
+                self.last_move_error = (
+                    "Move failed — source file incomplete. "
+                    "Stabilization did not complete successfully."
+                )
+                return False
+        except Exception as e:
+            on_log(f"ERROR checking source stability: {e}")
             return False
 
         if os.path.exists(final_path):
@@ -1569,13 +1694,52 @@ class RipperEngine:
                 f"Destination exists. Using unique path: {final_path}"
             )
 
+        verify_retries = max(
+            1, int(self.cfg.get("opt_move_verify_retries", 5))
+        )
+
+        def wait_for_size_match(src_size, dst_path):
+            last_size = -1
+            for _ in range(verify_retries):
+                if os.path.exists(dst_path):
+                    last_size = os.path.getsize(dst_path)
+                    if last_size == src_size:
+                        return True, last_size
+                if self.abort_event.is_set():
+                    break
+                time.sleep(1.0)
+            return False, last_size
+
         if not self.cfg.get("opt_atomic_move", True):
             try:
+                src_size = os.path.getsize(source)
                 shutil.move(source, final_path)
-                try:
-                    shutil.copystat(source, final_path)
-                except Exception:
-                    pass
+                if not os.path.exists(final_path):
+                    on_log("ERROR: destination missing after move.")
+                    self.last_move_error = (
+                        "Move failed — destination file missing after move."
+                    )
+                    return False
+                size_ok, dst_size = wait_for_size_match(
+                    src_size, final_path
+                )
+                if not size_ok:
+                    on_log(
+                        "ERROR: destination size mismatch after move "
+                        f"(src={src_size} bytes, dst={dst_size} bytes) "
+                        f"after {verify_retries} verification check(s)."
+                    )
+                    self.last_move_error = (
+                        "Move failed — network write mismatch. "
+                        "Destination size did not match source."
+                    )
+                    return False
+                if not self._quick_ffprobe_ok(final_path, on_log):
+                    self.last_move_error = (
+                        "Move failed — destination file failed integrity "
+                        "probe (ffprobe)."
+                    )
+                    return False
                 return True
             except Exception as e:
                 on_log(f"ERROR moving file: {e}")
@@ -1591,6 +1755,7 @@ class RipperEngine:
                     except Exception:
                         pass
                 on_log("Move aborted — partial file removed.")
+                self.last_move_error = "Move failed — operation aborted."
                 return False
             try:
                 shutil.copystat(source, temp_dest)
@@ -1609,9 +1774,34 @@ class RipperEngine:
                 # Cross-volume fallback when atomic rename is unavailable.
                 shutil.move(temp_dest, final_path)
             if os.path.exists(final_path):
+                src_size = os.path.getsize(source)
+                size_ok, dst_size = wait_for_size_match(
+                    src_size, final_path
+                )
+                if not size_ok:
+                    on_log(
+                        "ERROR: destination size mismatch after move "
+                        f"(src={src_size} bytes, dst={dst_size} bytes). "
+                        f"after {verify_retries} verification check(s). "
+                        "Source file retained."
+                    )
+                    self.last_move_error = (
+                        "Move failed — network write mismatch. "
+                        "Destination size did not match source."
+                    )
+                    return False
+                if not self._quick_ffprobe_ok(final_path, on_log):
+                    self.last_move_error = (
+                        "Move failed — destination file failed integrity "
+                        "probe (ffprobe)."
+                    )
+                    return False
                 os.remove(source)
             else:
                 on_log("ERROR: destination missing after move.")
+                self.last_move_error = (
+                    "Move failed — destination file missing after move."
+                )
                 return False
             return True
         except Exception as e:
@@ -1621,6 +1811,7 @@ class RipperEngine:
                 except Exception:
                     pass
             on_log(f"ERROR moving file: {e}")
+            self.last_move_error = f"Move failed — {e}"
             return False
 
     def move_files(self, titles_list, main_indices, episode_numbers,
@@ -1633,6 +1824,7 @@ class RipperEngine:
             len(titles_list) - len(main_indices) if keep_extras else 0
         )
         moved = 0
+        moved_paths = []
 
         selected_size = sum(
             os.path.getsize(titles_list[i][0]) for i in main_indices
@@ -1656,7 +1848,7 @@ class RipperEngine:
                         f"({free / (1024**3):.1f} GB free). "
                         f"Cannot proceed."
                     )
-                    return False, extra_counter
+                    return False, extra_counter, moved_paths
             except Exception as e:
                 on_log(
                     f"Warning: could not check destination space: {e}"
@@ -1666,7 +1858,7 @@ class RipperEngine:
             for idx, i in enumerate(main_indices):
                 if self.abort_event.is_set():
                     on_log("Move aborted by user.")
-                    return False, extra_counter
+                    return False, extra_counter, moved_paths
 
                 source = titles_list[i][0]
                 if is_tv:
@@ -1689,9 +1881,10 @@ class RipperEngine:
                 on_log(f"    To: {final_path}")
                 ok = self.move_file_atomic(source, final_path, on_log)
                 if not ok:
-                    return False, extra_counter
+                    return False, extra_counter, moved_paths
 
                 moved += 1
+                moved_paths.append(final_path)
                 on_progress(int(moved / total_to_move * 100))
                 on_log(f"Done: {os.path.basename(final_path)}")
 
@@ -1699,7 +1892,7 @@ class RipperEngine:
                 for i, (old_file, dur, mb) in enumerate(titles_list):
                     if self.abort_event.is_set():
                         on_log("Move aborted by user.")
-                        return False, extra_counter
+                        return False, extra_counter, moved_paths
                     if i not in main_indices:
                         if is_tv:
                             name = (
@@ -1724,8 +1917,9 @@ class RipperEngine:
                             old_file, final_path, on_log
                         )
                         if not ok:
-                            return False, extra_counter
+                            return False, extra_counter, moved_paths
                         moved += 1
+                        moved_paths.append(final_path)
                         on_progress(
                             int(moved / total_to_move * 100)
                         )
@@ -1734,7 +1928,7 @@ class RipperEngine:
                         )
 
             on_log(f"All files moved. {moved} file(s) total.")
-            return True, extra_counter
+            return True, extra_counter, moved_paths
 
         except Exception as e:
             on_log(f"ERROR during move: {e}")
@@ -1742,7 +1936,7 @@ class RipperEngine:
                 "Check temp folder — "
                 "some files may not have moved."
             )
-            return False, extra_counter
+            return False, extra_counter, moved_paths
 
     def write_session_log(self, log_file, start_time,
                           session_log, on_log):
@@ -1873,7 +2067,7 @@ class RipperController:
                 f"Scanning disc on drive "
                 f"{self.engine.get_disc_target()}..."
             )
-            self.gui.set_status("Scanning disc...")
+            self.gui.set_status("Scanning... (time varies by disc)")
             self.gui.start_indeterminate()
             try:
                 result = self.engine.scan_disc(
@@ -1893,15 +2087,10 @@ class RipperController:
                     time.sleep(2 + attempt)
                 continue
 
-            if result == []:
-                if attempt < 2:
-                    self.log("Empty scan result — retrying...")
-                    time.sleep(2 + attempt)
-                    continue
-                self.log("Scan completed but found no titles.")
-                return []
-
-            return result
+            if result is not None:
+                # Return even if empty (e.g., bad disc structure).
+                # Handle empty result at call site.
+                return result
 
         self.log("Scan failed after 3 attempts.")
         return None
@@ -1925,6 +2114,297 @@ class RipperController:
                 self.engine.update_temp_metadata(
                     full_path, status="ripping"
                 )
+
+    def _log_ripped_file_sizes(self, mkv_files):
+        """Log final sizes for newly ripped files so anomalies stand out."""
+        for f in sorted(mkv_files):
+            try:
+                size_gb = os.path.getsize(f) / (1024**3)
+                self.log(
+                    f"Ripped file: {os.path.basename(f)} — {size_gb:.2f} GB"
+                )
+            except Exception as e:
+                self.log(
+                    f"Ripped file: {os.path.basename(f)} — size unavailable ({e})"
+                )
+
+    def _title_id_from_filename(self, path):
+        name = os.path.basename(path)
+        m = re.search(r'title_t(\d+)', name, re.IGNORECASE)
+        if not m:
+            return None
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
+    def _size_validation_status(self, actual_bytes, expected_bytes):
+        """Return (status, reason, ratio): status in {pass,warn,hard_fail}."""
+        if expected_bytes <= 0:
+            return "pass", "no_expected_size", 1.0
+
+        hard_ratio = max(
+            0.10,
+            min(0.95, float(self.engine.cfg.get("opt_hard_fail_ratio_pct", 40)) / 100.0)
+        )
+        warn_ratio = max(
+            hard_ratio,
+            min(0.99, float(self.engine.cfg.get("opt_expected_size_ratio_pct", 70)) / 100.0)
+        )
+        ratio = actual_bytes / expected_bytes if expected_bytes > 0 else 0.0
+
+        if ratio < hard_ratio:
+            return (
+                "hard_fail",
+                f"size too small: {ratio * 100:.1f}% of expected "
+                f"(< {hard_ratio * 100:.0f}% hard floor)",
+                ratio,
+            )
+        if ratio < warn_ratio:
+            return (
+                "warn",
+                f"size below preferred threshold: {ratio * 100:.1f}% "
+                f"(< {warn_ratio * 100:.0f}%)",
+                ratio,
+            )
+        return "pass", f"size OK ({ratio * 100:.1f}%)", ratio
+
+    def _verify_expected_sizes(self, mkv_files, expected_size_by_title):
+        """Aggregate expected-vs-actual validation with hard/warn thresholds."""
+        if not self.engine.cfg.get("opt_safe_mode", True):
+            return "pass", "safe_mode_disabled"
+        if not expected_size_by_title:
+            return "pass", "no_expected_size"
+
+        expected_total = sum(int(v or 0) for v in expected_size_by_title.values())
+        actual_total = 0
+        for f in mkv_files:
+            try:
+                actual_total += os.path.getsize(f)
+            except Exception:
+                pass
+
+        status, reason, ratio = self._size_validation_status(
+            actual_total, expected_total
+        )
+        self.log(
+            "Size sanity (aggregate): expected "
+            f"{expected_total / (1024**3):.2f} GB, actual "
+            f"{actual_total / (1024**3):.2f} GB "
+            f"({ratio * 100:.1f}%)"
+        )
+        if status == "hard_fail":
+            self.log(f"ERROR: {reason}")
+        elif status == "warn":
+            self.log(f"WARNING: {reason}")
+        return status, reason
+
+    def _log_expected_vs_actual_summary(self, mkv_files,
+                                        expected_size_by_title):
+        """Log concise total expected vs actual output size summary."""
+        if not expected_size_by_title:
+            return
+
+        expected_total = sum(
+            int(v or 0) for v in expected_size_by_title.values()
+        )
+        if expected_total <= 0:
+            return
+
+        actual_total = 0
+        for f in mkv_files:
+            try:
+                actual_total += os.path.getsize(f)
+            except Exception:
+                pass
+
+        pct = (actual_total / expected_total) * 100
+        self.log(
+            "Expected total size: "
+            f"{expected_total / (1024**3):.2f} GB | "
+            f"Actual total size: {actual_total / (1024**3):.2f} GB "
+            f"({pct:.1f}%)"
+        )
+
+    def _verify_container_integrity(self, mkv_files):
+        """Require ffprobe-readable container with duration > 0 for each file."""
+        if not mkv_files:
+            return False
+        self.log("Container integrity check (ffprobe)...")
+        analyzed = self.engine.analyze_files(mkv_files, self.log)
+        if len(analyzed) != len(mkv_files):
+            self.log(
+                "ERROR: Container integrity check incomplete "
+                f"({len(analyzed)}/{len(mkv_files)} files analyzed)."
+            )
+            return False
+        bad = [os.path.basename(f) for f, dur, _mb in analyzed if dur <= 0]
+        if bad:
+            self.log(
+                "ERROR: Container integrity check failed for: "
+                + ", ".join(bad)
+            )
+            return False
+        return True
+
+    def _retry_rip_once_after_size_failure(self, rip_path, selected_ids,
+                                           expected_size_by_title):
+        """Retry rip once after size sanity failure and re-run checks."""
+        self.log(
+            "Safe Mode: size sanity failed — retrying rip once automatically."
+        )
+        self.engine.cleanup_partial_files(rip_path, self.log)
+        for pattern in ("**/*.mkv", "**/*.partial"):
+            for f in glob.glob(
+                os.path.join(rip_path, pattern), recursive=True
+            ):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+        self.gui.set_status("Ripping... (this may take 20-60 min)")
+        success, failed_titles = self.engine.rip_selected_titles(
+            rip_path, selected_ids,
+            on_progress=self.gui.set_progress,
+            on_log=self.log
+        )
+        if failed_titles:
+            self.report(
+                f"Retry: titles failed — {failed_titles}"
+            )
+        if not success:
+            return False
+
+        self.engine.update_temp_metadata(rip_path, status="ripped")
+        mkv_files = sorted(glob.glob(os.path.join(rip_path, "*.mkv")))
+        if not mkv_files:
+            return False
+
+        self._log_ripped_file_sizes(mkv_files)
+        stabilized, timed_out = self._stabilize_ripped_files(
+            mkv_files, expected_size_by_title
+        )
+        if not stabilized:
+            if timed_out:
+                self.log("Retry stabilization failed: timed out.")
+            return False
+        self._log_expected_vs_actual_summary(
+            mkv_files, expected_size_by_title
+        )
+        status, _reason = self._verify_expected_sizes(mkv_files, expected_size_by_title)
+        return status == "pass"
+
+    def _stabilize_file(self, path, timeout_seconds, min_stable_polls,
+                        min_size_bytes):
+        """Wait for file to be stable: N equal reads AND 3+ seconds of no growth."""
+        start = time.time()
+        try:
+            prev = os.path.getsize(path)
+        except Exception:
+            return False, False
+
+        stable_polls = 0
+        stable_start_time = None  # Track when current stability streak began
+
+        while time.time() - start < timeout_seconds:
+            if self.engine.abort_event.is_set():
+                return False, False
+            time.sleep(1.0)
+            try:
+                cur = os.path.getsize(path)
+            except Exception:
+                return False, False
+
+            prev_mb = prev / (1024**2)
+            cur_mb = cur / (1024**2)
+            if cur < min_size_bytes:
+                stable_polls = 0
+                stable_start_time = None
+                self.log(
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — "
+                    f"below minimum size floor "
+                    f"({min_size_bytes / (1024**3):.2f} GB)"
+                )
+            elif cur == prev:
+                if stable_start_time is None:
+                    stable_start_time = time.time()
+                stable_polls += 1
+                stable_duration = time.time() - stable_start_time
+                self.log(
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — "
+                    f"stable ({stable_polls}/{min_stable_polls}, "
+                    f"{stable_duration:.1f}s duration)"
+                )
+                # Require BOTH: min poll count AND 3+ seconds of stability
+                if stable_polls >= min_stable_polls and stable_duration >= 3.0:
+                    # Final re-check catches late flush after brief pause.
+                    time.sleep(1.0)
+                    try:
+                        post = os.path.getsize(path)
+                    except Exception:
+                        return False, False
+                    if post == cur:
+                        return True, False
+                    self.log(
+                        f"Stabilizing: {cur / (1024**2):.0f} MB -> "
+                        f"{post / (1024**2):.0f} MB — resumed growth"
+                    )
+                    stable_polls = 0
+                    stable_start_time = None
+                    prev = post
+                    continue
+            else:
+                stable_polls = 0
+                stable_start_time = None
+                self.log(
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — still growing"
+                )
+            prev = cur
+
+        self.log(
+            f"WARNING: File stabilization timed out after {timeout_seconds}s: "
+            f"{os.path.basename(path)}"
+        )
+        return False, True
+
+    def _stabilize_ripped_files(self, mkv_files, expected_size_by_title=None):
+        """Optionally wait for ripped files to stabilize before analysis/move."""
+        cfg = self.engine.cfg
+        if not cfg.get("opt_file_stabilization", True):
+            return True, False
+
+        base_timeout = max(
+            1, int(cfg.get("opt_stabilize_timeout_seconds", 60))
+        )
+        default_polls = max(
+            3, int(cfg.get("opt_stabilize_required_polls", 4))
+        )
+        min_size_floor = max(
+            0, int(cfg.get("opt_min_rip_size_gb", 1) * (1024**3))
+        )
+
+        for f in sorted(mkv_files):
+            if self.engine.abort_event.is_set():
+                return False, False
+            expected = 0
+            if expected_size_by_title:
+                tid = self._title_id_from_filename(f)
+                if tid is not None:
+                    expected = int(expected_size_by_title.get(tid, 0) or 0)
+
+            size_for_timeout = max(expected, os.path.getsize(f))
+            size_gb = size_for_timeout / (1024**3)
+            # Cap timeout: don't scale unboundedly with size.
+            timeout = max(base_timeout, min(300, int(size_gb * 5)))
+            polls = default_polls if size_gb >= 5 else max(3, default_polls - 1)
+            min_size = max(min_size_floor, int(expected * 0.5))
+
+            ok, timed_out = self._stabilize_file(f, timeout, polls, min_size)
+            if not ok:
+                return False, timed_out
+
+        return True, False
 
     def run_tv_disc(self):
         """Run manual TV-disc workflow."""
@@ -1970,9 +2450,21 @@ class RipperController:
         if self.engine.abort_event.is_set():
             return
 
-        if not disc_titles:
+        if disc_titles is None:
             self.log("Could not read disc.")
-            self.gui.show_error("Scan Failed", "Could not read disc.")
+            self.gui.show_error(
+                "Scan Failed",
+                "Disc scan failed after retry.\n\n"
+                "Try cleaning the disc and retrying."
+            )
+            return
+        if disc_titles == []:
+            self.log("Scan completed but no titles were found on this disc.")
+            self.gui.show_error(
+                "No Titles Found",
+                "Disc was readable, but no rip-able titles were found.\n\n"
+                "This can happen with unsupported or empty media."
+            )
             return
 
         best, smart_score = choose_best_title(
@@ -1981,6 +2473,20 @@ class RipperController:
         if not best:
             self.log("Could not select a valid title for Smart Rip.")
             return
+
+        low_conf = float(cfg.get("opt_smart_low_confidence_threshold", 0.45))
+        if smart_score < low_conf:
+            self.log(
+                f"WARNING: Low-confidence Smart Rip selection "
+                f"(score={smart_score:.3f} < {low_conf:.2f})."
+            )
+            if not self.gui.ask_yesno(
+                f"Smart Rip confidence is low ({smart_score:.3f}).\n\n"
+                "Disc structure may be ambiguous or damaged.\n"
+                "Continue with this auto-selected title?"
+            ):
+                self.log("Cancelled due to low-confidence Smart Rip score.")
+                return
 
         # Guardrail: movie discs where the "best" title is very short
         # are often extras/featurettes, not the main feature.
@@ -2002,6 +2508,11 @@ class RipperController:
 
         selected_ids  = [best["id"]]
         selected_size = best.get("size_bytes", 0)
+        expected_size_by_title = {
+            int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+            for t in disc_titles
+            if int(t.get("id", -1)) in selected_ids
+        }
 
         self.log(
             f"Smart Rip selected: Title {best['id']+1} "
@@ -2025,6 +2536,11 @@ class RipperController:
             selected_size = sum(
                 t.get("size_bytes", 0) for t in disc_titles
             )
+            expected_size_by_title = {
+                int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+                for t in disc_titles
+                if int(t.get("id", -1)) in selected_ids
+            }
             self.log(
                 f"Extras enabled — ripping all "
                 f"{len(selected_ids)} titles."
@@ -2065,7 +2581,7 @@ class RipperController:
             if keep_extras else
             "Ripping main feature..."
         )
-        self.gui.set_status(status_msg)
+        self.gui.set_status("Ripping... (this may take 20-60 min)")
         success, _ = self.engine.rip_selected_titles(
             rip_path, selected_ids,
             on_progress=self.gui.set_progress,
@@ -2083,6 +2599,68 @@ class RipperController:
         )
         if not mkv_files:
             self.log("No files found after ripping.")
+            return
+
+        self._log_ripped_file_sizes(mkv_files)
+        stabilized, timed_out = self._stabilize_ripped_files(
+            mkv_files, expected_size_by_title
+        )
+        if not stabilized:
+            self.log("File stabilization check failed after rip.")
+            self.report(
+                f"Smart Rip stabilization failed for {title} ({year})"
+            )
+            self.gui.show_error(
+                "Rip Failed",
+                (
+                    "Ripped file(s) did not stabilize in time.\n\n"
+                    if timed_out else
+                    "Ripped file(s) failed stabilization checks.\n\n"
+                ) +
+                "Move is blocked to prevent partial file corruption."
+            )
+            return
+        self._log_expected_vs_actual_summary(
+            mkv_files, expected_size_by_title
+        )
+        size_status, size_reason = self._verify_expected_sizes(
+            mkv_files, expected_size_by_title
+        )
+        if size_status == "hard_fail":
+            self.log("ERROR: Size sanity check failed after rip.")
+            retried_ok = self._retry_rip_once_after_size_failure(
+                rip_path, selected_ids, expected_size_by_title
+            )
+            if not retried_ok:
+                self.report(
+                    f"Smart Rip failed size sanity check for {title} ({year})"
+                )
+                self.flush_log()
+                self.gui.show_error(
+                    "Rip Failed",
+                    "Rip incomplete — file too small.\n\n"
+                    "Automatic retry was attempted once and still failed."
+                )
+                return
+        elif size_status == "warn":
+            if not self.gui.ask_yesno(
+                "Rip size is below preferred threshold.\n\n"
+                f"{size_reason}\n\n"
+                "Continue anyway?"
+            ):
+                self.log("Cancelled due to size warning threshold.")
+                return
+            self.report(
+                f"USER OVERRIDE — Smart Rip size warning for {title} ({year})"
+            )
+
+        if not self._verify_container_integrity(mkv_files):
+            self.report(f"Smart Rip ffprobe integrity check failed for {title} ({year})")
+            self.gui.show_error(
+                "Rip Failed",
+                "Container integrity check failed (ffprobe).\n\n"
+                "Move is blocked to prevent corrupt files in library."
+            )
             return
 
         self.gui.set_status("Analyzing...")
@@ -2131,7 +2709,7 @@ class RipperController:
                         "analyzed files; falling back to longest file."
                     )
         self.gui.set_status("Moving files...")
-        ok, _ = self.engine.move_files(
+        ok, _, moved_paths = self.engine.move_files(
             titles_list, main_indices,
             episode_numbers=[], real_names=[],
             keep_extras=keep_extras,
@@ -2143,6 +2721,33 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        if ok:
+            post_status, post_reason = self._verify_expected_sizes(
+                moved_paths, expected_size_by_title
+            )
+            if post_status == "hard_fail":
+                self.report(
+                    f"Smart Rip post-move validation failed for {title} ({year})"
+                )
+                self.gui.show_error(
+                    "Post-Move Validation Failed",
+                    f"Moved file(s) failed size validation:\n{post_reason}\n\n"
+                    "Source temp files were already moved. Re-check output manually."
+                )
+                ok = False
+            elif post_status == "warn":
+                self.report(
+                    f"USER OVERRIDE — Smart Rip post-move size warning for {title} ({year})"
+                )
+            if ok and (not self._verify_container_integrity(moved_paths)):
+                self.report(
+                    f"Smart Rip post-move ffprobe check failed for {title} ({year})"
+                )
+                self.gui.show_error(
+                    "Post-Move Validation Failed",
+                    "Moved file(s) failed container integrity check (ffprobe)."
+                )
+                ok = False
         if ok:
             shutil.rmtree(rip_path, ignore_errors=True)
             if os.path.exists(rip_path):
@@ -2249,6 +2854,28 @@ class RipperController:
             f"Dump complete. "
             f"{len(mkv_files)} file(s) saved to: {rip_path}"
         )
+        self._log_ripped_file_sizes(mkv_files)
+        stabilized, timed_out = self._stabilize_ripped_files(mkv_files)
+        if not stabilized:
+            self.log("File stabilization check failed after rip.")
+            self.report("Manual dump failed stabilization check")
+            self.gui.show_error(
+                "Rip Failed",
+                (
+                    "Ripped file(s) did not stabilize in time.\n\n"
+                    if timed_out else
+                    "Ripped file(s) failed stabilization checks.\n\n"
+                ) +
+                "Move is blocked to prevent partial file corruption."
+            )
+            return
+        if not self._verify_container_integrity(mkv_files):
+            self.report("Manual dump failed ffprobe integrity check")
+            self.gui.show_error(
+                "Rip Failed",
+                "Container integrity check failed (ffprobe)."
+            )
+            return
         self.write_session_summary()
         self.flush_log()
         self.gui.set_progress(0)
@@ -2512,7 +3139,7 @@ class RipperController:
                             )
                             break
 
-            self.gui.set_status("Ripping all titles...")
+            self.gui.set_status("Ripping... (this may take 20-60 min)")
             success = self.engine.rip_all_titles(
                 rip_path,
                 on_progress=self.gui.set_progress,
@@ -2539,6 +3166,33 @@ class RipperController:
                 f"Dump disc {disc_number} complete. "
                 f"{len(mkv_files)} file(s) saved to: {rip_path}"
             )
+            self._log_ripped_file_sizes(mkv_files)
+            stabilized, timed_out = self._stabilize_ripped_files(mkv_files)
+            if not stabilized:
+                self.log("File stabilization check failed after rip.")
+                self.report(
+                    f"Dump disc {disc_number} failed stabilization check"
+                )
+                self.gui.show_error(
+                    "Rip Failed",
+                    (
+                        f"Disc {disc_number} did not stabilize in time.\n\n"
+                        if timed_out else
+                        f"Disc {disc_number} failed stabilization checks.\n\n"
+                    ) +
+                    "Stopping unattended dump to prevent partial files."
+                )
+                break
+            if not self._verify_container_integrity(mkv_files):
+                self.report(
+                    f"Dump disc {disc_number} failed ffprobe integrity check"
+                )
+                self.gui.show_error(
+                    "Rip Failed",
+                    "Container integrity check failed (ffprobe).\n\n"
+                    "Stopping unattended dump to prevent corrupt files."
+                )
+                break
             self.gui.set_progress(0)
             disc_number += 1
 
@@ -2625,7 +3279,7 @@ class RipperController:
                     ):
                         return
 
-        self.gui.set_status("Ripping...")
+        self.gui.set_status("Ripping... (this may take 20-60 min)")
         success = self.engine.rip_all_titles(
             rip_path,
             on_progress=self.gui.set_progress,
@@ -2645,6 +3299,28 @@ class RipperController:
             glob.glob(os.path.join(rip_path, "*.mkv"))
         )
         self.log(f"Done. {len(mkv_files)} file(s) in: {rip_path}")
+        self._log_ripped_file_sizes(mkv_files)
+        stabilized, timed_out = self._stabilize_ripped_files(mkv_files)
+        if not stabilized:
+            self.log("File stabilization check failed after rip.")
+            self.report("Unattended current-disc rip failed stabilization check")
+            self.gui.show_error(
+                "Rip Failed",
+                (
+                    "Ripped file(s) did not stabilize in time.\n\n"
+                    if timed_out else
+                    "Ripped file(s) failed stabilization checks.\n\n"
+                ) +
+                "Move is blocked to prevent partial file corruption."
+            )
+            return
+        if not self._verify_container_integrity(mkv_files):
+            self.report("Unattended current-disc ffprobe integrity check failed")
+            self.gui.show_error(
+                "Rip Failed",
+                "Container integrity check failed (ffprobe)."
+            )
+            return
         self.write_session_summary()
         self.flush_log()
         self.gui.set_progress(0)
@@ -2822,7 +3498,7 @@ class RipperController:
                             ):
                                 break
 
-                self.gui.set_status("Ripping...")
+                self.gui.set_status("Ripping... (this may take 20-60 min)")
                 success = self.engine.rip_all_titles(
                     rip_path,
                     on_progress=self.gui.set_progress,
@@ -3124,12 +3800,30 @@ class RipperController:
             if self.engine.abort_event.is_set():
                 break
 
-            if not disc_titles:
+            if disc_titles is None:
                 self.log("Could not read disc.")
                 self.report(
                     f"Disc {disc_number}: could not read disc."
                 )
+                self.gui.show_error(
+                    "Scan Failed",
+                    "Disc scan failed after retry.\n\n"
+                    "Try cleaning the disc and retrying."
+                )
                 if not self.gui.ask_yesno("Retry?"):
+                    break
+                continue
+            if disc_titles == []:
+                self.log("Disc readable but no titles found.")
+                self.report(
+                    f"Disc {disc_number}: readable disc with no titles."
+                )
+                self.gui.show_error(
+                    "No Titles Found",
+                    "Disc was readable, but no rip-able titles were found.\n\n"
+                    "Try another disc."
+                )
+                if not self.gui.ask_yesno("Try another disc?"):
                     break
                 continue
 
@@ -3143,6 +3837,20 @@ class RipperController:
                     if not self.gui.ask_yesno("Try again?"):
                         break
                     continue
+                low_conf = float(cfg.get("opt_smart_low_confidence_threshold", 0.45))
+                if smart_score < low_conf:
+                    self.log(
+                        f"WARNING: Low-confidence Smart Rip selection "
+                        f"(score={smart_score:.3f} < {low_conf:.2f})."
+                    )
+                    if not self.gui.ask_yesno(
+                        f"Smart Rip confidence is low ({smart_score:.3f}).\n\n"
+                        "Disc structure may be ambiguous or damaged.\n"
+                        "Use this auto-selected title?"
+                    ):
+                        if not self.gui.ask_yesno("Try again?"):
+                            break
+                        continue
                 selected_ids  = [best["id"]]
                 selected_size = best.get("size_bytes", 0)
                 self.log(
@@ -3167,6 +3875,12 @@ class RipperController:
                     t["size_bytes"] for t in disc_titles
                     if t["id"] in selected_ids
                 )
+
+            expected_size_by_title = {
+                int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+                for t in disc_titles
+                if int(t.get("id", -1)) in selected_ids
+            }
 
             if cfg.get("opt_confirm_before_rip", True):
                 if not self.gui.ask_yesno(
@@ -3204,7 +3918,7 @@ class RipperController:
                         self.log("Cancelled: not enough space.")
                         break
 
-            self.gui.set_status("Ripping...")
+            self.gui.set_status("Ripping... (this may take 20-60 min)")
             success, failed_titles = self.engine.rip_selected_titles(
                 rip_path, selected_ids,
                 on_progress=self.gui.set_progress,
@@ -3252,6 +3966,75 @@ class RipperController:
                 continue
 
             self.log(f"Found {len(mkv_files)} file(s).")
+            self._log_ripped_file_sizes(mkv_files)
+            stabilized, timed_out = self._stabilize_ripped_files(
+                mkv_files, expected_size_by_title
+            )
+            if not stabilized:
+                self.log("File stabilization check failed after rip.")
+                self.report(
+                    f"Disc {disc_number}: failed stabilization check"
+                )
+                self.gui.show_error(
+                    "Rip Failed",
+                    (
+                        "Ripped file(s) did not stabilize in time.\n\n"
+                        if timed_out else
+                        "Ripped file(s) failed stabilization checks.\n\n"
+                    ) +
+                    "Move is blocked to prevent partial file corruption."
+                )
+                if not self.gui.ask_yesno("Try another disc?"):
+                    break
+                continue
+            self._log_expected_vs_actual_summary(
+                mkv_files, expected_size_by_title
+            )
+            size_status, size_reason = self._verify_expected_sizes(
+                mkv_files, expected_size_by_title
+            )
+            if size_status == "hard_fail":
+                self.log("ERROR: Size sanity check failed after rip.")
+                retried_ok = self._retry_rip_once_after_size_failure(
+                    rip_path, selected_ids, expected_size_by_title
+                )
+                if not retried_ok:
+                    self.report(
+                        f"Disc {disc_number}: failed size sanity check"
+                    )
+                    self.gui.show_error(
+                        "Rip Failed",
+                        "Rip incomplete — file too small.\n\n"
+                        "Automatic retry was attempted once and still failed."
+                    )
+                    if not self.gui.ask_yesno("Try another disc?"):
+                        break
+                    continue
+            elif size_status == "warn":
+                if not self.gui.ask_yesno(
+                    "Rip size is below preferred threshold.\n\n"
+                    f"{size_reason}\n\n"
+                    "Continue anyway?"
+                ):
+                    if not self.gui.ask_yesno("Try another disc?"):
+                        break
+                    continue
+                self.report(
+                    f"USER OVERRIDE — Disc {disc_number} size warning"
+                )
+
+            if not self._verify_container_integrity(mkv_files):
+                self.report(
+                    f"Disc {disc_number}: ffprobe integrity check failed"
+                )
+                self.gui.show_error(
+                    "Rip Failed",
+                    "Container integrity check failed (ffprobe).\n\n"
+                    "Try another disc."
+                )
+                if not self.gui.ask_yesno("Try another disc?"):
+                    break
+                continue
             self.gui.set_status("Analyzing files...")
             self.gui.start_indeterminate()
             try:
@@ -3275,7 +4058,8 @@ class RipperController:
             move_ok = self._select_and_move(
                 titles_list, is_tv, title, dest_folder, extras_folder,
                 season if is_tv else None,
-                year if not is_tv else None
+                year if not is_tv else None,
+                expected_size_by_title=expected_size_by_title
             )
 
             if move_ok:
@@ -3304,7 +4088,8 @@ class RipperController:
         self.gui.show_info("Done", "Session complete!")
 
     def _select_and_move(self, titles_list, is_tv, title,
-                         dest_folder, extras_folder, season, year):
+                         dest_folder, extras_folder, season, year,
+                         expected_size_by_title=None):
         options = []
         for i, (f, dur, mb) in enumerate(titles_list, 1):
             mins = int(dur // 60) if dur > 0 else "?"
@@ -3423,7 +4208,7 @@ class RipperController:
                     return False
 
         self.gui.set_status("Moving files...")
-        success, self.global_extra_counter = self.engine.move_files(
+        success, self.global_extra_counter, moved_paths = self.engine.move_files(
             titles_list, main_indices, episode_numbers,
             real_names, keep_extras, is_tv, title,
             dest_folder, extras_folder, season, year,
@@ -3431,6 +4216,30 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        if success and moved_paths and expected_size_by_title:
+            post_status, post_reason = self._verify_expected_sizes(
+                moved_paths, expected_size_by_title
+            )
+            if post_status == "hard_fail":
+                self.report("Post-move size validation hard failure")
+                self.gui.show_error(
+                    "Post-Move Validation Failed",
+                    post_reason
+                )
+                success = False
+            elif post_status == "warn":
+                self.report("USER OVERRIDE — post-move size warning")
+        if success and moved_paths and (not self._verify_container_integrity(moved_paths)):
+            self.report("Post-move ffprobe integrity check failed")
+            self.gui.show_error(
+                "Post-Move Validation Failed",
+                "Moved file(s) failed container integrity check (ffprobe)."
+            )
+            success = False
+        if not success:
+            reason = self.engine.last_move_error.strip()
+            if reason:
+                self.gui.show_error("Move Failed", reason)
         return success
 
 
@@ -4732,86 +5541,94 @@ class JellyRipperGUI(tk.Tk):
                 vars_map[key] = ("text", txt_var)
 
             section("Paths")
-            path_row("makemkvcon_path", "MakeMKV executable")
-            path_row("ffprobe_path",    "ffprobe executable")
+            path_row("makemkvcon_path", "MakeMKV app")
+            path_row("ffprobe_path",    "ffprobe app")
             path_row("temp_folder",     "Temp folder")
-            path_row("tv_folder",       "TV shows folder")
+            path_row("tv_folder",       "TV shows library folder")
             path_row("movies_folder",   "Movies folder")
             path_row("log_file",        "Log file")
 
-            section("Ripping")
+            section("Safe To Change")
+            toggle_row("opt_safe_mode",
+                       "Safe Mode (recommended)")
             toggle_row("opt_scan_disc_size",
-                       "Scan disc size before ripping")
+                       "Check disc size before ripping")
             toggle_row("opt_confirm_before_rip",
-                       "Confirm selection before ripping")
-            number_row("opt_smart_min_minutes",
-                       "Smart Rip minimum title length (minutes):", 20)
-            toggle_row("opt_stall_detection",
-                       "Stall detection")
-            number_row("opt_stall_timeout_seconds",
-                       "Stall timeout (seconds):", 120)
-            toggle_row("opt_auto_retry",
-                       "Auto-retry failed titles")
-            number_row("opt_retry_attempts",
-                       "Retry attempts:", 3)
-            toggle_row("opt_clean_mkv_before_retry",
-                       "Clean MKV files before each retry")
+                       "Ask before ripping")
             toggle_row("opt_smart_rip_mode",
-                       "Smart Rip Mode (auto-select best title)")
+                       "Smart Rip (auto-pick best title)")
+            number_row("opt_smart_min_minutes",
+                       "Shortest movie length for Smart Rip (minutes):", 20)
+            toggle_row("opt_file_stabilization",
+                       "Wait for files to finish writing")
+            toggle_row("opt_check_dest_space",
+                       "Check free space before moving files")
+            toggle_row("opt_confirm_before_move",
+                       "Ask before moving files")
+            toggle_row("opt_show_temp_manager",
+                       "Show temp folders at startup")
+            toggle_row("opt_auto_delete_temp",
+                       "Delete temp files after successful organize")
+            toggle_row("opt_clean_partials_startup",
+                       "Remove unfinished files at startup")
+            toggle_row("opt_warn_low_space",
+                       "Warn when free space is low")
+            toggle_row("opt_warn_out_of_order_episodes",
+                       "Warn if episode numbers look out of order")
+            toggle_row("opt_session_failure_report",
+                       "Show a failure report at the end")
 
-            section("MakeMKV Expert")
+            section("Unsafe / Advanced")
+            number_row("opt_drive_index",
+                       "Drive number for MakeMKV:", 0)
+            toggle_row("opt_stall_detection",
+                       "Detect stalled rip processes")
+            number_row("opt_stall_timeout_seconds",
+                       "Stall timeout in seconds:", 120)
+            number_row("opt_stabilize_timeout_seconds",
+                       "File-write wait timeout in seconds:", 60)
+            number_row("opt_stabilize_required_polls",
+                       "How many stable checks are required:", 4)
+            number_row("opt_min_rip_size_gb",
+                       "Minimum accepted file size (GB):", 1)
+            number_row("opt_expected_size_ratio_pct",
+                       "Minimum size match vs expected (%):", 70)
+            number_row("opt_move_verify_retries",
+                       "Move size check retries:", 5)
+            toggle_row("opt_auto_retry",
+                       "Retry failed titles automatically")
+            number_row("opt_retry_attempts",
+                       "Retry attempts per title:", 3)
+            toggle_row("opt_clean_mkv_before_retry",
+                       "Delete new MKV files before retry")
+            toggle_row("opt_atomic_move",
+                       "Use safer move method (slower)")
+            toggle_row("opt_fsync",
+                       "Force file sync to disk during copy")
+            number_row("opt_hard_block_gb",
+                       "Stop when free space is below (GB):", 20)
             text_row(
                 "opt_makemkv_global_args",
-                "Global args (applies to info + rip):"
+                "Extra MakeMKV args (all commands):"
             )
             text_row(
                 "opt_makemkv_info_args",
-                "Extra args for info/scan commands:"
+                "Extra MakeMKV args (scan commands):"
             )
             text_row(
                 "opt_makemkv_rip_args",
-                "Extra args for rip commands:"
+                "Extra MakeMKV args (rip commands):"
             )
-
-            section("Moving")
-            toggle_row("opt_check_dest_space",
-                       "Check destination space before moving")
-            toggle_row("opt_confirm_before_move",
-                       "Confirm before moving files")
-            toggle_row("opt_atomic_move",
-                       "Atomic move (safe but slower)")
-            toggle_row("opt_fsync",
-                       "fsync on copy (protects against power loss)")
-
-            section("Temp & Session")
-            toggle_row("opt_show_temp_manager",
-                       "Show temp manager on startup")
-            toggle_row("opt_auto_delete_temp",
-                       "Auto-delete temp after successful organize")
-            toggle_row("opt_clean_partials_startup",
-                       "Clean partial files on startup")
-
-            section("Warnings & Limits")
-            toggle_row("opt_warn_low_space",
-                       "Warn if space below estimate")
-            number_row("opt_hard_block_gb",
-                       "Hard block below (GB):", 20)
-            toggle_row("opt_warn_out_of_order_episodes",
-                       "Warn on out-of-order episode numbers")
+            number_row(
+                "opt_log_cap_lines", "Max log lines kept in memory:", 300000
+            )
+            number_row(
+                "opt_log_trim_lines", "Trim log down to this many lines:", 200000
+            )
             toggle_row("opt_debug_safe_int",
-                       "Debug: log malformed integer parse values")
+                       "Debug: log bad integer values")
             toggle_row("opt_debug_duration",
-                       "Debug: log malformed duration parse values")
-            toggle_row("opt_session_failure_report",
-                       "Session failure report at end")
-
-            section("Log")
-            number_row(
-                "opt_log_cap_lines", "Log memory cap (lines):", 300000
-            )
-            number_row(
-                "opt_log_trim_lines", "Trim to (lines):", 200000
-            )
+                       "Debug: log bad duration values")
 
             btn_row = tk.Frame(win, bg="#0d1117")
             btn_row.pack(fill="x", padx=16, pady=12)
@@ -4975,6 +5792,40 @@ class JellyRipperGUI(tk.Tk):
                 "Configuration Error", msg, parent=self
             )
             return
+
+        temp_folder = os.path.normpath(
+            self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
+        )
+        if self.cfg.get("opt_safe_mode", True):
+            self.cfg["opt_file_stabilization"] = True
+            self.cfg["opt_stabilize_required_polls"] = max(
+                4, int(self.cfg.get("opt_stabilize_required_polls", 4))
+            )
+            self.cfg["opt_stabilize_timeout_seconds"] = max(
+                90, int(self.cfg.get("opt_stabilize_timeout_seconds", 60))
+            )
+            self.cfg["opt_move_verify_retries"] = max(
+                5, int(self.cfg.get("opt_move_verify_retries", 5))
+            )
+            self.cfg["opt_expected_size_ratio_pct"] = max(
+                50, int(self.cfg.get("opt_expected_size_ratio_pct", 70))
+            )
+
+        if (not self.cfg.get("opt_first_run_done", False) and
+                is_network_path(temp_folder)):
+            messagebox.showwarning(
+                "Network Temp Folder",
+                "Your temp folder appears to be on a network/mapped "
+                "drive. Network storage is slower and may cause "
+                "incomplete rips. Local temp storage is recommended.\n\n"
+                f"Current temp folder:\n{temp_folder}",
+                parent=self
+            )
+
+        if not self.cfg.get("opt_first_run_done", False):
+            self.cfg["opt_first_run_done"] = True
+            self.engine.cfg["opt_first_run_done"] = True
+            save_config(self.cfg)
 
         self.engine.reset_abort()
         self.abort_btn.config(state="normal")
