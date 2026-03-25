@@ -1902,6 +1902,17 @@ class RipperController:
                 self.log("Cancelled.")
                 return
 
+        keep_extras = self.gui.ask_yesno("Keep extras from this disc?")
+        if keep_extras:
+            selected_ids  = [t["id"] for t in disc_titles]
+            selected_size = sum(
+                t.get("size_bytes", 0) for t in disc_titles
+            )
+            self.log(
+                f"Extras enabled — ripping all "
+                f"{len(selected_ids)} titles."
+            )
+
         movie_folder  = os.path.join(
             movie_root, f"{clean_name(title)} ({year})"
         )
@@ -1932,7 +1943,12 @@ class RipperController:
         os.makedirs(rip_path, exist_ok=True)
         self.engine.write_temp_metadata(rip_path, title, 1)
 
-        self.gui.set_status("Ripping main feature...")
+        status_msg = (
+            "Ripping all titles..."
+            if keep_extras else
+            "Ripping main feature..."
+        )
+        self.gui.set_status(status_msg)
         success, _ = self.engine.rip_selected_titles(
             rip_path, selected_ids,
             on_progress=self.gui.set_progress,
@@ -1965,20 +1981,26 @@ class RipperController:
         if not titles_list:
             return
 
-        name       = f"{clean_name(title)} ({year}).mkv"
-        final_path = self.engine.unique_path(
-            os.path.join(movie_folder, name)
-        )
-        self.log(f"Moving: {os.path.basename(titles_list[0][0])}")
-        self.log(f"    To: {final_path}")
-        ok = self.engine.move_file_atomic(
-            titles_list[0][0], final_path, self.log
+        # titles_list is sorted longest-first by analyze_files;
+        # the main feature (highest smart-rip score) will be first.
+        main_indices = [0]
+        self.gui.set_status("Moving files...")
+        ok, _ = self.engine.move_files(
+            titles_list, main_indices,
+            episode_numbers=[], real_names=[],
+            keep_extras=keep_extras,
+            is_tv=False,
+            title=title, dest_folder=movie_folder,
+            extras_folder=extras_folder,
+            season=0, year=year,
+            extra_counter=1,
+            on_progress=self.gui.set_progress,
+            on_log=self.log
         )
         if ok:
             shutil.rmtree(rip_path, ignore_errors=True)
             if os.path.exists(rip_path):
                 self.log(f"Warning: could not delete {rip_path}")
-            self.log("Done.")
         else:
             self.log(f"Temp preserved at: {rip_path}")
 
@@ -1987,7 +2009,7 @@ class RipperController:
         self.gui.set_progress(0)
         self.gui.show_info(
             "Smart Rip Complete",
-            f"Ripped and moved:\n{final_path}"
+            f"Files moved to:\n{movie_folder}"
         )
 
     def run_dump_all(self):
