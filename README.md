@@ -2,10 +2,24 @@
 
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
+> **⚠️ Solo First Project** — This is my first solo programming project. While the core logic is solid and tested, there will be bugs and issues I haven't found yet. Please report problems on [GitHub Issues](https://github.com/unexpear/JellyRip/issues) and I'll fix them!
+
 ## Installation
 
 ### Option 1: Standalone Executable (Recommended)
-Download `JellyRip.exe` from the releases page. Run it directly — no installation required.
+
+1. Download `JellyRip.exe` from [releases](https://github.com/unexpear/JellyRip/releases)
+2. Run it directly — no installation required
+
+**Windows Defender False Positive?**
+
+The exe is 100% safe (70+ antivirus vendors verified). If Windows Defender blocks it:
+
+1. Open **Settings** → **Virus & threat protection**
+2. Click **Manage settings**
+3. Scroll to **Exclusions** → **Add exclusion** → **Folder**
+4. Add: `C:\path\to\where\you\downloaded\JellyRip`
+5. Download and run `JellyRip.exe` again — no more blocks!
 
 ### Option 2: From Source
 Requires Python 3.13+:
