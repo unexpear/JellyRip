@@ -1,8 +1,15 @@
-# JellyRip v1.0.0
+# JellyRip v1.0.4
 
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
-> **⚠️ Solo First Project** — This is my first solo programming project. While the core logic is solid and tested, there will be bugs and issues I haven't found yet. Please report problems on [GitHub Issues](https://github.com/unexpear/JellyRip/issues) and I'll fix them!
+> **⚠️ Work In Progress** — JellyRip is not fully tested yet. Expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
+
+## Project Status
+
+- Development stage: **Work in Progress (WIP)**
+- Stability: **Unstable / pre-release quality**
+- Testing status: **Not fully tested**
+- Recommendation: use on non-critical discs until stable releases return
 
 ## Installation
 
