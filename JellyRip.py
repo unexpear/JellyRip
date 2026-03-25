@@ -243,19 +243,22 @@ def parse_duration_to_seconds(s):
         if not s or ":" not in s:
             _duration_debug_warn(s)
             return 0
-        parts = s.split(":")
-        if not parts or not all(p.isdigit() for p in parts):
+        # Accept HH:MM:SS, H:MM:SS, M:SS, and fractional seconds like
+        # 00:45:12.000 or 1:23:45.678 from some MakeMKV builds.
+        raw_parts = s.split(":")
+        try:
+            parts = [float(p) for p in raw_parts]
+        except ValueError:
             _duration_debug_warn(s)
             return 0
-        parts = [int(p) for p in parts]
         if len(parts) == 3:
             h, m, sec = parts
         elif len(parts) == 2:
-            h, m, sec = 0, parts[0], parts[1]
+            h, m, sec = 0.0, parts[0], parts[1]
         else:
             _duration_debug_warn(s)
             return 0
-        return h * 3600 + m * 60 + sec
+        return int(h * 3600 + m * 60 + sec)
     except Exception:
         _duration_debug_warn(s)
         return 0
@@ -281,7 +284,7 @@ def safe_int(val):
             # This handles cases like "3.7 GB" → extract 3
             match = re.search(r'-?\d+(?:\.\d+)?', s)
             if match:
-                return int(float(match.group()))
+                return int(round(float(match.group())))
             _safe_int_debug_warn(val)
             return 0
     except Exception:
@@ -919,21 +922,11 @@ class RipperEngine:
         on_log("Title scores:")
         for t, score in scored:
             on_log(
-                f"  Title {t['id']+1}: "
-                f"{t['name'][:30]:<30}  "
-                f"score={score:.3f}  "
-                f"{t['duration']}  {t['size']}  "
-                f"{safe_int(t.get('chapters', 0))} chapters  "
-                f"{len(t.get('audio_tracks', []))} audio  "
-                f"{len(t.get('subtitle_tracks', []))} subs"
-            )
-            on_log(
-                f"    score={score:.3f}  "
-                f"(dur={t.get('duration_seconds', 0)}, "
-                f"size={t.get('size_bytes', 0)}, "
-                f"chap={safe_int(t.get('chapters', 0))}, "
-                f"aud={len(t.get('audio_tracks', []))}, "
-                f"sub={len(t.get('subtitle_tracks', []))})"
+                f"  Title {t['id']+1}: score={score:.3f} | "
+                f"{t['duration']} {t['size']} | "
+                f"chap={safe_int(t.get('chapters', 0))} "
+                f"aud={len(t.get('audio_tracks', []))} "
+                f"sub={len(t.get('subtitle_tracks', []))}"
             )
         if scored:
             on_log(
@@ -1075,14 +1068,14 @@ class RipperEngine:
 
         Returns True on rc==0, False otherwise.
         """
-        self.current_process = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
-        proc = self.current_process
+        self.current_process = proc
 
         line_queue    = queue_module.Queue()
         reader        = threading.Thread(
@@ -2149,7 +2142,8 @@ class RipperController:
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
                 f"{safe_int(t.get('chapters', 0))}:"
-                f"{len(t.get('audio_tracks', []))}"
+                f"{len(t.get('audio_tracks', []))}:"
+                f"{len(t.get('subtitle_tracks', []))}"
             )
         return "|".join(parts)
 
