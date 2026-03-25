@@ -148,6 +148,33 @@ def parse_duration_to_seconds(s):
         return 0
 
 
+def safe_int(val):
+    """
+    Safely convert any value to integer.
+    MakeMKV sometimes returns malformed data (e.g., chapter field
+    contains '3.7 GB'). This extracts just the numeric part.
+    Returns 0 on any parse failure.
+    """
+    try:
+        # Strip whitespace and convert to string
+        s = str(val).strip()
+        if not s:
+            return 0
+        # Try direct int conversion first
+        try:
+            return int(s)
+        except ValueError:
+            # If that fails, try to extract just the numeric part
+            # This handles cases like "3.7 GB" → extract 3
+            import re
+            match = re.search(r'-?\d+', s)
+            if match:
+                return int(match.group())
+            return 0
+    except Exception:
+        return 0
+
+
 def score_title(t, all_titles):
     """
     Score a title relative to all titles on the disc.
@@ -172,7 +199,7 @@ def score_title(t, all_titles):
         (x["duration_seconds"] for x in all_titles), default=1
     )
     max_chapters = max(
-        (int(x.get("chapters") or 0) for x in all_titles), default=1
+        (safe_int(x.get("chapters")) for x in all_titles), default=1
     )
     max_audio    = max(
         (len(x["audio_tracks"]) for x in all_titles), default=1
@@ -184,7 +211,7 @@ def score_title(t, all_titles):
     return (
         (t["size_bytes"] / max_size)                       * 0.30 +
         (t["duration_seconds"] / max_duration)             * 0.35 +
-        (int(t.get("chapters") or 0) / max_chapters)      * 0.15 +
+        (safe_int(t.get("chapters")) / max_chapters)      * 0.15 +
         (len(t["audio_tracks"]) / max_audio)               * 0.15 +
         (len(t["subtitle_tracks"]) / max_subs)             * 0.05
     )
@@ -537,7 +564,10 @@ class RipperEngine:
                             parse_duration_to_seconds(val)
                         )
                     elif attr == 10:
-                        titles[tid]["chapters"] = val
+                        # Store chapters as safe integer to prevent
+                        # crashes downstream. MakeMKV sometimes returns
+                        # malformed data here (e.g., "3.7 GB").
+                        titles[tid]["chapters"] = safe_int(val)
                     elif attr == 11:
                         # Parse size - might be bytes or already formatted
                         try:
@@ -640,6 +670,7 @@ class RipperEngine:
                 f"{t['name'][:30]:<30}  "
                 f"score={score_title(t, result):.3f}  "
                 f"{t['duration']}  {t['size']}  "
+                f"{safe_int(t.get('chapters', 0))} chapters  "
                 f"{len(t['audio_tracks'])} audio  "
                 f"{len(t['subtitle_tracks'])} subs"
             )
@@ -673,9 +704,24 @@ class RipperEngine:
                     parts = line.strip().split(",")
                     if len(parts) >= 4 and parts[1] == "11":
                         try:
-                            size_str     = parts[3].strip().strip('"')
-                            total_bytes += int(size_str)
-                        except (ValueError, IndexError):
+                            size_str = parts[3].strip().strip('"')
+                            try:
+                                total_bytes += int(size_str)
+                            except ValueError:
+                                # Size might be formatted like "3.7 GB"
+                                try:
+                                    size_parts = size_str.split()
+                                    if len(size_parts) >= 2:
+                                        num = float(size_parts[0])
+                                        unit = size_parts[1].upper()
+                                        multipliers = {
+                                            "B": 1, "KB": 1024, "MB": 1024**2,
+                                            "GB": 1024**3, "TB": 1024**4
+                                        }
+                                        total_bytes += int(num * multipliers.get(unit, 1))
+                                except Exception:
+                                    pass
+                        except IndexError:
                             pass
             proc.wait()
         except Exception as e:
