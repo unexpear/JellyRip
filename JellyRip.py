@@ -1804,8 +1804,12 @@ class RipperController:
                 self.log("Scan aborted.")
                 return None
 
-            if result is not None:
+            if result:
                 return result
+
+            if result == []:
+                self.log("Scan completed but found no titles.")
+                return []
 
             if attempt < 2:
                 self.log("Scan failed — retrying...")
