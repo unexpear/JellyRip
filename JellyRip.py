@@ -1822,14 +1822,26 @@ class RipperController:
             f"Use 'Organize Existing MKVs' to sort them."
         )
 
+    def _prepare_unattended_session(self, temp_root, mode_label):
+        """Initialize unattended mode state and optionally show temp manager."""
+        self.engine.reset_abort()
+        self.session_report = []
+        self.log(f"{mode_label} started.")
+        self.engine.cleanup_partial_files(temp_root, self.log)
+        if self.engine.cfg.get("opt_show_temp_manager", True):
+            self._offer_temp_manager(temp_root)
+        if self.engine.abort_event.is_set():
+            self.log(f"{mode_label} cancelled.")
+            return False
+        return True
+
     def run_unattended_single(self):
         cfg       = self.engine.cfg
         temp_root = os.path.normpath(cfg["temp_folder"])
 
-        self.engine.cleanup_partial_files(temp_root, self.log)
-        if cfg.get("opt_show_temp_manager", True):
-            self._offer_temp_manager(temp_root)
-        if self.engine.abort_event.is_set():
+        if not self._prepare_unattended_session(
+            temp_root, "Unattended single-disc mode"
+        ):
             return
 
         self.gui.show_info(
@@ -1910,10 +1922,9 @@ class RipperController:
         cfg       = self.engine.cfg
         temp_root = os.path.normpath(cfg["temp_folder"])
 
-        self.engine.cleanup_partial_files(temp_root, self.log)
-        if cfg.get("opt_show_temp_manager", True):
-            self._offer_temp_manager(temp_root)
-        if self.engine.abort_event.is_set():
+        if not self._prepare_unattended_session(
+            temp_root, "Unattended series mode"
+        ):
             return
 
         title = self.gui.ask_input(
@@ -2068,6 +2079,12 @@ class RipperController:
         self.flush_log()
         self.gui.set_status("Ready")
         self.gui.set_progress(0)
+        if self.engine.abort_event.is_set():
+            self.gui.show_info(
+                "Series Stopped",
+                "Unattended series mode was stopped before completion."
+            )
+            return
         self.gui.show_info(
             "Series Complete",
             f"All discs ripped to:\n{series_root}\n\n"
@@ -2866,15 +2883,17 @@ class JellyRipperGUI(tk.Tk):
 
     def copy_log_to_clipboard(self):
         try:
-            self.log_text.config(state="normal")
-            content = self.log_text.get("1.0", "end")
+            content = self.log_text.get("1.0", "end-1c")
+            if not content.strip():
+                self.controller.log("Log is empty — nothing to copy.")
+                return
             self.clipboard_clear()
             self.clipboard_append(content)
+            # Ensure clipboard ownership is committed on Windows.
+            self.update_idletasks()
             self.controller.log("Log copied to clipboard.")
         except Exception as e:
             self.controller.log(f"Could not copy log: {e}")
-        finally:
-            self.log_text.config(state="disabled")
 
     def _show_input_bar(self, label, show_browse=False):
         self.input_label_var.set(label)
