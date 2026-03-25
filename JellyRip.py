@@ -328,9 +328,17 @@ def parse_size_to_bytes(val):
             else:
                 raw = raw.replace(",", "")
         elif "," in raw:
-            # If comma is likely decimal separator, convert to dot.
-            if raw.count(",") == 1 and len(raw.split(",", 1)[1]) <= 3:
-                raw = raw.replace(",", ".")
+            # Disambiguate single comma: thousands group vs decimal separator.
+            if raw.count(",") == 1:
+                left, right = raw.split(",", 1)
+                if left.isdigit() and right.isdigit() and len(right) == 3:
+                    # Example: 5,000 -> 5000
+                    raw = left + right
+                elif len(right) <= 2:
+                    # Example: 3,7 -> 3.7
+                    raw = raw.replace(",", ".")
+                else:
+                    raw = raw.replace(",", "")
             else:
                 raw = raw.replace(",", "")
         elif raw.count(".") > 1:
