@@ -21,6 +21,21 @@ The exe is 100% safe (70+ antivirus vendors verified). If Windows Defender block
 4. Add: `C:\path\to\where\you\downloaded\JellyRip`
 5. Download and run `JellyRip.exe` again — no more blocks!
 
+## Unstable Builds
+
+Unstable builds are available for users who want the newest fixes before a stable release.
+
+Shortcut links:
+- Latest unstable release page: https://github.com/unexpear/JellyRip/releases/tag/unstable-latest
+- Latest unstable direct download: https://github.com/unexpear/JellyRip/releases/download/unstable-latest/JellyRip.exe
+
+- Check [Releases](https://github.com/unexpear/JellyRip/releases) for tags marked as **pre-release**
+- Download the `JellyRip.exe` asset from that pre-release tag
+- Expect regressions, rough edges, and behavior changes between builds
+- If you hit issues, report them on [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
+
+Use unstable builds only if you are comfortable testing and troubleshooting.
+
 ### Option 2: From Source
 Requires Python 3.13+:
 ```bash
