@@ -561,6 +561,7 @@ class RipperEngine:
         return self.abort_event.is_set()
 
     def abort(self):
+        """Set abort flag and terminate active MakeMKV process if running."""
         with self._abort_lock:
             if self.abort_event.is_set():
                 return
@@ -585,6 +586,7 @@ class RipperEngine:
                 self.current_process = None
 
     def reset_abort(self):
+        """Clear abort state before starting a new operation."""
         self.abort_event.clear()
 
     def unique_path(self, path):
@@ -598,6 +600,7 @@ class RipperEngine:
         return new_path
 
     def validate_tools(self):
+        """Validate configured MakeMKV and ffprobe paths."""
         makemkvcon = os.path.normpath(self.cfg["makemkvcon_path"])
         ffprobe    = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
@@ -615,9 +618,11 @@ class RipperEngine:
         return True, ""
 
     def get_disc_target(self):
+        """Return MakeMKV disc selector for the configured drive index."""
         return f"disc:{self.cfg.get('opt_drive_index', 0)}"
 
     def cleanup_partial_files(self, temp_root, on_log):
+        """Remove stale `.partial` files left by interrupted move/rip operations."""
         if not self.cfg.get("opt_clean_partials_startup", True):
             return
         if not os.path.isdir(temp_root):
@@ -637,6 +642,7 @@ class RipperEngine:
                         )
 
     def find_old_temp_folders(self, temp_root):
+        """Enumerate temp rip folders with aggregate file count and size metadata."""
         if not os.path.isdir(temp_root):
             return []
         folders = []
@@ -668,6 +674,7 @@ class RipperEngine:
         return folders
 
     def find_resumable_sessions(self, temp_root):
+        """Find temp sessions marked as in-progress so users can resume manually."""
         resumable = []
         if not os.path.isdir(temp_root):
             return resumable
@@ -705,6 +712,7 @@ class RipperEngine:
 
     def write_temp_metadata(self, rip_path, title, disc_number,
                             season=None):
+        """Create initial metadata file for a rip temp folder."""
         meta = {
             "title":       title,
             "disc_number": disc_number,
@@ -721,6 +729,7 @@ class RipperEngine:
         )
 
     def update_temp_metadata(self, rip_path, status=None):
+        """Refresh metadata counters/status for a temp session folder."""
         meta_path = os.path.join(rip_path, "_rip_meta.json")
         try:
             with open(meta_path, encoding="utf-8") as f:
@@ -742,6 +751,7 @@ class RipperEngine:
             pass
 
     def read_temp_metadata(self, rip_path):
+        """Read metadata for a temp session folder, returning None on failure."""
         meta_path = os.path.join(rip_path, "_rip_meta.json")
         try:
             with open(meta_path, encoding="utf-8") as f:
@@ -1209,6 +1219,7 @@ class RipperEngine:
         return rc == 0
 
     def _get_rip_attempts(self):
+        """Resolve retry strategy flags based on config toggles."""
         count = int(self.cfg.get("opt_retry_attempts", 3))
         if not self.cfg.get("opt_auto_retry", True):
             count = 1
@@ -1217,6 +1228,7 @@ class RipperEngine:
         ]
 
     def rip_all_titles(self, rip_path, on_progress, on_log):
+        """Rip all disc titles with retry flags and stall-aware process handling."""
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
@@ -1275,6 +1287,7 @@ class RipperEngine:
 
     def rip_selected_titles(self, rip_path, title_ids,
                             on_progress, on_log):
+        """Rip selected title IDs with per-title retries and aggregated progress."""
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
@@ -1440,6 +1453,7 @@ class RipperEngine:
         return known + unknown
 
     def copy_with_abort(self, src, dst, buf_size=8 * 1024 * 1024):
+        """Stream-copy a file while honoring abort requests between chunks."""
         use_fsync = self.cfg.get("opt_fsync", True)
         try:
             with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
@@ -1524,6 +1538,7 @@ class RipperEngine:
                    real_names, keep_extras, is_tv, title, dest_folder,
                    extras_folder, season, year, extra_counter,
                    on_progress, on_log):
+        """Move selected main/extras files into final library structure."""
 
         total_to_move = len(main_indices) + (
             len(titles_list) - len(main_indices) if keep_extras else 0
@@ -1642,6 +1657,7 @@ class RipperEngine:
 
     def write_session_log(self, log_file, start_time,
                           session_log, on_log):
+        """Append session logs to disk with rollover for oversized log files."""
         if not log_file:
             on_log("No log file configured — session log not saved.")
             return
@@ -1712,6 +1728,7 @@ class RipperController:
         self.session_report       = []
 
     def log(self, msg):
+        """Record a timestamped log line and forward it to the GUI queue."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         full = f"[{timestamp}] {msg}"
         self.session_log.append(full)
@@ -1722,10 +1739,12 @@ class RipperController:
         self.gui.append_log(full)
 
     def report(self, msg):
+        """Track a warning/failure event and emit it to the live log."""
         self.session_report.append(msg)
         self.log(msg)
 
     def flush_log(self):
+        """Persist current session log buffer to configured log file."""
         log_file = os.path.normpath(
             self.engine.cfg.get("log_file", "")
         )
@@ -1790,6 +1809,7 @@ class RipperController:
         return None
 
     def check_resume(self, temp_root):
+        """Prompt user to resume interrupted sessions discovered in temp storage."""
         resumable = self.engine.find_resumable_sessions(temp_root)
         if not resumable:
             return
@@ -1809,12 +1829,15 @@ class RipperController:
                 )
 
     def run_tv_disc(self):
+        """Run manual TV-disc workflow."""
         self._run_disc(is_tv=True)
 
     def run_movie_disc(self):
+        """Run manual movie-disc workflow."""
         self._run_disc(is_tv=False)
 
     def run_smart_rip(self):
+        """Auto-select and rip the highest-scoring main movie title."""
         cfg        = self.engine.cfg
         movie_root = os.path.normpath(cfg["movies_folder"])
         temp_root  = os.path.normpath(cfg["temp_folder"])
@@ -1968,6 +1991,7 @@ class RipperController:
         )
 
     def run_dump_all(self):
+        """Rip all titles to temp storage for later organization."""
         cfg       = self.engine.cfg
         temp_root = os.path.normpath(cfg["temp_folder"])
 
@@ -3522,6 +3546,7 @@ class JellyRipperGUI(tk.Tk):
             self.input_var.set(os.path.normpath(path))
 
     def ask_input(self, label, prompt, show_browse=False):
+        """Show non-modal input bar and wait from caller thread for user input."""
         result = [None]
         done   = threading.Event()
 
@@ -3555,6 +3580,7 @@ class JellyRipperGUI(tk.Tk):
             threading.Thread(target=_wait, daemon=True).start()
 
         self.after(0, _show)
+        # Caller may be a worker thread; this loop must not touch tkinter.
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
                 return None
@@ -3566,6 +3592,7 @@ class JellyRipperGUI(tk.Tk):
         )
 
     def ask_yesno(self, prompt):
+        """Render an inline Yes/No prompt in the log pane and wait for answer."""
         result = [None]
         done   = threading.Event()
 
@@ -3656,6 +3683,8 @@ class JellyRipperGUI(tk.Tk):
             ).start()
 
         self.after(0, _show)
+        # Wait by event polling so worker threads can call this safely
+        # while tkinter widgets are still managed on the main thread.
         while not done.wait(timeout=0.1):
             pass
         return result[0] if result[0] is not None else False
@@ -3758,6 +3787,7 @@ class JellyRipperGUI(tk.Tk):
         return result[0]
 
     def _run_on_main(self, fn):
+        """Execute callable on tkinter main loop and return its result."""
         result = [None]
         done   = threading.Event()
 
@@ -4272,17 +4302,29 @@ class JellyRipperGUI(tk.Tk):
                     var.set(False)
 
             def delete_selected():
-                for var, full_path, name in check_vars:
-                    if var.get():
+                selected = [
+                    (full_path, name)
+                    for var, full_path, name in check_vars
+                    if var.get()
+                ]
+
+                # Close first to keep UI responsive; delete on background
+                # thread so large folder trees do not block tkinter.
+                win.destroy()
+
+                def _delete_worker():
+                    for full_path, name in selected:
                         try:
                             shutil.rmtree(full_path)
                             log_fn(f"Deleted temp folder: {name}")
                         except Exception as e:
-                            log_fn(
-                                f"Could not delete {name}: {e}"
-                            )
-                win.destroy()
-                done.set()
+                            log_fn(f"Could not delete {name}: {e}")
+                    done.set()
+
+                threading.Thread(
+                    target=_delete_worker,
+                    daemon=True
+                ).start()
 
             def close():
                 win.destroy()
@@ -4751,6 +4793,10 @@ class JellyRipperGUI(tk.Tk):
 
         def task_wrapper():
             try:
+                # Important: mode pickers use ask_yesno(), which schedules UI
+                # work on the main thread and waits from the caller thread.
+                # Resolve picker targets here (background thread), not in
+                # start_task() on the main thread, to avoid UI deadlocks.
                 fn = target() if needs_pick else target
                 fn()
             except Exception as e:
