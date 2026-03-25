@@ -1,4 +1,4 @@
-# PyInstaller build artifacts
+﻿# PyInstaller build artifacts
 build/
 dist/
 *.spec
@@ -14,7 +14,10 @@ venv/
 ENV/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo
