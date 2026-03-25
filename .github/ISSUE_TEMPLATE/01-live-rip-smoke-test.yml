@@ -1,0 +1,301 @@
+name: Live Rip Smoke Test Report
+description: Standardized pass/fail report for Smart Rip, Manual Rip, and Unattended testing
+title: "[Tester Report]: "
+labels:
+  - tester-report
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form during or after a live rip session.
+
+        For best results, run the printable worksheet in TESTERS.md while testing,
+        then copy your outcomes into this issue form.
+
+  - type: input
+    id: build_version
+    attributes:
+      label: Build and version tested
+      description: Example: v1.0.4 (release) or unstable-latest
+      placeholder: v1.0.4
+    validations:
+      required: true
+
+  - type: input
+    id: test_date
+    attributes:
+      label: Test date
+      placeholder: YYYY-MM-DD
+    validations:
+      required: true
+
+  - type: input
+    id: tester_name
+    attributes:
+      label: Tester name
+      placeholder: Your name or handle
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: drive_model
+    attributes:
+      label: Optical drive model
+      placeholder: Example: LG WH16NS40
+    validations:
+      required: false
+
+  - type: dropdown
+    id: disc_type
+    attributes:
+      label: Disc type
+      options:
+        - DVD
+        - Blu-ray
+        - 4K UHD
+        - Mixed session
+    validations:
+      required: true
+
+  - type: input
+    id: disc_title
+    attributes:
+      label: Disc title or set tested
+      placeholder: Movie/series/disc identifiers
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: "## A) Smart Rip"
+
+  - type: dropdown
+    id: smart_scan_starts
+    attributes:
+      label: Scan starts (Scanning disc...)
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smart_scoring
+    attributes:
+      label: Title scoring appears (Title scores + BEST)
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smart_selection
+    attributes:
+      label: Smart selection logged
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smart_progress
+    attributes:
+      label: Rip progress updates appear
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smart_exit_code
+    attributes:
+      label: MakeMKV exit code logged
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: smart_move_complete
+    attributes:
+      label: Output file found and moved
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## B) Manual Rip (TV or Movie interactive)"
+
+  - type: dropdown
+    id: manual_disc_loop
+    attributes:
+      label: Disc loop markers appear
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manual_selection
+    attributes:
+      label: Manual title selection accepted
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manual_selected_size
+    attributes:
+      label: Selected size logged
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manual_rip_complete
+    attributes:
+      label: Ripping complete logged
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manual_analyze
+    attributes:
+      label: Analysis runs and files are listed
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: manual_move_cleanup
+    attributes:
+      label: Move phase and temp cleanup complete
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## C) Unattended Flow"
+
+  - type: dropdown
+    id: unattended_single_start
+    attributes:
+      label: Unattended Single starts correctly
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unattended_single_complete
+    attributes:
+      label: Unattended Single completes with file count log
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unattended_series_meta
+    attributes:
+      label: Unattended Series logs series and seasons
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unattended_series_markers
+    attributes:
+      label: Unattended Series season and disc markers appear
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unattended_duplicate_handling
+    attributes:
+      label: Duplicate and fingerprint prompts behave correctly
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unattended_series_complete
+    attributes:
+      label: Unattended Series completion or stop state is clear
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## D) Failure and Recovery Signals"
+
+  - type: dropdown
+    id: retry_logs
+    attributes:
+      label: Retry path logs appear when expected
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: low_space_behavior
+    attributes:
+      label: Low-space warning and block behavior is correct
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: abort_behavior
+    attributes:
+      label: Abort stops work quickly and safely
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session_summary
+    attributes:
+      label: Session summary reflects warnings and failures
+      options: [Pass, Fail, Not Run]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: overall_result
+    attributes:
+      label: Overall result
+      options: [PASS, FAIL]
+    validations:
+      required: true
+
+  - type: textarea
+    id: first_failure_event
+    attributes:
+      label: First failure event details
+      description: Include timestamp, mode, and the exact first failing signal.
+      placeholder: "Example: 21:44:10, Manual Rip, MakeMKV exit code non-zero after attempt 3"
+    validations:
+      required: false
+
+  - type: textarea
+    id: log_excerpt
+    attributes:
+      label: Log excerpt around failure or key event
+      description: Paste the relevant log block around the first failure (or key success signal).
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_notes
+    attributes:
+      label: Additional notes
+      description: Hardware quirks, disc condition, repro steps, or anything unusual.
+    validations:
+      required: false
