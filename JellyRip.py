@@ -284,7 +284,7 @@ def safe_int(val):
             # This handles cases like "3.7 GB" → extract 3
             match = re.search(r'-?\d+(?:\.\d+)?', s)
             if match:
-                return int(round(float(match.group())))
+                return int(float(match.group()))
             _safe_int_debug_warn(val)
             return 0
     except Exception:
@@ -309,8 +309,21 @@ def parse_size_to_bytes(val):
         if not match:
             return 0
 
-        raw = match.group(1).replace(",", ".")
-        if raw.count(".") > 1:
+        raw = match.group(1).strip()
+        if "," in raw and "." in raw:
+            # Keep the last separator as decimal; strip the other as thousands.
+            if raw.rfind(",") > raw.rfind("."):
+                raw = raw.replace(".", "").replace(",", ".")
+            else:
+                raw = raw.replace(",", "")
+        elif "," in raw:
+            # If comma is likely decimal separator, convert to dot.
+            if raw.count(",") == 1 and len(raw.split(",", 1)[1]) <= 3:
+                raw = raw.replace(",", ".")
+            else:
+                raw = raw.replace(",", "")
+        elif raw.count(".") > 1:
+            # Collapse thousands separators in dot-formatted strings.
             head, tail = raw.rsplit(".", 1)
             raw = head.replace(".", "") + "." + tail
 
@@ -354,6 +367,8 @@ def score_title(t, all_titles):
     if not all_titles:
         return 0.0
     
+    title_count = len(all_titles)
+
     max_size     = max(
         (
             x.get("size_bytes", 0)
@@ -380,6 +395,31 @@ def score_title(t, all_titles):
         (len(x.get("subtitle_tracks", [])) for x in all_titles), default=0
     )
 
+    duration_present = sum(
+        1 for x in all_titles
+        if isinstance(x.get("duration_seconds"), (int, float)) and
+        x.get("duration_seconds", 0) > 0
+    )
+    size_present = sum(
+        1 for x in all_titles
+        if isinstance(x.get("size_bytes"), (int, float)) and
+        x.get("size_bytes", 0) > 0
+    )
+    chapters_present = sum(
+        1 for x in all_titles
+        if safe_int(x.get("chapters")) > 0
+    )
+    audio_present = sum(
+        1 for x in all_titles
+        if len(x.get("audio_tracks", [])) > 0
+    )
+    subs_present = sum(
+        1 for x in all_titles
+        if len(x.get("subtitle_tracks", [])) > 0
+    )
+
+    coverage_threshold = max(1, (title_count + 1) // 2)
+
     size_bytes = (
         t.get("size_bytes", 0)
         if isinstance(t.get("size_bytes"), (int, float)) else 0
@@ -391,15 +431,15 @@ def score_title(t, all_titles):
     chapters = safe_int(t.get("chapters"))
 
     components = []
-    if max_duration > 0:
+    if max_duration > 0 and duration_present >= coverage_threshold:
         components.append((duration_seconds / max_duration, 0.35))
-    if max_size > 0:
+    if max_size > 0 and size_present >= coverage_threshold:
         components.append((size_bytes / max_size, 0.30))
-    if max_chapters > 0:
+    if max_chapters > 0 and chapters_present >= coverage_threshold:
         components.append((chapters / max_chapters, 0.15))
-    if max_audio > 0:
+    if max_audio > 0 and audio_present >= coverage_threshold:
         components.append((len(t.get("audio_tracks", [])) / max_audio, 0.15))
-    if max_subs > 0:
+    if max_subs > 0 and subs_present >= coverage_threshold:
         components.append((len(t.get("subtitle_tracks", [])) / max_subs, 0.05))
 
     if not components:
@@ -829,11 +869,12 @@ class RipperEngine:
                             "size":             "",
                             "size_bytes":       0,
                             "chapters":         0,
+                            "_invalid":         False,
                             "streams":          {},
                         }
                         title_count += 1
                         on_progress(
-                            min(5 + int(title_count * 1.5), 90)
+                            min(5 + title_count, 90)
                         )
                     if attr == 2:
                         titles[tid]["name"] = val
@@ -889,8 +930,10 @@ class RipperEngine:
             t = titles[tid]
             if not isinstance(t.get("size_bytes"), (int, float)):
                 t["size_bytes"] = 0
+                t["_invalid"] = True
             if not isinstance(t.get("duration_seconds"), (int, float)):
                 t["duration_seconds"] = 0
+                t["_invalid"] = True
             t["chapters"] = safe_int(t.get("chapters", 0))
             audio_tracks    = []
             subtitle_tracks = []
@@ -1422,6 +1465,10 @@ class RipperEngine:
                 while proc.poll() is None:
                     if abort.is_set():
                         proc.kill()
+                        try:
+                            proc.wait(timeout=2)
+                        except Exception:
+                            pass
                         return None
                     time.sleep(0.05)
                 out, _ = proc.communicate()
@@ -1529,7 +1576,11 @@ class RipperEngine:
                 )
                 final_path = new_final
             os.replace(temp_dest, final_path)
-            os.remove(source)
+            if os.path.exists(final_path):
+                os.remove(source)
+            else:
+                on_log("ERROR: destination missing after move.")
+                return False
             return True
         except Exception as e:
             if os.path.exists(temp_dest):
@@ -1804,16 +1855,17 @@ class RipperController:
                 self.log("Scan aborted.")
                 return None
 
-            if result:
-                return result
+            if result is None:
+                if attempt < 2:
+                    self.log("Scan failed — retrying...")
+                    time.sleep(2 + attempt)
+                continue
 
             if result == []:
                 self.log("Scan completed but found no titles.")
                 return []
 
-            if attempt < 2:
-                self.log("Scan failed — retrying...")
-                time.sleep(2 + attempt)
+            return result
 
         self.log("Scan failed after 3 attempts.")
         return None
@@ -1991,9 +2043,22 @@ class RipperController:
         if not titles_list:
             return
 
-        # titles_list is sorted longest-first by analyze_files;
-        # the main feature (highest smart-rip score) will be first.
+        # Map analyzed files back to MakeMKV title ids when possible.
+        # This avoids assuming analyze_files sort order matches smart score.
         main_indices = [0]
+        if keep_extras:
+            wanted_tid = best.get("id")
+            for idx, (file_path, _dur, _mb) in enumerate(titles_list):
+                name = os.path.basename(file_path)
+                m = re.search(r'title_t(\d+)\.mkv$', name, re.IGNORECASE)
+                if m and int(m.group(1)) == wanted_tid:
+                    main_indices = [idx]
+                    break
+            else:
+                self.log(
+                    "Warning: could not map smart-selected title id to "
+                    "analyzed files; falling back to longest file."
+                )
         self.gui.set_status("Moving files...")
         ok, _ = self.engine.move_files(
             titles_list, main_indices,
@@ -2167,7 +2232,6 @@ class RipperController:
         parts = [str(len(titles))]
         for t in titles[:12]:
             parts.append(
-                f"{t.get('id', 0)}:"
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
                 f"{safe_int(t.get('chapters', 0))}:"
