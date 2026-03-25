@@ -424,19 +424,23 @@ class RipperEngine:
                 name.startswith("TEMP_") or
                 name.startswith("Unattended_")
             ):
-                mkv_files = glob.glob(
-                    os.path.join(full, "**", "*.mkv"),
-                    recursive=True
-                )
+                # Single pass: count MKVs and calculate size together
+                mkv_count = 0
+                total_size = 0
                 try:
-                    size = sum(
-                        os.path.getsize(os.path.join(dp, f))
-                        for dp, dn, fns in os.walk(full)
-                        for f in fns
-                    )
+                    for dp, dn, fns in os.walk(full):
+                        for f in fns:
+                            if f.endswith(".mkv"):
+                                mkv_count += 1
+                            try:
+                                total_size += os.path.getsize(
+                                    os.path.join(dp, f)
+                                )
+                            except Exception:
+                                pass
                 except Exception:
-                    size = 0
-                folders.append((full, name, len(mkv_files), size))
+                    pass
+                folders.append((full, name, mkv_count, total_size))
         folders.sort(key=lambda x: x[1])
         return folders
 
@@ -450,11 +454,16 @@ class RipperEngine:
                 continue
             meta = self.read_temp_metadata(full)
             if meta and meta.get("status") == "ripping":
-                mkv_files = glob.glob(
-                    os.path.join(full, "**", "*.mkv"),
-                    recursive=True
-                )
-                resumable.append((full, name, meta, len(mkv_files)))
+                # Count MKV files efficiently: one pass
+                mkv_count = 0
+                try:
+                    for dp, dn, fns in os.walk(full):
+                        mkv_count += sum(
+                            1 for f in fns if f.endswith(".mkv")
+                        )
+                except Exception:
+                    pass
+                resumable.append((full, name, meta, mkv_count))
         return resumable
 
     def _atomic_write_json(self, path, data):
@@ -493,12 +502,16 @@ class RipperEngine:
         try:
             with open(meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
-            meta["file_count"] = len(
-                glob.glob(
-                    os.path.join(rip_path, "**", "*.mkv"),
-                    recursive=True
-                )
-            )
+            # Count MKV files: single pass instead of glob
+            file_count = 0
+            try:
+                for dp, dn, fns in os.walk(rip_path):
+                    file_count += sum(
+                        1 for f in fns if f.endswith(".mkv")
+                    )
+            except Exception:
+                pass
+            meta["file_count"] = file_count
             if status:
                 meta["status"] = status
             self._atomic_write_json(meta_path, meta)
@@ -666,11 +679,10 @@ class RipperEngine:
             result.append(t)
 
         # Sort by score descending — best candidate first.
-        # Everything downstream (Smart Rip, disc tree pre-selection)
-        # inherits this ordering automatically.
-        result.sort(
-            key=lambda t: score_title(t, result), reverse=True
-        )
+        # Cache scores in title dict to avoid recalculating during logging.
+        for t in result:
+            t["_cached_score"] = score_title(t, result)
+        result.sort(key=lambda t: t["_cached_score"], reverse=True)
 
         # Log scores for debugging edge cases and bad discs
         on_log("Title scores:")
@@ -678,7 +690,7 @@ class RipperEngine:
             on_log(
                 f"  Title {t['id']+1}: "
                 f"{t['name'][:30]:<30}  "
-                f"score={score_title(t, result):.3f}  "
+                f"score={t['_cached_score']:.3f}  "
                 f"{t['duration']}  {t['size']}  "
                 f"{safe_int(t.get('chapters', 0))} chapters  "
                 f"{len(t['audio_tracks'])} audio  "
@@ -3786,12 +3798,21 @@ class JellyRipperGUI(tk.Tk):
         self.message_queue.put(msg)
 
     def process_queue(self):
+        # Batch process log messages for better performance.
+        # Collect up to 100 messages, then insert all at once
+        # instead of state on/off 100 times.
+        messages = []
         for _ in range(100):
             if self.message_queue.empty():
                 break
-            msg = self.message_queue.get()
+            try:
+                messages.append(self.message_queue.get_nowait())
+            except queue_module.Empty:
+                break
+        if messages:
             self.log_text.config(state="normal")
-            self.log_text.insert("end", msg + "\n")
+            batch_text = "\n".join(messages) + "\n"
+            self.log_text.insert("end", batch_text)
             self.log_text.see("end")
             self.log_text.config(state="disabled")
         self.after(100, self.process_queue)
