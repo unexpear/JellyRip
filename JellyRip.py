@@ -8,6 +8,12 @@ Architecture — three strict layers:
   Layer 3: JellyRipperGUI  — display and input only
 
 See CONTRIBUTING.md for design rules and contribution guidelines.
+
+Unstable Section (1.0.4 final hotfix)
+    - Parser hardening for malformed size/duration fields
+    - Safe dictionary access for optional track lists
+    - Optional safe_int debug visibility (off by default)
+    - Extra guardrails for rare destination path race conditions
 '''
 
 import subprocess
@@ -76,6 +82,8 @@ DEFAULTS = {
     "opt_warn_low_space":             True,
     "opt_hard_block_gb":              20,
     "opt_warn_out_of_order_episodes": True,
+    "opt_debug_safe_int":             False,
+    "opt_debug_duration":             False,
     "opt_session_failure_report":     True,
     "opt_log_cap":                    300000,
     "opt_log_trim":                   200000,
@@ -90,6 +98,107 @@ RIP_ATTEMPT_FLAGS = [
     ["--noscan", "--cache=1024"],
     ["--noscan", "--directio=true", "--cache=512"],
 ]
+
+
+_SAFE_INT_DEBUG_ENABLED = False
+_SAFE_INT_DEBUG_LOG_FN = None
+_SAFE_INT_WARNED_VALUES = set()
+_SAFE_INT_WARNED_LIMIT_REACHED = False
+_SAFE_INT_WARN_MAX_UNIQUE = 50
+
+_DURATION_DEBUG_ENABLED = False
+_DURATION_DEBUG_LOG_FN = None
+_DURATION_WARNED_VALUES = set()
+_DURATION_WARNED_LIMIT_REACHED = False
+_DURATION_WARN_MAX_UNIQUE = 50
+
+
+def configure_safe_int_debug(enabled=False, log_fn=None):
+    """Configure optional debug logging for safe_int parse failures."""
+    global _SAFE_INT_DEBUG_ENABLED
+    global _SAFE_INT_DEBUG_LOG_FN
+    _SAFE_INT_DEBUG_ENABLED = bool(enabled)
+    _SAFE_INT_DEBUG_LOG_FN = log_fn
+
+
+def configure_duration_debug(enabled=False, log_fn=None):
+    """Configure optional debug logging for malformed duration values."""
+    global _DURATION_DEBUG_ENABLED
+    global _DURATION_DEBUG_LOG_FN
+    _DURATION_DEBUG_ENABLED = bool(enabled)
+    _DURATION_DEBUG_LOG_FN = log_fn
+
+
+def _safe_int_debug_warn(val):
+    """Emit de-duplicated debug warnings for unparseable integer values."""
+    global _SAFE_INT_WARNED_LIMIT_REACHED
+
+    if not _SAFE_INT_DEBUG_ENABLED:
+        return
+
+    token = str(val).strip()
+    if len(token) > 80:
+        token = token[:77] + "..."
+    key = token or "<empty>"
+
+    if key in _SAFE_INT_WARNED_VALUES:
+        return
+
+    if len(_SAFE_INT_WARNED_VALUES) >= _SAFE_INT_WARN_MAX_UNIQUE:
+        if not _SAFE_INT_WARNED_LIMIT_REACHED:
+            _SAFE_INT_WARNED_LIMIT_REACHED = True
+            msg = (
+                "DEBUG safe_int: warning limit reached; "
+                "suppressing additional unique parse warnings."
+            )
+            if _SAFE_INT_DEBUG_LOG_FN:
+                _SAFE_INT_DEBUG_LOG_FN(msg)
+            else:
+                print(msg)
+        return
+
+    _SAFE_INT_WARNED_VALUES.add(key)
+    msg = f"DEBUG safe_int: could not parse {key!r}; defaulting to 0"
+    if _SAFE_INT_DEBUG_LOG_FN:
+        _SAFE_INT_DEBUG_LOG_FN(msg)
+    else:
+        print(msg)
+
+
+def _duration_debug_warn(val):
+    """Emit de-duplicated debug warnings for malformed duration values."""
+    global _DURATION_WARNED_LIMIT_REACHED
+
+    if not _DURATION_DEBUG_ENABLED:
+        return
+
+    token = str(val).strip()
+    if len(token) > 80:
+        token = token[:77] + "..."
+    key = token or "<empty>"
+
+    if key in _DURATION_WARNED_VALUES:
+        return
+
+    if len(_DURATION_WARNED_VALUES) >= _DURATION_WARN_MAX_UNIQUE:
+        if not _DURATION_WARNED_LIMIT_REACHED:
+            _DURATION_WARNED_LIMIT_REACHED = True
+            msg = (
+                "DEBUG duration: warning limit reached; "
+                "suppressing additional unique parse warnings."
+            )
+            if _DURATION_DEBUG_LOG_FN:
+                _DURATION_DEBUG_LOG_FN(msg)
+            else:
+                print(msg)
+        return
+
+    _DURATION_WARNED_VALUES.add(key)
+    msg = f"DEBUG duration: could not parse {key!r}; defaulting to 0"
+    if _DURATION_DEBUG_LOG_FN:
+        _DURATION_DEBUG_LOG_FN(msg)
+    else:
+        print(msg)
 
 
 # ==========================================
@@ -130,15 +239,25 @@ def parse_duration_to_seconds(s):
     Absolute values should not be treated as ground truth.
     """
     try:
-        parts = [int(p) for p in s.strip().split(":")]
+        s = str(s).strip()
+        if not s or ":" not in s:
+            _duration_debug_warn(s)
+            return 0
+        parts = s.split(":")
+        if not parts or not all(p.isdigit() for p in parts):
+            _duration_debug_warn(s)
+            return 0
+        parts = [int(p) for p in parts]
         if len(parts) == 3:
             h, m, sec = parts
         elif len(parts) == 2:
             h, m, sec = 0, parts[0], parts[1]
         else:
+            _duration_debug_warn(s)
             return 0
         return h * 3600 + m * 60 + sec
     except Exception:
+        _duration_debug_warn(s)
         return 0
 
 
@@ -160,11 +279,48 @@ def safe_int(val):
         except ValueError:
             # If that fails, try to extract just the numeric part
             # This handles cases like "3.7 GB" → extract 3
-            import re
-            match = re.search(r'-?\d+', s)
+            match = re.search(r'-?\d+(?:\.\d+)?', s)
             if match:
-                return int(match.group())
+                return int(float(match.group()))
+            _safe_int_debug_warn(val)
             return 0
+    except Exception:
+        _safe_int_debug_warn(val)
+        return 0
+
+
+def parse_size_to_bytes(val):
+    """Parse MakeMKV size values into integer bytes."""
+    try:
+        s = str(val).strip()
+        if not s:
+            return 0
+        if s.isdigit():
+            return int(s)
+
+        # Accept variants like "3.7GB", "3,7 GB", and values with tail text.
+        match = re.search(
+            r'([\d.,]+)\s*([KMGTP]?B)\b', s, re.IGNORECASE
+        )
+        if not match:
+            return 0
+
+        raw = match.group(1).replace(",", ".")
+        if raw.count(".") > 1:
+            head, tail = raw.rsplit(".", 1)
+            raw = head.replace(".", "") + "." + tail
+
+        number = float(raw)
+        unit = match.group(2).upper()
+        multipliers = {
+            "B": 1,
+            "KB": 1024,
+            "MB": 1024**2,
+            "GB": 1024**3,
+            "TB": 1024**4,
+            "PB": 1024**5,
+        }
+        return int(number * multipliers.get(unit, 1))
     except Exception:
         return 0
 
@@ -188,27 +344,83 @@ def score_title(t, all_titles):
     if not all_titles:
         return 0.0
     
-    max_size     = max((x["size_bytes"] for x in all_titles), default=1)
+    max_size     = max(
+        (
+            x.get("size_bytes", 0)
+            if isinstance(x.get("size_bytes"), (int, float)) else 0
+            for x in all_titles
+        ),
+        default=0
+    )
     max_duration = max(
-        (x["duration_seconds"] for x in all_titles), default=1
+        (
+            x.get("duration_seconds", 0)
+            if isinstance(x.get("duration_seconds"), (int, float)) else 0
+            for x in all_titles
+        ),
+        default=0
     )
     max_chapters = max(
-        (safe_int(x.get("chapters")) for x in all_titles), default=1
+        (safe_int(x.get("chapters")) for x in all_titles), default=0
     )
     max_audio    = max(
-        (len(x["audio_tracks"]) for x in all_titles), default=1
+        (len(x.get("audio_tracks", [])) for x in all_titles), default=0
     )
     max_subs     = max(
-        (len(x["subtitle_tracks"]) for x in all_titles), default=1
+        (len(x.get("subtitle_tracks", [])) for x in all_titles), default=0
     )
 
-    return (
-        (t["size_bytes"] / max_size)                       * 0.30 +
-        (t["duration_seconds"] / max_duration)             * 0.35 +
-        (safe_int(t.get("chapters")) / max_chapters)      * 0.15 +
-        (len(t["audio_tracks"]) / max_audio)               * 0.15 +
-        (len(t["subtitle_tracks"]) / max_subs)             * 0.05
+    size_bytes = (
+        t.get("size_bytes", 0)
+        if isinstance(t.get("size_bytes"), (int, float)) else 0
     )
+    duration_seconds = (
+        t.get("duration_seconds", 0)
+        if isinstance(t.get("duration_seconds"), (int, float)) else 0
+    )
+    chapters = safe_int(t.get("chapters"))
+
+    components = []
+    if max_duration > 0:
+        components.append((duration_seconds / max_duration, 0.35))
+    if max_size > 0:
+        components.append((size_bytes / max_size, 0.30))
+    if max_chapters > 0:
+        components.append((chapters / max_chapters, 0.15))
+    if max_audio > 0:
+        components.append((len(t.get("audio_tracks", [])) / max_audio, 0.15))
+    if max_subs > 0:
+        components.append((len(t.get("subtitle_tracks", [])) / max_subs, 0.05))
+
+    if not components:
+        return 0.0
+
+    total_weight = sum(weight for _, weight in components)
+    if total_weight <= 0:
+        return 0.0
+
+    return sum(
+        value * (weight / total_weight)
+        for value, weight in components
+    )
+
+
+def choose_best_title(disc_titles, require_valid=False):
+    """Select best title by score; optionally gate invalid candidates."""
+    if not disc_titles:
+        return None, 0.0
+
+    candidates = disc_titles
+    if require_valid:
+        valid = [
+            t for t in disc_titles
+            if t.get("size_bytes", 0) > 0 and t.get("duration_seconds", 0) > 0
+        ]
+        if valid:
+            candidates = valid
+
+    best = max(candidates, key=lambda t: score_title(t, disc_titles))
+    return best, score_title(best, disc_titles)
 
 
 def format_audio_summary(audio_tracks):
@@ -376,6 +588,7 @@ class RipperEngine:
         self.abort_event.clear()
 
     def unique_path(self, path):
+        # Best-effort unique destination naming to avoid collisions.
         if not os.path.exists(path):
             return path
         base, ext = os.path.splitext(path)
@@ -595,11 +808,13 @@ class RipperEngine:
                             "duration_seconds": 0,
                             "size":             "",
                             "size_bytes":       0,
-                            "chapters":         "",
+                            "chapters":         0,
                             "streams":          {},
                         }
                         title_count += 1
-                        on_progress(min(title_count * 3, 90))
+                        on_progress(
+                            min(int(title_count * 100 / 50), 90)
+                        )
                     if attr == 2:
                         titles[tid]["name"] = val
                     elif attr == 9:
@@ -607,33 +822,10 @@ class RipperEngine:
                         titles[tid]["duration_seconds"] = (
                             parse_duration_to_seconds(val)
                         )
-                    elif attr == 10:
-                        # Store chapters as safe integer to prevent
-                        # crashes downstream. MakeMKV sometimes returns
-                        # malformed data here (e.g., "3.7 GB").
+                    elif attr == 8:
                         titles[tid]["chapters"] = safe_int(val)
                     elif attr == 11:
-                        # Parse size - might be bytes or already formatted
-                        try:
-                            size_bytes = int(val)
-                        except ValueError:
-                            # Size might be already formatted (e.g., "3.7 GB" or "3,7 GB" in European locale)
-                            # Extract numeric part and convert
-                            try:
-                                parts = val.split()
-                                if len(parts) >= 2:
-                                    num = float(parts[0].replace(",", "."))
-                                    unit = parts[1].upper()
-                                    multipliers = {
-                                        "B": 1, "KB": 1024, "MB": 1024**2,
-                                        "GB": 1024**3, "TB": 1024**4
-                                    }
-                                    size_bytes = int(num * multipliers.get(unit, 1))
-                                else:
-                                    size_bytes = 0
-                            except Exception:
-                                size_bytes = 0
-                        
+                        size_bytes = parse_size_to_bytes(val)
                         titles[tid]["size_bytes"] = size_bytes
                         if size_bytes > 0:
                             gb = size_bytes / (1024**3)
@@ -675,6 +867,11 @@ class RipperEngine:
         result = []
         for tid in sorted(titles.keys()):
             t = titles[tid]
+            if not isinstance(t.get("size_bytes"), (int, float)):
+                t["size_bytes"] = 0
+            if not isinstance(t.get("duration_seconds"), (int, float)):
+                t["duration_seconds"] = 0
+            t["chapters"] = safe_int(t.get("chapters", 0))
             audio_tracks    = []
             subtitle_tracks = []
             for sid in sorted(t["streams"].keys()):
@@ -700,23 +897,44 @@ class RipperEngine:
             result.append(t)
 
         # Sort by score descending — best candidate first.
-        # Cache scores in title dict to avoid recalculating during logging.
-        for t in result:
-            t["_cached_score"] = score_title(t, result)
-        result.sort(key=lambda t: t["_cached_score"], reverse=True)
+        # Keep scores out of title dicts to avoid mutating shared objects.
+        scored = [(t, score_title(t, result)) for t in result]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        result = [t for t, _score in scored]
 
         # Log scores for debugging edge cases and bad discs
         on_log("Title scores:")
-        for t in result:
+        for t, score in scored:
             on_log(
                 f"  Title {t['id']+1}: "
                 f"{t['name'][:30]:<30}  "
-                f"score={t['_cached_score']:.3f}  "
+                f"score={score:.3f}  "
                 f"{t['duration']}  {t['size']}  "
                 f"{safe_int(t.get('chapters', 0))} chapters  "
-                f"{len(t['audio_tracks'])} audio  "
-                f"{len(t['subtitle_tracks'])} subs"
+                f"{len(t.get('audio_tracks', []))} audio  "
+                f"{len(t.get('subtitle_tracks', []))} subs"
             )
+            on_log(
+                f"    score={score:.3f}  "
+                f"(dur={t.get('duration_seconds', 0)}, "
+                f"size={t.get('size_bytes', 0)}, "
+                f"chap={safe_int(t.get('chapters', 0))}, "
+                f"aud={len(t.get('audio_tracks', []))}, "
+                f"sub={len(t.get('subtitle_tracks', []))})"
+            )
+        if scored:
+            on_log(
+                f"BEST: Title {scored[0][0]['id']+1} "
+                f"(score={scored[0][1]:.3f})"
+            )
+
+            if len(scored) > 1:
+                diff = scored[0][1] - scored[1][1]
+                if diff < 0.05:
+                    on_log(
+                        "WARNING: Top titles are very close — "
+                        "possible ambiguity."
+                    )
 
         on_progress(100)
         on_log(f"Disc scan complete. Found {len(result)} title(s).")
@@ -755,26 +973,11 @@ class RipperEngine:
                     proc.kill()
                     return None
                 if line.startswith("TINFO:"):
-                    parts = line.strip().split(",")
+                    parts = line[6:].split(",", 3)
                     if len(parts) >= 4 and parts[1] == "11":
                         try:
                             size_str = parts[3].strip().strip('"')
-                            try:
-                                total_bytes += int(size_str)
-                            except ValueError:
-                                # Size might be formatted like "3.7 GB" or "3,7 GB" in European locale
-                                try:
-                                    size_parts = size_str.split()
-                                    if len(size_parts) >= 2:
-                                        num = float(size_parts[0].replace(",", "."))
-                                        unit = size_parts[1].upper()
-                                        multipliers = {
-                                            "B": 1, "KB": 1024, "MB": 1024**2,
-                                            "GB": 1024**3, "TB": 1024**4
-                                        }
-                                        total_bytes += int(num * multipliers.get(unit, 1))
-                                except Exception:
-                                    pass
+                            total_bytes += parse_size_to_bytes(size_str)
                         except IndexError:
                             pass
             proc.wait()
@@ -1261,6 +1464,16 @@ class RipperEngine:
         Falls back to direct shutil.move if opt_atomic_move is off.
         Cleans up .partial file on abort or failure.
         """
+        if not os.path.exists(source):
+            on_log(f"Missing file: {source}")
+            return False
+
+        if os.path.exists(final_path):
+            final_path = self.unique_path(final_path)
+            on_log(
+                f"Destination exists. Using unique path: {final_path}"
+            )
+
         if not self.cfg.get("opt_atomic_move", True):
             try:
                 shutil.move(source, final_path)
@@ -1288,6 +1501,13 @@ class RipperEngine:
                 shutil.copystat(source, temp_dest)
             except Exception:
                 pass
+            if os.path.exists(final_path):
+                new_final = self.unique_path(final_path)
+                on_log(
+                    "Destination appeared during move; "
+                    f"using unique path: {new_final}"
+                )
+                final_path = new_final
             os.replace(temp_dest, final_path)
             os.remove(source)
             return True
@@ -1534,7 +1754,7 @@ class RipperController:
         automatic retry. All run_* methods must use this — never
         call engine.scan_disc() directly.
         """
-        for attempt in range(2):
+        for attempt in range(3):
             self.log(
                 f"Scanning disc on drive "
                 f"{self.engine.get_disc_target()}..."
@@ -1556,11 +1776,11 @@ class RipperController:
             if result:
                 return result
 
-            if attempt == 0:
-                self.log("Scan failed — retrying once...")
-                time.sleep(2)
+            if attempt < 2:
+                self.log("Scan failed — retrying...")
+                time.sleep(2 + attempt)
 
-        self.log("Scan failed after 2 attempts.")
+        self.log("Scan failed after 3 attempts.")
         return None
 
     def check_resume(self, temp_root):
@@ -1628,20 +1848,27 @@ class RipperController:
             self.gui.show_error("Scan Failed", "Could not read disc.")
             return
 
-        # Best candidate is first — sorted by score in scan_disc()
-        best          = disc_titles[0]
+        best, smart_score = choose_best_title(
+            disc_titles, require_valid=True
+        )
+        if not best:
+            self.log("Could not select a valid title for Smart Rip.")
+            return
         selected_ids  = [best["id"]]
-        selected_size = best["size_bytes"]
+        selected_size = best.get("size_bytes", 0)
 
         self.log(
             f"Smart Rip selected: Title {best['id']+1} "
-            f"({best['size']}) — {best['duration']}"
+                f"(score={smart_score:.3f}) "
+                f"{best['duration']} {best['size']}"
         )
 
         if cfg.get("opt_confirm_before_rip", True):
             if not self.gui.ask_yesno(
                 f"Smart Rip selected Title {best['id']+1} "
-                f"({best['size']}) as main feature. Continue?"
+                    f"(score={smart_score:.3f}) "
+                    f"{best['duration']} {best['size']} as main feature. "
+                    f"Continue?"
             ):
                 self.log("Cancelled.")
                 return
@@ -1720,6 +1947,8 @@ class RipperController:
         )
         if ok:
             shutil.rmtree(rip_path, ignore_errors=True)
+            if os.path.exists(rip_path):
+                self.log(f"Warning: could not delete {rip_path}")
             self.log("Done.")
         else:
             self.log(f"Temp preserved at: {rip_path}")
@@ -1735,6 +1964,15 @@ class RipperController:
     def run_dump_all(self):
         cfg       = self.engine.cfg
         temp_root = os.path.normpath(cfg["temp_folder"])
+
+        multi_disc = self.gui.ask_yesno(
+            "Dump multiple discs in one unattended session?\n\n"
+            "Yes = multi-disc with auto swap detection\n"
+            "No = single-disc dump"
+        )
+        if multi_disc:
+            self._run_dump_all_multi(temp_root)
+            return
 
         if cfg.get("opt_show_temp_manager", True):
             self.gui.show_temp_manager(
@@ -1819,6 +2057,274 @@ class RipperController:
         self.gui.show_info(
             "Dump Complete",
             f"Ripped {len(mkv_files)} file(s) to:\n{rip_path}\n\n"
+            f"Use 'Organize Existing MKVs' to sort them."
+        )
+
+    def _disc_present(self):
+        """Best-effort check: True when a readable disc appears present."""
+        try:
+            return self.engine.get_disc_size(lambda _m: None) is not None
+        except Exception:
+            return False
+
+    def _wait_for_disc_state(self, want_present, timeout_seconds=300):
+        state_text = "inserted" if want_present else "removed"
+        start = time.time()
+        while time.time() - start < timeout_seconds:
+            if self.engine.abort_event.is_set():
+                return False
+            if self._disc_present() == want_present:
+                return True
+            remaining = int(timeout_seconds - (time.time() - start))
+            self.gui.set_status(
+                f"Waiting for disc to be {state_text} "
+                f"({max(0, remaining)}s)..."
+            )
+            time.sleep(2)
+        return False
+
+    def _build_disc_fingerprint(self):
+        """Build a disc fingerprint using the standard scan retry path."""
+        titles = self.scan_with_retry()
+        if not titles:
+            return None
+        parts = [str(len(titles))]
+        for t in titles[:8]:
+            parts.append(
+                f"{t.get('duration_seconds', 0)}:"
+                f"{t.get('size_bytes', 0)}:"
+                f"{safe_int(t.get('chapters', 0))}:"
+                f"{len(t.get('audio_tracks', []))}"
+            )
+        return "|".join(parts)
+
+    def _wait_for_new_unique_disc(self, seen_fingerprints,
+                                  disc_number, total):
+        """
+        Wait for physical swap and ensure inserted disc is unique in this
+        unattended batch session.
+        """
+        if disc_number == 1:
+            self.gui.show_info(
+                "Insert Disc",
+                f"Insert disc {disc_number}/{total} and click OK."
+            )
+            time.sleep(2)  # drive spin-up / mount stabilization
+        else:
+            self.gui.show_info(
+                "Swap Disc",
+                "Remove current disc (tray open/close), then insert the "
+                f"next disc ({disc_number}/{total}) and click OK."
+            )
+
+            self.log("Waiting for disc removal...")
+            removed = self._wait_for_disc_state(
+                want_present=False,
+                timeout_seconds=300
+            )
+            if not removed:
+                self.report(
+                    f"Disc {disc_number}: timed out waiting for removal."
+                )
+                return None
+            self.log("Disc removal detected.")
+
+            self.log("Waiting for next disc insertion...")
+            inserted = self._wait_for_disc_state(
+                want_present=True,
+                timeout_seconds=300
+            )
+            if not inserted:
+                self.report(
+                    f"Disc {disc_number}: timed out waiting for insertion."
+                )
+                return None
+            self.log("New disc insertion detected.")
+
+        time.sleep(2)  # settle before reading fingerprint
+        fingerprint = self._build_disc_fingerprint()
+        if not fingerprint:
+            self.report(
+                f"Disc {disc_number}: could not read disc fingerprint."
+            )
+            return None
+
+        if fingerprint in seen_fingerprints:
+            self.log(
+                "Duplicate disc detected (already dumped in this session)."
+            )
+            return "duplicate"
+
+        seen_fingerprints.add(fingerprint)
+        return fingerprint
+
+    def _run_dump_all_multi(self, temp_root):
+        cfg = self.engine.cfg
+
+        self.engine.reset_abort()
+        self.session_report = []
+        self.engine.cleanup_partial_files(temp_root, self.log)
+        if cfg.get("opt_show_temp_manager", True):
+            self._offer_temp_manager(temp_root)
+        if self.engine.abort_event.is_set():
+            return
+
+        total_str = self.gui.ask_input(
+            "Disc Count", "How many discs do you want to dump?"
+        )
+        total = int(total_str) if (
+            total_str and total_str.isdigit()
+        ) else 1
+        total = max(1, total)
+
+        batch_title = self.gui.ask_input(
+            "Batch Name",
+            "Optional batch name for temp folder (blank = timestamp):"
+        )
+        if not batch_title:
+            batch_title = make_temp_title()
+
+        batch_root = os.path.join(
+            temp_root,
+            f"DumpBatch_{clean_name(batch_title)}_{make_rip_folder_name()}"
+        )
+        os.makedirs(batch_root, exist_ok=True)
+        self.log(f"Unattended dump batch root: {batch_root}")
+        self.log(f"Planned discs: {total}")
+
+        seen_fingerprints = set()
+        disc_number = 1
+        while disc_number <= total:
+            if self.engine.abort_event.is_set():
+                self.log("Unattended dump aborted.")
+                break
+
+            fingerprint = self._wait_for_new_unique_disc(
+                seen_fingerprints, disc_number, total
+            )
+            if fingerprint is None:
+                if self.gui.ask_yesno(
+                    "Could not verify a new disc. Try again for this slot?"
+                ):
+                    continue
+                self.log("Cancelled unattended dump.")
+                break
+
+            if fingerprint == "duplicate":
+                duplicate_action = self.gui.ask_duplicate_resolution(
+                    "This disc looks like a duplicate from earlier in this "
+                    "session.",
+                    "Swap and Retry",
+                    "Not a Dup",
+                    "Stop"
+                )
+                if duplicate_action == "retry":
+                    continue
+                if duplicate_action == "bypass":
+                    self.log(
+                        "Manual duplicate bypass selected; proceeding "
+                        "with this disc."
+                    )
+                else:
+                    self.report(
+                        f"Disc {disc_number}: duplicate disc not accepted."
+                    )
+                    break
+
+            safe_marker = f"disc_{disc_number:02d}"
+            rip_path = os.path.join(
+                batch_root, f"Disc_{disc_number:02d}_{safe_marker}"
+            )
+            os.makedirs(rip_path, exist_ok=True)
+            self.engine.write_temp_metadata(
+                rip_path,
+                f"Dump {disc_number:02d}",
+                disc_number
+            )
+            self.log(
+                f"--- Dump disc {disc_number}/{total} ---"
+            )
+
+            if cfg.get("opt_scan_disc_size", True):
+                self.gui.set_status("Scanning disc size...")
+                self.gui.start_indeterminate()
+                try:
+                    disc_size = self.engine.get_disc_size(self.log)
+                finally:
+                    self.gui.stop_indeterminate()
+                    self.gui.set_progress(0)
+
+                if self.engine.abort_event.is_set():
+                    break
+
+                if disc_size:
+                    status, free, required = self.engine.check_disk_space(
+                        temp_root, disc_size, self.log
+                    )
+                    if status == "block":
+                        self.gui.show_error(
+                            "Critically Low Space",
+                            f"Only {free / (1024**3):.1f} GB free.\n"
+                            f"Minimum: "
+                            f"{cfg.get('opt_hard_block_gb', 20)} GB."
+                        )
+                        self.report(
+                            f"Dump disc {disc_number}: blocked by low space."
+                        )
+                        break
+                    elif (status == "warn" and
+                          cfg.get("opt_warn_low_space", True)):
+                        if not self.gui.ask_space_override(
+                            required / (1024**3), free / (1024**3)
+                        ):
+                            self.report(
+                                f"Dump disc {disc_number}: cancelled for space."
+                            )
+                            break
+
+            self.gui.set_status("Ripping all titles...")
+            success = self.engine.rip_all_titles(
+                rip_path,
+                on_progress=self.gui.set_progress,
+                on_log=self.log
+            )
+
+            if not success:
+                self.report(
+                    f"Dump disc {disc_number}: rip failed."
+                )
+                self.flush_log()
+                if disc_number < total and self.gui.ask_yesno(
+                    "This disc failed. Continue with next disc?"
+                ):
+                    disc_number += 1
+                    continue
+                break
+
+            self.engine.update_temp_metadata(rip_path, status="ripped")
+            mkv_files = sorted(
+                glob.glob(os.path.join(rip_path, "*.mkv"))
+            )
+            self.log(
+                f"Dump disc {disc_number} complete. "
+                f"{len(mkv_files)} file(s) saved to: {rip_path}"
+            )
+            self.gui.set_progress(0)
+            disc_number += 1
+
+        self.write_session_summary()
+        self.flush_log()
+        self.gui.set_progress(0)
+        self.gui.set_status("Ready")
+        if self.engine.abort_event.is_set():
+            self.gui.show_info(
+                "Unattended Dump Stopped",
+                f"Session stopped. Files saved so far in:\n{batch_root}"
+            )
+            return
+        self.gui.show_info(
+            "Unattended Dump Complete",
+            f"Batch output:\n{batch_root}\n\n"
             f"Use 'Organize Existing MKVs' to sort them."
         )
 
@@ -1959,8 +2465,10 @@ class RipperController:
         series_root = os.path.join(temp_root, clean_name(title))
         os.makedirs(series_root, exist_ok=True)
 
-        disc_number    = 0
-        current_season = 1
+        disc_number       = 0
+        current_season    = 1
+        seen_fingerprints = set()
+        stop_requested    = False
 
         while current_season <= num_seasons:
             if self.engine.abort_event.is_set():
@@ -1978,15 +2486,65 @@ class RipperController:
                 if self.engine.abort_event.is_set():
                     break
 
-                disc_number += 1
-                self.log(f"--- Disc {disc_number} ---")
+                next_disc_number = disc_number + 1
+                self.log(f"--- Disc {next_disc_number} ---")
 
                 self.gui.show_info(
                     "Insert Disc",
-                    f"Insert disc {disc_number} "
+                    f"Insert disc {next_disc_number} "
                     f"(Season {current_season:02d}) and click OK."
                 )
                 time.sleep(2)  # drive spin-up / mount stabilization
+
+                fingerprint = self._build_disc_fingerprint()
+                if not fingerprint:
+                    self.report(
+                        f"{title} S{current_season:02d} "
+                        f"Disc {next_disc_number}: could not read disc "
+                        f"fingerprint."
+                    )
+                    action = self.gui.ask_duplicate_resolution(
+                        f"{title} — Season {current_season:02d}, "
+                        f"Disc {next_disc_number}: could not verify this "
+                        "disc fingerprint.",
+                        "Retry Disc",
+                        "Proceed Anyway",
+                        "Stop"
+                    )
+                    if action == "retry":
+                        continue
+                    if action == "stop":
+                        stop_requested = True
+                        break
+                    self.log(
+                        "Fingerprint check bypassed manually; proceeding."
+                    )
+                elif fingerprint in seen_fingerprints:
+                    duplicate_action = self.gui.ask_duplicate_resolution(
+                        f"{title} — Season {current_season:02d}, "
+                        f"Disc {next_disc_number}: this disc looks like a "
+                        "duplicate from earlier in this session.",
+                        "Swap and Retry",
+                        "Not a Dup",
+                        "Stop"
+                    )
+                    if duplicate_action == "retry":
+                        continue
+                    if duplicate_action == "stop":
+                        self.report(
+                            f"{title} S{current_season:02d} "
+                            f"Disc {next_disc_number}: duplicate not accepted."
+                        )
+                        stop_requested = True
+                        break
+                    self.log(
+                        "Manual duplicate bypass selected; proceeding "
+                        "with this disc."
+                    )
+                else:
+                    seen_fingerprints.add(fingerprint)
+
+                disc_number = next_disc_number
 
                 rip_path = os.path.join(
                     season_folder, make_rip_folder_name()
@@ -2073,13 +2631,17 @@ class RipperController:
                 ):
                     season_done = True
 
+            if stop_requested:
+                self.log("Unattended series stopped by user decision.")
+                break
+
             current_season += 1
 
         self.write_session_summary()
         self.flush_log()
         self.gui.set_status("Ready")
         self.gui.set_progress(0)
-        if self.engine.abort_event.is_set():
+        if self.engine.abort_event.is_set() or stop_requested:
             self.gui.show_info(
                 "Series Stopped",
                 "Unattended series mode was stopped before completion."
@@ -2341,14 +2903,23 @@ class RipperController:
                     break
                 continue
 
-            # Titles already sorted by score — first is best candidate
+            # Select best by score, not incoming list position.
             if cfg.get("opt_smart_rip_mode", False):
-                best          = disc_titles[0]
+                best, smart_score = choose_best_title(
+                    disc_titles, require_valid=True
+                )
+                if not best:
+                    self.log("Could not select a valid Smart Rip title.")
+                    if not self.gui.ask_yesno("Try again?"):
+                        break
+                    continue
                 selected_ids  = [best["id"]]
-                selected_size = best["size_bytes"]
+                selected_size = best.get("size_bytes", 0)
                 self.log(
                     f"Smart Rip: auto-selected Title "
-                    f"{best['id']+1} ({best['size']})"
+                    f"{best['id']+1} "
+                    f"(score={smart_score:.3f}) "
+                    f"{best['duration']} {best['size']}"
                 )
             else:
                 selected_ids = self.gui.show_disc_tree(
@@ -2473,6 +3044,8 @@ class RipperController:
 
             if move_ok:
                 shutil.rmtree(rip_path, ignore_errors=True)
+                if os.path.exists(rip_path):
+                    self.log(f"Warning: could not delete {rip_path}")
                 self.log("Temp folder cleaned up.")
                 if cfg.get("opt_show_temp_manager", True):
                     self._offer_temp_manager(temp_root)
@@ -2665,6 +3238,15 @@ class JellyRipperGUI(tk.Tk):
         self._input_event  = threading.Event()
         self._input_active = False
 
+        configure_safe_int_debug(
+            cfg.get("opt_debug_safe_int", False),
+            self.controller.log
+        )
+        configure_duration_debug(
+            cfg.get("opt_debug_duration", False),
+            self.controller.log
+        )
+
         self.build_interface()
         self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
@@ -2714,7 +3296,6 @@ class JellyRipperGUI(tk.Tk):
         buttons_row1 = [
             ("📀  Rip TV Show Disc",       "t",  "#238636", 20),
             ("🎬  Rip Movie Disc",          "m",  "#238636", 20),
-            ("⚡  Smart Rip",              "sr", "#1a6b3a", 14),
             ("💾  Dump All Titles",         "d",  "#1f6feb", 18),
             ("📁  Organize Existing MKVs", "i",  "#6e40c9", 22),
         ]
@@ -2732,8 +3313,7 @@ class JellyRipperGUI(tk.Tk):
         mode_frame2 = tk.Frame(self, bg=BG)
         mode_frame2.pack(pady=(4, 8))
         buttons_row2 = [
-            ("🤖  Unattended — Single Disc", "u1", "#6e3a1e", 28),
-            ("📦  Unattended — Series Mode", "us", "#6e3a1e", 28),
+            ("🤖  Unattended Mode", "u", "#6e3a1e", 36),
         ]
         for text, mode, color, width in buttons_row2:
             btn = tk.Button(
@@ -2987,6 +3567,8 @@ class JellyRipperGUI(tk.Tk):
             btn_frame = tk.Frame(self.log_text, bg="#161b22")
 
             def yes():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
                 result[0] = True
                 try:
                     btn_frame.destroy()
@@ -3004,6 +3586,8 @@ class JellyRipperGUI(tk.Tk):
                 done.set()
 
             def no():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
                 result[0] = False
                 try:
                     btn_frame.destroy()
@@ -3043,6 +3627,8 @@ class JellyRipperGUI(tk.Tk):
                 while not done.is_set():
                     if self.engine.abort_event.is_set():
                         def _cleanup():
+                            if done.is_set():
+                                return
                             try:
                                 btn_frame.destroy()
                             except Exception:
@@ -3061,6 +3647,103 @@ class JellyRipperGUI(tk.Tk):
         while not done.wait(timeout=0.1):
             pass
         return result[0] if result[0] is not None else False
+
+    def ask_duplicate_resolution(self, prompt,
+                                 retry_text="Swap and Retry",
+                                 bypass_text="Not a Dup",
+                                 stop_text="Stop"):
+        """
+        Three-way decision prompt for duplicate-disc handling.
+        Returns one of: 'retry', 'bypass', 'stop'.
+        """
+        result = ["stop"]
+        done   = threading.Event()
+
+        def _show():
+            self.log_text.config(state="normal")
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.log_text.insert(
+                "end", f"[{ts}] {prompt}\n", "prompt"
+            )
+
+            btn_frame = tk.Frame(self.log_text, bg="#161b22")
+
+            def choose_retry():
+                result[0] = "retry"
+                _finish(f"→ {retry_text}")
+
+            def choose_bypass():
+                result[0] = "bypass"
+                _finish(f"→ {bypass_text}")
+
+            def choose_stop():
+                result[0] = "stop"
+                _finish(f"→ {stop_text}")
+
+            def _finish(answer_text):
+                try:
+                    btn_frame.destroy()
+                except Exception:
+                    pass
+                self.log_text.config(state="normal")
+                self.log_text.insert(
+                    "end",
+                    f"[{datetime.now().strftime('%H:%M:%S')}] "
+                    f"{answer_text}\n",
+                    "answer"
+                )
+                self.log_text.see("end")
+                self.log_text.config(state="disabled")
+                done.set()
+
+            tk.Button(
+                btn_frame, text=f"  {retry_text}  ",
+                bg="#238636", fg="white",
+                font=("Segoe UI", 10, "bold"),
+                command=choose_retry, relief="flat"
+            ).pack(side="left", padx=4, pady=4)
+
+            tk.Button(
+                btn_frame, text=f"  {bypass_text}  ",
+                bg="#1f6feb", fg="white",
+                font=("Segoe UI", 10, "bold"),
+                command=choose_bypass, relief="flat"
+            ).pack(side="left", padx=4, pady=4)
+
+            tk.Button(
+                btn_frame, text=f"  {stop_text}  ",
+                bg="#c94b4b", fg="white",
+                font=("Segoe UI", 10, "bold"),
+                command=choose_stop, relief="flat"
+            ).pack(side="left", padx=4, pady=4)
+
+            self.log_text.window_create("end", window=btn_frame)
+            self.log_text.insert("end", "\n")
+            self.log_text.see("end")
+            self.log_text.config(state="disabled")
+
+            def _abort_watch():
+                while not done.is_set():
+                    if self.engine.abort_event.is_set():
+                        def _cleanup():
+                            try:
+                                btn_frame.destroy()
+                            except Exception:
+                                pass
+                            result[0] = "stop"
+                            done.set()
+                        self.after(0, _cleanup)
+                        return
+                    time.sleep(0.1)
+
+            threading.Thread(
+                target=_abort_watch, daemon=True
+            ).start()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            pass
+        return result[0]
 
     def _run_on_main(self, fn):
         result = [None]
@@ -3222,13 +3905,14 @@ class JellyRipperGUI(tk.Tk):
             check_vars  = {}
             base_labels = {}
 
-            # First title is best candidate — sorted by score in engine
-            best_id = disc_titles[0]["id"] if disc_titles else None
+            # Compute best candidate directly from score.
+            best_title, _best_score = choose_best_title(disc_titles)
+            best_id = best_title["id"] if best_title else None
             id_map  = {t["id"]: t for t in disc_titles}
 
             for t in disc_titles:
                 audio_summary = format_audio_summary(
-                    t["audio_tracks"]
+                    t.get("audio_tracks", [])
                 )
                 iid          = f"title_{t['id']}"
                 pre_selected = (t["id"] == best_id)
@@ -3252,7 +3936,7 @@ class JellyRipperGUI(tk.Tk):
                     tags=tuple(tags)
                 )
 
-                for s in t["subtitle_tracks"]:
+                for s in t.get("subtitle_tracks", []):
                     lang = (s.get("lang_name") or
                             s.get("lang") or "Unknown")
                     tree.insert(
@@ -3854,6 +4538,10 @@ class JellyRipperGUI(tk.Tk):
                        "Hard block below (GB):", 20)
             toggle_row("opt_warn_out_of_order_episodes",
                        "Warn on out-of-order episode numbers")
+            toggle_row("opt_debug_safe_int",
+                       "Debug: log malformed integer parse values")
+            toggle_row("opt_debug_duration",
+                       "Debug: log malformed duration parse values")
             toggle_row("opt_session_failure_report",
                        "Session failure report at end")
 
@@ -3886,6 +4574,14 @@ class JellyRipperGUI(tk.Tk):
                             except ValueError:
                                 pass
                     self.engine.cfg = cfg
+                    configure_safe_int_debug(
+                        cfg.get("opt_debug_safe_int", False),
+                        self.controller.log
+                    )
+                    configure_duration_debug(
+                        cfg.get("opt_debug_duration", False),
+                        self.controller.log
+                    )
                     save_config(cfg)
                     self.controller.log("Settings saved.")
                 except Exception as e:
@@ -3985,6 +4681,24 @@ class JellyRipperGUI(tk.Tk):
             self.engine.abort()
             self.destroy()
 
+    def _pick_movie_mode(self):
+        if self.ask_yesno(
+            "Use Smart Rip for this movie disc?\n\n"
+            "Yes = auto-pick main feature\n"
+            "No = manual title selection"
+        ):
+            return self.controller.run_smart_rip
+        return self.controller.run_movie_disc
+
+    def _pick_unattended_mode(self):
+        if self.ask_yesno(
+            "Use unattended series mode?\n\n"
+            "Yes = multiple discs/seasons\n"
+            "No = single disc"
+        ):
+            return self.controller.run_unattended_series
+        return self.controller.run_unattended_single
+
     def start_task(self, mode):
         if self.rip_thread and self.rip_thread.is_alive():
             messagebox.showwarning(
@@ -4012,14 +4726,17 @@ class JellyRipperGUI(tk.Tk):
 
         targets = {
             "t":  self.controller.run_tv_disc,
-            "m":  self.controller.run_movie_disc,
+            "m":  self._pick_movie_mode,
             "sr": self.controller.run_smart_rip,
             "d":  self.controller.run_dump_all,
             "i":  self.controller.run_organize,
             "u1": self.controller.run_unattended_single,
             "us": self.controller.run_unattended_series,
+            "u":  self._pick_unattended_mode,
         }
         target = targets.get(mode, self.controller.run_organize)
+        if mode in {"m", "u"}:
+            target = target()
 
         def task_wrapper():
             try:

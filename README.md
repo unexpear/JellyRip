@@ -4,6 +4,9 @@ MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 > **⚠️ Pre-Alpha Software** — JellyRip is currently pre-alpha and not fully tested. Expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
 
+Tester worksheet (printable): [TESTERS.md](TESTERS.md)
+Release notes: [CHANGELOG.md](CHANGELOG.md)
+
 ## Project Status
 
 - Development stage: **Pre-Alpha**
@@ -40,6 +43,7 @@ Shortcut links:
 - Download the `JellyRip.exe` asset from that pre-release tag
 - Expect regressions, rough edges, and breaking behavior changes between builds
 - If you hit issues, report them on [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
+- Use the printable pass/fail worksheet during live tests: [TESTERS.md](TESTERS.md)
 
 Use unstable builds only if you are comfortable testing and troubleshooting.
 
@@ -83,6 +87,13 @@ Open Settings from the UI to configure:
 - Folder locations (temp, TV, movies)
 - Retry behavior and timeouts
 - Space warnings and cleanup options
+- Optional debug warnings for malformed parse values (safe_int and duration)
+
+## Tester Workflow
+
+For live ripping validation and issue reporting:
+- Run the one-page worksheet: [TESTERS.md](TESTERS.md)
+- File results and logs on [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 
 ## Building from Source
 
