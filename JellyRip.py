@@ -573,12 +573,12 @@ class RipperEngine:
                         try:
                             size_bytes = int(val)
                         except ValueError:
-                            # Size might be already formatted (e.g., "3.7 GB")
+                            # Size might be already formatted (e.g., "3.7 GB" or "3,7 GB" in European locale)
                             # Extract numeric part and convert
                             try:
                                 parts = val.split()
                                 if len(parts) >= 2:
-                                    num = float(parts[0])
+                                    num = float(parts[0].replace(",", "."))
                                     unit = parts[1].upper()
                                     multipliers = {
                                         "B": 1, "KB": 1024, "MB": 1024**2,
@@ -708,11 +708,11 @@ class RipperEngine:
                             try:
                                 total_bytes += int(size_str)
                             except ValueError:
-                                # Size might be formatted like "3.7 GB"
+                                # Size might be formatted like "3.7 GB" or "3,7 GB" in European locale
                                 try:
                                     size_parts = size_str.split()
                                     if len(size_parts) >= 2:
-                                        num = float(size_parts[0])
+                                        num = float(size_parts[0].replace(",", "."))
                                         unit = size_parts[1].upper()
                                         multipliers = {
                                             "B": 1, "KB": 1024, "MB": 1024**2,
