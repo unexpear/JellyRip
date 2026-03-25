@@ -1,1 +1,0 @@
-"""JellyRip source package."""
