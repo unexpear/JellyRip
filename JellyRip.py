@@ -164,19 +164,22 @@ def score_title(t, all_titles):
     This beats size-only selection on Blu-rays with obfuscation titles
     because fake titles fail across multiple axes simultaneously.
     """
-    max_size     = max(x["size_bytes"] for x in all_titles) or 1
+    if not all_titles:
+        return 0.0
+    
+    max_size     = max((x["size_bytes"] for x in all_titles), default=1)
     max_duration = max(
-        x["duration_seconds"] for x in all_titles
-    ) or 1
+        (x["duration_seconds"] for x in all_titles), default=1
+    )
     max_chapters = max(
-        int(x.get("chapters") or 0) for x in all_titles
-    ) or 1
+        (int(x.get("chapters") or 0) for x in all_titles), default=1
+    )
     max_audio    = max(
-        len(x["audio_tracks"]) for x in all_titles
-    ) or 1
+        (len(x["audio_tracks"]) for x in all_titles), default=1
+    )
     max_subs     = max(
-        len(x["subtitle_tracks"]) for x in all_titles
-    ) or 1
+        (len(x["subtitle_tracks"]) for x in all_titles), default=1
+    )
 
     return (
         (t["size_bytes"] / max_size)                       * 0.30 +
