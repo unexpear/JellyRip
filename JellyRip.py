@@ -16,6 +16,7 @@ import glob
 import shutil
 import json
 import re
+import shlex
 import platform
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -79,22 +80,15 @@ DEFAULTS = {
     "opt_log_cap":                    300000,
     "opt_log_trim":                   200000,
     "opt_smart_rip_mode":             False,
+    "opt_makemkv_global_args":        "",
+    "opt_makemkv_info_args":          "",
+    "opt_makemkv_rip_args":           "",
 }
 
 RIP_ATTEMPT_FLAGS = [
     ["--cache=1024"],
     ["--noscan", "--cache=1024"],
     ["--noscan", "--directio=true", "--cache=512"],
-]
-
-FATAL_MSG_PATTERNS = [
-    "failed to open disc",
-    "failed to open source",
-    "read error",
-    "unable to read",
-    "failed to save",
-    "critical error",
-    "failed to open destination",
 ]
 
 
@@ -232,6 +226,22 @@ def format_audio_summary(audio_tracks):
         if label:
             parts.append(label)
     return ", ".join(parts) if parts else "—"
+
+
+def parse_cli_args(raw, on_log=None, label="args"):
+    """Parse a CLI argument string into argv tokens."""
+    s = (raw or "").strip()
+    if not s:
+        return []
+    try:
+        return shlex.split(s, posix=(os.name != "nt"))
+    except Exception:
+        if on_log:
+            on_log(
+                f"Warning: could not parse {label}; "
+                f"falling back to simple split."
+            )
+        return s.split()
 
 
 def load_config():
@@ -538,12 +548,23 @@ class RipperEngine:
         """
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
+        global_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_global_args", ""),
+            on_log,
+            "MakeMKV global args"
+        )
+        info_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_info_args", ""),
+            on_log,
+            "MakeMKV info args"
+        )
         on_log(f"Scanning disc ({disc_target})...")
         titles      = {}
         title_count = 0
         try:
             proc = subprocess.Popen(
-                [makemkvcon, "-r", "info", disc_target],
+                [makemkvcon] + global_args +
+                ["-r", "info", disc_target] + info_args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -709,10 +730,21 @@ class RipperEngine:
         """
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
+        global_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_global_args", ""),
+            on_log,
+            "MakeMKV global args"
+        )
+        info_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_info_args", ""),
+            on_log,
+            "MakeMKV info args"
+        )
         total_bytes = 0
         try:
             proc = subprocess.Popen(
-                [makemkvcon, "-r", "info", disc_target],
+                [makemkvcon] + global_args +
+                ["-r", "info", disc_target] + info_args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -825,8 +857,7 @@ class RipperEngine:
           - Enables real stall detection (timeout fires if queue stays empty)
           - Keeps abort checks responsive regardless of MakeMKV output rate
 
-        Returns (success, had_error). success is True only if return code
-        is 0 AND no fatal message patterns were detected in MSG output.
+        Returns True on rc==0, False otherwise.
         """
         self.current_process = subprocess.Popen(
             cmd,
@@ -835,11 +866,12 @@ class RipperEngine:
             text=True,
             bufsize=1
         )
+        proc = self.current_process
 
         line_queue    = queue_module.Queue()
         reader        = threading.Thread(
             target=self._stdout_reader,
-            args=(self.current_process.stdout, line_queue),
+            args=(proc.stdout, line_queue),
             daemon=True
         )
         reader.start()
@@ -847,7 +879,6 @@ class RipperEngine:
         last_pct        = -1
         last_output     = time.time()
         rip_start       = time.time()
-        had_error       = False
         stall_detection = self.cfg.get("opt_stall_detection", True)
         stall_timeout   = int(
             self.cfg.get("opt_stall_timeout_seconds", 120)
@@ -856,18 +887,21 @@ class RipperEngine:
         while True:
             if self.abort_event.is_set():
                 try:
-                    self.current_process.terminate()
+                    proc.terminate()
                 except Exception:
                     pass
                 on_log("Rip aborted.")
-                self.current_process.wait()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
                 self.current_process = None
-                return False, had_error
+                return False
 
             try:
                 line = line_queue.get(timeout=1.0)
             except queue_module.Empty:
-                if self.current_process.poll() is not None:
+                if proc.poll() is not None:
                     break
                 if stall_detection:
                     if time.time() - last_output > stall_timeout:
@@ -875,10 +909,16 @@ class RipperEngine:
                             f"No output for {stall_timeout}s — "
                             f"killing stalled process."
                         )
-                        self.current_process.kill()
-                        self.current_process.wait()
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            pass
                         self.current_process = None
-                        return False, True
+                        return False
                 continue
 
             last_output = time.time()
@@ -935,8 +975,17 @@ class RipperEngine:
                         # parsing issues, etc) and continues. Trust the
                         # return code, not the message content.
 
-        self.current_process.wait()
-        rc = self.current_process.returncode
+        try:
+            proc.wait(timeout=30)
+        except Exception:
+            pass
+        try:
+            rc = proc.returncode
+            if rc is None:
+                rc = 1
+        except Exception:
+            rc = 1
+        on_log(f"MakeMKV exit code: {rc}")
         self.current_process = None
 
         try:
@@ -954,7 +1003,7 @@ class RipperEngine:
         except queue_module.Empty:
             pass
 
-        return (rc == 0), had_error
+        return rc == 0
 
     def _get_rip_attempts(self):
         count = int(self.cfg.get("opt_retry_attempts", 3))
@@ -967,6 +1016,16 @@ class RipperEngine:
     def rip_all_titles(self, rip_path, on_progress, on_log):
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
+        global_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_global_args", ""),
+            on_log,
+            "MakeMKV global args"
+        )
+        rip_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_rip_args", ""),
+            on_log,
+            "MakeMKV rip args"
+        )
         os.makedirs(rip_path, exist_ok=True)
         attempts = self._get_rip_attempts()
         before   = self._snapshot_mkv_files(rip_path)
@@ -982,14 +1041,26 @@ class RipperEngine:
                 f"(flags: {' '.join(flags)})"
             )
             cmd = (
-                [makemkvcon, "mkv", disc_target, "all", rip_path]
-                + flags
+                [makemkvcon] + global_args +
+                ["mkv", disc_target, "all", rip_path] +
+                flags + rip_args
             )
-            success, _ = self._run_rip_process(
+            success = self._run_rip_process(
                 cmd, on_progress, on_log
             )
             if self.abort_event.is_set():
                 return False
+            if not success:
+                # MakeMKV can return non-zero even when files were saved.
+                # If new MKV files exist, treat it as success.
+                after     = self._snapshot_mkv_files(rip_path)
+                new_files = after - before
+                if new_files:
+                    on_log(
+                        f"MakeMKV exited with error but saved "
+                        f"{len(new_files)} file(s) — treating as success."
+                    )
+                    success = True
             if success:
                 return True
             on_log(f"Attempt {attempt_num} failed.")
@@ -1003,6 +1074,16 @@ class RipperEngine:
                             on_progress, on_log):
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
+        global_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_global_args", ""),
+            on_log,
+            "MakeMKV global args"
+        )
+        rip_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_rip_args", ""),
+            on_log,
+            "MakeMKV rip args"
+        )
         os.makedirs(rip_path, exist_ok=True)
         on_log(
             f"Ripping {len(title_ids)} selected title(s) "
@@ -1037,9 +1118,9 @@ class RipperEngine:
                         f"(flags: {' '.join(flags)})"
                     )
                 cmd = (
-                    [makemkvcon, "mkv", disc_target,
-                     str(tid), rip_path]
-                    + flags
+                    [makemkvcon] + global_args +
+                    ["mkv", disc_target, str(tid), rip_path] +
+                    flags + rip_args
                 )
 
                 def scaled_progress(pct, _idx=idx):
@@ -1048,11 +1129,22 @@ class RipperEngine:
                     ) * 100
                     on_progress(int(overall))
 
-                success, _ = self._run_rip_process(
+                success = self._run_rip_process(
                     cmd, scaled_progress, on_log
                 )
                 if self.abort_event.is_set():
                     return False, failed_titles
+                if not success:
+                    # MakeMKV can return non-zero even when files were saved.
+                    # If new MKV files exist, treat it as success.
+                    after     = self._snapshot_mkv_files(rip_path)
+                    new_files = after - before
+                    if new_files:
+                        on_log(
+                            f"MakeMKV exited with error but saved "
+                            f"{len(new_files)} file(s) — treating as success."
+                        )
+                        success = True
                 if success:
                     title_success = True
                     break
@@ -3659,6 +3751,25 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left")
                 vars_map[key] = ("int", num_var)
 
+            def text_row(key, label, width=38):
+                row = tk.Frame(scroll_frame, bg="#0d1117")
+                row.pack(fill="x", padx=16, pady=2)
+                tk.Label(
+                    row, text=label,
+                    bg="#0d1117", fg="#c9d1d9",
+                    font=("Segoe UI", 10), anchor="w", width=36
+                ).pack(side="left")
+                txt_var = tk.StringVar(
+                    value=cfg.get(key, DEFAULTS.get(key, ""))
+                )
+                tk.Entry(
+                    row, textvariable=txt_var,
+                    bg="#161b22", fg="#c9d1d9",
+                    font=("Segoe UI", 10),
+                    relief="flat", bd=3, width=width
+                ).pack(side="left")
+                vars_map[key] = ("text", txt_var)
+
             section("Paths")
             path_row("makemkvcon_path", "MakeMKV executable")
             path_row("ffprobe_path",    "ffprobe executable")
@@ -3684,6 +3795,20 @@ class JellyRipperGUI(tk.Tk):
                        "Clean MKV files before each retry")
             toggle_row("opt_smart_rip_mode",
                        "Smart Rip Mode (auto-select best title)")
+
+            section("MakeMKV Expert")
+            text_row(
+                "opt_makemkv_global_args",
+                "Global args (applies to info + rip):"
+            )
+            text_row(
+                "opt_makemkv_info_args",
+                "Extra args for info/scan commands:"
+            )
+            text_row(
+                "opt_makemkv_rip_args",
+                "Extra args for rip commands:"
+            )
 
             section("Moving")
             toggle_row("opt_check_dest_space",
@@ -3732,6 +3857,8 @@ class JellyRipperGUI(tk.Tk):
                             cfg[key] = (
                                 os.path.normpath(v) if v else ""
                             )
+                        elif vtype == "text":
+                            cfg[key] = var.get().strip()
                         elif vtype == "bool":
                             cfg[key] = var.get()
                         elif vtype == "int":
