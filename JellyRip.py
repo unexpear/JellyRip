@@ -327,7 +327,10 @@ def parse_size_to_bytes(val):
             "PB":  1000**5,    "PIB": 1024**5,
             "EB":  1000**6,    "EIB": 1024**6,
         }
-        return int(number * multipliers.get(unit, 1))
+        multiplier = multipliers.get(unit)
+        if multiplier is None:
+            return 0
+        return int(number * multiplier)
     except Exception:
         return 0
 
@@ -830,7 +833,7 @@ class RipperEngine:
                         }
                         title_count += 1
                         on_progress(
-                            min(5 + title_count, 90)
+                            min(5 + int(title_count * 1.5), 90)
                         )
                     if attr == 2:
                         titles[tid]["name"] = val
@@ -1801,7 +1804,7 @@ class RipperController:
                 self.log("Scan aborted.")
                 return None
 
-            if result:
+            if result is not None:
                 return result
 
             if attempt < 2:
@@ -2124,8 +2127,8 @@ class RipperController:
 
     def _wait_for_disc_state(self, want_present, timeout_seconds=300):
         state_text = "inserted" if want_present else "removed"
-        start      = time.time()
-        last_log   = start
+        start    = time.time()
+        last_log = 0
         self.log(f"Waiting for disc to be {state_text}...")
         while time.time() - start < timeout_seconds:
             if self.engine.abort_event.is_set():
@@ -2138,12 +2141,13 @@ class RipperController:
                 f"({max(0, remaining)}s)..."
             )
             # Log a heartbeat every ~10 s so the user sees activity.
-            if time.time() - last_log >= 10:
+            elapsed = int(time.time() - start)
+            if elapsed - last_log >= 10:
                 self.log(
                     f"Still waiting for disc to be {state_text} "
                     f"({max(0, remaining)}s remaining)..."
                 )
-                last_log = time.time()
+                last_log = elapsed
             # Split sleep into short intervals so abort is responsive.
             for _ in range(20):
                 if self.engine.abort_event.is_set():
@@ -2159,6 +2163,7 @@ class RipperController:
         parts = [str(len(titles))]
         for t in titles[:12]:
             parts.append(
+                f"{t.get('id', 0)}:"
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
                 f"{safe_int(t.get('chapters', 0))}:"
