@@ -918,12 +918,10 @@ class RipperEngine:
                     msg = parts[4].strip().strip('"')
                     if msg:
                         on_log(msg)
-                        msg_lower = msg.lower()
-                        if any(
-                            p in msg_lower
-                            for p in FATAL_MSG_PATTERNS
-                        ):
-                            had_error = True
+                        # Log all messages but don't treat them as failures.
+                        # MakeMKV tolerates recoverable errors (read errors,
+                        # parsing issues, etc) and continues. Trust the
+                        # return code, not the message content.
 
         self.current_process.wait()
         rc = self.current_process.returncode
@@ -939,15 +937,12 @@ class RipperEngine:
                         msg = parts[4].strip().strip('"')
                         if msg:
                             on_log(msg)
-                            if any(
-                                p in msg.lower()
-                                for p in FATAL_MSG_PATTERNS
-                            ):
-                                had_error = True
+                            # Log all messages. Don't use them for failure
+                            # detection — trust the return code only.
         except queue_module.Empty:
             pass
 
-        return (rc == 0 and not had_error), had_error
+        return (rc == 0), had_error
 
     def _get_rip_attempts(self):
         count = int(self.cfg.get("opt_retry_attempts", 3))
