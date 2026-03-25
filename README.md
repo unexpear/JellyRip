@@ -87,6 +87,7 @@ JellyRip provides multiple operating modes for different workflows:
 Settings auto-save to `%APPDATA%\JellyRip\config.json` on Windows.
 
 Open Settings from the UI to configure:
+
 - Tool paths (MakeMKV, ffprobe)
 - Folder locations (temp, TV, movies)
 - Retry behavior and timeouts
@@ -96,6 +97,7 @@ Open Settings from the UI to configure:
 ## Tester Workflow
 
 For live ripping validation and issue reporting:
+
 - Run the one-page worksheet: [TESTERS.md](TESTERS.md)
 - File results and logs on [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 
