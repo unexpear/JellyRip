@@ -315,16 +315,17 @@ def parse_size_to_bytes(val):
             raw = head.replace(".", "") + "." + tail
 
         number = float(raw)
-        # Normalise binary prefixes: GiB -> GB, MiB -> MB, etc.
-        unit = match.group(2).upper().replace("IB", "B")
+        # Handle both SI (decimal) and IEC (binary) units explicitly so
+        # "3.7 GB" and "3.7 GiB" map to correct byte counts.
+        unit = match.group(2).upper()
         multipliers = {
-            "B": 1,
-            "KB": 1024,
-            "MB": 1024**2,
-            "GB": 1024**3,
-            "TB": 1024**4,
-            "PB": 1024**5,
-            "EB": 1024**6,
+            "B":   1,
+            "KB":  1000,       "KIB": 1024,
+            "MB":  1000**2,    "MIB": 1024**2,
+            "GB":  1000**3,    "GIB": 1024**3,
+            "TB":  1000**4,    "TIB": 1024**4,
+            "PB":  1000**5,    "PIB": 1024**5,
+            "EB":  1000**6,    "EIB": 1024**6,
         }
         return int(number * multipliers.get(unit, 1))
     except Exception:
@@ -829,7 +830,7 @@ class RipperEngine:
                         }
                         title_count += 1
                         on_progress(
-                            min(int(title_count * 100 / 50), 90)
+                            min(5 + title_count, 90)
                         )
                     if attr == 2:
                         titles[tid]["name"] = val
@@ -919,8 +920,14 @@ class RipperEngine:
         result = [t for t, _score in scored]
 
         # Log scores for debugging edge cases and bad discs
-        on_log("Title scores:")
-        for t, score in scored:
+        # Log scores, capping output on large discs to avoid log spam.
+        log_all = len(scored) <= 50
+        on_log(
+            "Title scores:"
+            if log_all else
+            f"Title scores (top 20 of {len(scored)} shown):"
+        )
+        for t, score in (scored if log_all else scored[:20]):
             on_log(
                 f"  Title {t['id']+1}: score={score:.3f} | "
                 f"{t['duration']} {t['size']} | "
@@ -2117,7 +2124,9 @@ class RipperController:
 
     def _wait_for_disc_state(self, want_present, timeout_seconds=300):
         state_text = "inserted" if want_present else "removed"
-        start = time.time()
+        start      = time.time()
+        last_log   = start
+        self.log(f"Waiting for disc to be {state_text}...")
         while time.time() - start < timeout_seconds:
             if self.engine.abort_event.is_set():
                 return False
@@ -2128,7 +2137,18 @@ class RipperController:
                 f"Waiting for disc to be {state_text} "
                 f"({max(0, remaining)}s)..."
             )
-            time.sleep(2)
+            # Log a heartbeat every ~10 s so the user sees activity.
+            if time.time() - last_log >= 10:
+                self.log(
+                    f"Still waiting for disc to be {state_text} "
+                    f"({max(0, remaining)}s remaining)..."
+                )
+                last_log = time.time()
+            # Split sleep into short intervals so abort is responsive.
+            for _ in range(20):
+                if self.engine.abort_event.is_set():
+                    return False
+                time.sleep(0.1)
         return False
 
     def _build_disc_fingerprint(self):
