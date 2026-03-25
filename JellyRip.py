@@ -276,6 +276,10 @@ def safe_int(val):
         s = str(val).strip()
         if not s:
             return 0
+        if "/" in s:
+            # Ambiguous formats like "1/12" are not safe integer fields.
+            _safe_int_debug_warn(val)
+            return 0
         # Try direct int conversion first
         try:
             return int(s)
@@ -309,7 +313,14 @@ def parse_size_to_bytes(val):
         if not match:
             return 0
 
-        raw = match.group(1).strip()
+        raw = match.group(1).strip().replace(" ", "")
+
+        # Handle clear thousands-grouped forms early.
+        if raw.count(",") > 1 and "." not in raw:
+            raw = raw.replace(",", "")
+        if raw.count(".") > 1 and "," not in raw:
+            raw = raw.replace(".", "")
+
         if "," in raw and "." in raw:
             # Keep the last separator as decimal; strip the other as thousands.
             if raw.rfind(",") > raw.rfind("."):
@@ -880,14 +891,17 @@ class RipperEngine:
                         titles[tid]["name"] = val
                     elif attr == 9:
                         titles[tid]["duration"] = val
-                        titles[tid]["duration_seconds"] = (
-                            parse_duration_to_seconds(val)
-                        )
+                        dur_seconds = parse_duration_to_seconds(val)
+                        titles[tid]["duration_seconds"] = dur_seconds
+                        if val and dur_seconds <= 0:
+                            titles[tid]["_invalid"] = True
                     elif attr == 8:
                         titles[tid]["chapters"] = safe_int(val)
                     elif attr == 11:
                         size_bytes = parse_size_to_bytes(val)
                         titles[tid]["size_bytes"] = size_bytes
+                        if val and size_bytes <= 0:
+                            titles[tid]["_invalid"] = True
                         if size_bytes > 0:
                             gb = size_bytes / (1024**3)
                             titles[tid]["size"] = f"{gb:.2f} GB"
@@ -1251,6 +1265,11 @@ class RipperEngine:
         self.current_process = None
 
         try:
+            reader.join(timeout=1)
+        except Exception:
+            pass
+
+        try:
             while True:
                 line = line_queue.get_nowait()
                 line = line.strip()
@@ -1575,7 +1594,11 @@ class RipperEngine:
                     f"using unique path: {new_final}"
                 )
                 final_path = new_final
-            os.replace(temp_dest, final_path)
+            try:
+                os.replace(temp_dest, final_path)
+            except OSError:
+                # Cross-volume fallback when atomic rename is unavailable.
+                shutil.move(temp_dest, final_path)
             if os.path.exists(final_path):
                 os.remove(source)
             else:
@@ -1862,6 +1885,10 @@ class RipperController:
                 continue
 
             if result == []:
+                if attempt < 2:
+                    self.log("Empty scan result — retrying...")
+                    time.sleep(2 + attempt)
+                    continue
                 self.log("Scan completed but found no titles.")
                 return []
 
@@ -2050,15 +2077,31 @@ class RipperController:
             wanted_tid = best.get("id")
             for idx, (file_path, _dur, _mb) in enumerate(titles_list):
                 name = os.path.basename(file_path)
-                m = re.search(r'title_t(\d+)\.mkv$', name, re.IGNORECASE)
+                m = re.search(r'title_t(\d+)', name, re.IGNORECASE)
                 if m and int(m.group(1)) == wanted_tid:
                     main_indices = [idx]
                     break
             else:
-                self.log(
-                    "Warning: could not map smart-selected title id to "
-                    "analyzed files; falling back to longest file."
-                )
+                target_size = best.get("size_bytes", 0)
+                if target_size > 0 and titles_list:
+                    main_indices = [
+                        min(
+                            range(len(titles_list)),
+                            key=lambda i: abs(
+                                int(titles_list[i][2] * (1024**2)) -
+                                int(target_size)
+                            )
+                        )
+                    ]
+                    self.log(
+                        "Warning: smart title id mapping failed; using "
+                        "closest-size analyzed file as main."
+                    )
+                else:
+                    self.log(
+                        "Warning: could not map smart-selected title id to "
+                        "analyzed files; falling back to longest file."
+                    )
         self.gui.set_status("Moving files...")
         ok, _ = self.engine.move_files(
             titles_list, main_indices,
@@ -2190,7 +2233,12 @@ class RipperController:
     def _disc_present(self):
         """Best-effort check: True when a readable disc appears present."""
         try:
-            return self.engine.get_disc_size(lambda _m: None) is not None
+            first = self.engine.get_disc_size(lambda _m: None)
+            if first is None:
+                return False
+            time.sleep(0.5)
+            second = self.engine.get_disc_size(lambda _m: None)
+            return second is not None
         except Exception:
             return False
 
@@ -2230,7 +2278,19 @@ class RipperController:
         if not titles:
             return None
         parts = [str(len(titles))]
-        for t in titles[:12]:
+        sorted_titles = sorted(
+            titles,
+            key=lambda t: (
+                t.get("duration_seconds", 0)
+                if isinstance(t.get("duration_seconds"), (int, float))
+                else 0,
+                t.get("size_bytes", 0)
+                if isinstance(t.get("size_bytes"), (int, float))
+                else 0,
+            ),
+            reverse=True,
+        )
+        for t in sorted_titles[:12]:
             parts.append(
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
@@ -3693,8 +3753,12 @@ class JellyRipperGUI(tk.Tk):
 
         self.after(0, _show)
         # Caller may be a worker thread; this loop must not touch tkinter.
+        start = time.time()
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
+                return None
+            if time.time() - start > 300:
+                # Safety timeout prevents deadlock if UI callbacks are lost.
                 return None
         return result[0]
 
