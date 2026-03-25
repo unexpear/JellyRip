@@ -3451,7 +3451,9 @@ class JellyRipperGUI(tk.Tk):
                     row, text=label, bg="#0d1117", fg="#c9d1d9",
                     font=("Segoe UI", 10), width=28, anchor="w"
                 ).pack(side="left")
-                var = tk.StringVar(value=cfg.get(key, ""))
+                # Use configured value or default
+                default_val = cfg.get(key, DEFAULTS.get(key, ""))
+                var = tk.StringVar(value=default_val)
                 tk.Entry(
                     row, textvariable=var,
                     bg="#161b22", fg="#c9d1d9",
@@ -3485,8 +3487,9 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left", padx=4)
                 vars_map[key] = ("str", var)
 
-            def toggle_row(key, label, number_key=None,
-                           number_label="", number_default=0):
+            def toggle_row(key, label):
+                """Create a toggle row without dependent number field.
+                Number fields are now created separately for full independence."""
                 row = tk.Frame(scroll_frame, bg="#0d1117")
                 row.pack(fill="x", padx=16, pady=2)
                 bool_var = tk.BooleanVar(value=cfg.get(key, True))
@@ -3498,25 +3501,6 @@ class JellyRipperGUI(tk.Tk):
                     text=label, anchor="w"
                 ).pack(side="left")
                 vars_map[key] = ("bool", bool_var)
-
-                if number_key:
-                    num_var = tk.StringVar(
-                        value=str(
-                            cfg.get(number_key, number_default)
-                        )
-                    )
-                    tk.Label(
-                        row, text=number_label,
-                        bg="#0d1117", fg="#8b949e",
-                        font=("Segoe UI", 9)
-                    ).pack(side="left", padx=(12, 2))
-                    tk.Entry(
-                        row, textvariable=num_var,
-                        bg="#161b22", fg="#c9d1d9",
-                        font=("Segoe UI", 10),
-                        relief="flat", bd=3, width=7
-                    ).pack(side="left")
-                    vars_map[number_key] = ("int", num_var)
 
             def number_row(key, label, default=0):
                 row = tk.Frame(scroll_frame, bg="#0d1117")
@@ -3551,13 +3535,13 @@ class JellyRipperGUI(tk.Tk):
             toggle_row("opt_confirm_before_rip",
                        "Confirm selection before ripping")
             toggle_row("opt_stall_detection",
-                       "Stall detection",
-                       "opt_stall_timeout_seconds",
-                       "Timeout (seconds):", 120)
+                       "Stall detection")
+            number_row("opt_stall_timeout_seconds",
+                       "Stall timeout (seconds):", 120)
             toggle_row("opt_auto_retry",
-                       "Auto-retry failed titles",
-                       "opt_retry_attempts",
-                       "Attempts:", 3)
+                       "Auto-retry failed titles")
+            number_row("opt_retry_attempts",
+                       "Retry attempts:", 3)
             toggle_row("opt_clean_mkv_before_retry",
                        "Clean MKV files before each retry")
             toggle_row("opt_smart_rip_mode",
@@ -3583,8 +3567,8 @@ class JellyRipperGUI(tk.Tk):
 
             section("Warnings & Limits")
             toggle_row("opt_warn_low_space",
-                       "Warn if space below estimate",
-                       "opt_hard_block_gb",
+                       "Warn if space below estimate")
+            number_row("opt_hard_block_gb",
                        "Hard block below (GB):", 20)
             toggle_row("opt_warn_out_of_order_episodes",
                        "Warn on out-of-order episode numbers")
@@ -3603,28 +3587,33 @@ class JellyRipperGUI(tk.Tk):
             btn_row.pack(fill="x", padx=16, pady=12)
 
             def save():
-                for key, (vtype, var) in vars_map.items():
-                    if vtype == "str":
-                        v = var.get().strip()
-                        cfg[key] = (
-                            os.path.normpath(v) if v else ""
-                        )
-                    elif vtype == "bool":
-                        cfg[key] = var.get()
-                    elif vtype == "int":
-                        try:
-                            cfg[key] = int(var.get())
-                        except ValueError:
-                            pass
-                self.engine.cfg = cfg
-                save_config(cfg)
-                self.controller.log("Settings saved.")
-                win.destroy()
-                done.set()
+                try:
+                    for key, (vtype, var) in vars_map.items():
+                        if vtype == "str":
+                            v = var.get().strip()
+                            cfg[key] = (
+                                os.path.normpath(v) if v else ""
+                            )
+                        elif vtype == "bool":
+                            cfg[key] = var.get()
+                        elif vtype == "int":
+                            try:
+                                cfg[key] = int(var.get())
+                            except ValueError:
+                                pass
+                    self.engine.cfg = cfg
+                    save_config(cfg)
+                    self.controller.log("Settings saved.")
+                    win.destroy()
+                except Exception as e:
+                    self.controller.log(f"Error saving settings: {e}")
+                    win.destroy()
 
             def cancel():
-                win.destroy()
-                done.set()
+                try:
+                    win.destroy()
+                except:
+                    pass
 
             win.protocol("WM_DELETE_WINDOW", cancel)
 
