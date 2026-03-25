@@ -1,5 +1,5 @@
 '''
-JellyRip v1.0.0
+JellyRip v1.0.4
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 Architecture — three strict layers:
@@ -26,7 +26,7 @@ import queue as queue_module
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
-__version__ = "1.0.0"
+__version__ = "1.0.4"
 
 
 # ==========================================
@@ -539,11 +539,32 @@ class RipperEngine:
                     elif attr == 10:
                         titles[tid]["chapters"] = val
                     elif attr == 11:
+                        # Parse size - might be bytes or already formatted
                         try:
-                            titles[tid]["size_bytes"] = int(val)
-                            gb = int(val) / (1024**3)
-                            titles[tid]["size"] = f"{gb:.2f} GB"
+                            size_bytes = int(val)
                         except ValueError:
+                            # Size might be already formatted (e.g., "3.7 GB")
+                            # Extract numeric part and convert
+                            try:
+                                parts = val.split()
+                                if len(parts) >= 2:
+                                    num = float(parts[0])
+                                    unit = parts[1].upper()
+                                    multipliers = {
+                                        "B": 1, "KB": 1024, "MB": 1024**2,
+                                        "GB": 1024**3, "TB": 1024**4
+                                    }
+                                    size_bytes = int(num * multipliers.get(unit, 1))
+                                else:
+                                    size_bytes = 0
+                            except Exception:
+                                size_bytes = 0
+                        
+                        titles[tid]["size_bytes"] = size_bytes
+                        if size_bytes > 0:
+                            gb = size_bytes / (1024**3)
+                            titles[tid]["size"] = f"{gb:.2f} GB"
+                        else:
                             titles[tid]["size"] = val
                 elif line.startswith("SINFO:"):
                     parts = line[6:].split(",", 4)
