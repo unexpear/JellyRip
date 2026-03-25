@@ -37,8 +37,9 @@ The exe is 100% safe (70+ antivirus vendors verified). If Windows Defender block
 Pre-alpha builds are available for users who want the newest fixes before a stable release.
 
 Shortcut links:
-- Latest unstable release page: https://github.com/unexpear/JellyRip/releases/tag/unstable-latest
-- Latest unstable direct download: https://github.com/unexpear/JellyRip/releases/download/unstable-latest/JellyRip.exe
+
+- Latest unstable release page: [unstable-latest release](https://github.com/unexpear/JellyRip/releases/tag/unstable-latest)
+- Latest unstable direct download: [JellyRip.exe (unstable-latest)](https://github.com/unexpear/JellyRip/releases/download/unstable-latest/JellyRip.exe)
 
 - Check [Releases](https://github.com/unexpear/JellyRip/releases) for tags marked as **pre-release**
 - Download the `JellyRip.exe` asset from that pre-release tag
@@ -49,7 +50,9 @@ Shortcut links:
 Use unstable builds only if you are comfortable testing and troubleshooting.
 
 ### Option 2: From Source
+
 Requires Python 3.13+:
+
 ```bash
 pip install -r requirements.txt
 python JellyRip.py
@@ -99,6 +102,7 @@ For live ripping validation and issue reporting:
 ## Building from Source
 
 Requires PyInstaller:
+
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --windowed --name JellyRip JellyRip.py
