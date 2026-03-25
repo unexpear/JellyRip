@@ -4820,6 +4820,10 @@ class JellyRipperGUI(tk.Tk):
                 # Resolve picker targets here (background thread), not in
                 # start_task() on the main thread, to avoid UI deadlocks.
                 fn = target() if needs_pick else target
+                # If abort was requested during the mode picker prompt,
+                # don't start the rip — just bail out cleanly.
+                if self.engine.abort_event.is_set():
+                    return
                 fn()
             except Exception as e:
                 self.controller.log(f"Unhandled error: {e}")
