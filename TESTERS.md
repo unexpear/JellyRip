@@ -2,7 +2,7 @@
 
 Use this during live ripping. Mark pass or fail for each line, then attach this sheet (or copy/paste results) into a GitHub issue.
 
-Issue tracker: https://github.com/unexpear/JellyRip/issues
+Issue tracker: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 
 Test build/version: ____________________
 Date: ____________________
@@ -14,7 +14,7 @@ Disc title: ____________________
 ## A) Smart Rip (single movie disc)
 
 | Check | Pass | Fail | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Scan starts (Scanning disc...) | [ ] | [ ] | |
 | Title scoring appears (Title scores + BEST) | [ ] | [ ] | |
 | Smart selection logged (Smart Rip selected: Title X) | [ ] | [ ] | |
@@ -26,7 +26,7 @@ Disc title: ____________________
 ## B) Manual Rip (TV or Movie interactive)
 
 | Check | Pass | Fail | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Disc loop starts (--- Disc N ---) | [ ] | [ ] | |
 | Manual title selection accepted | [ ] | [ ] | |
 | Selected size logged | [ ] | [ ] | |
@@ -38,16 +38,18 @@ Disc title: ____________________
 ## C) Unattended Flow
 
 ### C1) Unattended Single
+
 | Check | Pass | Fail | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Session starts (Unattended single-disc mode started.) | [ ] | [ ] | |
 | Temp path created and logged | [ ] | [ ] | |
 | Rip attempts run and complete | [ ] | [ ] | |
 | Completion logged with file count | [ ] | [ ] | |
 
 ### C2) Unattended Series
+
 | Check | Pass | Fail | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Series metadata logged (Series, Seasons) | [ ] | [ ] | |
 | Season and disc markers logged | [ ] | [ ] | |
 | Duplicate/fingerprint prompts behave correctly | [ ] | [ ] | |
@@ -57,7 +59,7 @@ Disc title: ____________________
 ## D) Failure/Recovery Signals
 
 | Check | Pass | Fail | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Retry path logs appear when expected | [ ] | [ ] | |
 | Low-space warning/block behaves correctly | [ ] | [ ] | |
 | Abort button stops work quickly and safely | [ ] | [ ] | |
