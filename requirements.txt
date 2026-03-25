@@ -1,0 +1,12 @@
+# JellyRip dependencies
+# Install with: pip install -r requirements.txt
+
+# No external runtime dependencies required
+# tkinter is included with Python on Windows
+# All imports are standard library:
+# - subprocess, os, glob, shutil, json, re, platform
+# - datetime, concurrent.futures, time, threading, queue
+# - tkinter (built-in)
+
+# For building the executable:
+# pip install pyinstaller
