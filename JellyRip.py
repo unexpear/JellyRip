@@ -33,7 +33,7 @@ import queue as queue_module
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 
 # ==========================================
@@ -1646,6 +1646,9 @@ class RipperEngine:
             on_log("No log file configured — session log not saved.")
             return
         try:
+            # Ensure log file has .txt extension
+            if not log_file.lower().endswith(('.txt', '.log')):
+                log_file = log_file + '.txt'
             log_dir = os.path.dirname(log_file)
             if log_dir:
                 os.makedirs(log_dir, exist_ok=True)
@@ -1726,6 +1729,9 @@ class RipperController:
         log_file = os.path.normpath(
             self.engine.cfg.get("log_file", "")
         )
+        # Ensure .txt extension if missing
+        if log_file and not log_file.lower().endswith(('.txt', '.log')):
+            log_file = log_file + '.txt'
         self.engine.write_session_log(
             log_file, self.start_time, self.session_log, self.log
         )
@@ -3028,13 +3034,19 @@ class RipperController:
                 titles_list = self.engine.analyze_files(
                     mkv_files, self.log
                 )
+                self.log(f"Analysis completed: {len(titles_list)} title(s) found.")
+            except Exception as e:
+                self.log(f"ERROR during analysis: {e}")
+                titles_list = None
             finally:
                 self.gui.stop_indeterminate()
                 self.gui.set_progress(0)
 
             if not titles_list:
                 self.log("Analysis aborted or no files returned.")
-                break
+                if not self.gui.ask_yesno("Try another disc?"):
+                    break
+                continue
 
             move_ok = self._select_and_move(
                 titles_list, is_tv, title, dest_folder, extras_folder,
@@ -4735,12 +4747,12 @@ class JellyRipperGUI(tk.Tk):
             "u":  self._pick_unattended_mode,
         }
         target = targets.get(mode, self.controller.run_organize)
-        if mode in {"m", "u"}:
-            target = target()
+        needs_pick = mode in {"m", "u"}
 
         def task_wrapper():
             try:
-                target()
+                fn = target() if needs_pick else target
+                fn()
             except Exception as e:
                 self.controller.log(f"Unhandled error: {e}")
             finally:
