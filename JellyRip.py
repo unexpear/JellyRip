@@ -3642,7 +3642,6 @@ class JellyRipperGUI(tk.Tk):
             ).pack(side="left", padx=4)
 
         self.after(0, _show)
-        done.wait()
 
     def start_indeterminate(self):
         def _start():
