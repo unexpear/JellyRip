@@ -2,14 +2,14 @@
 
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
-> **⚠️ Work In Progress** — JellyRip is not fully tested yet. Expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
+> **⚠️ Pre-Alpha Software** — JellyRip is currently pre-alpha and not fully tested. Expect bugs, missing edge-case handling, and behavior changes while development continues. Please report issues on [GitHub Issues](https://github.com/unexpear/JellyRip/issues).
 
 ## Project Status
 
-- Development stage: **Work in Progress (WIP)**
-- Stability: **Unstable / pre-release quality**
+- Development stage: **Pre-Alpha**
+- Stability: **Highly unstable / pre-release quality**
 - Testing status: **Not fully tested**
-- Recommendation: use on non-critical discs until stable releases return
+- Recommendation: use on non-critical discs only until stable releases return
 
 ## Installation
 
@@ -30,7 +30,7 @@ The exe is 100% safe (70+ antivirus vendors verified). If Windows Defender block
 
 ## Unstable Builds
 
-Unstable builds are available for users who want the newest fixes before a stable release.
+Pre-alpha builds are available for users who want the newest fixes before a stable release.
 
 Shortcut links:
 - Latest unstable release page: https://github.com/unexpear/JellyRip/releases/tag/unstable-latest
@@ -38,7 +38,7 @@ Shortcut links:
 
 - Check [Releases](https://github.com/unexpear/JellyRip/releases) for tags marked as **pre-release**
 - Download the `JellyRip.exe` asset from that pre-release tag
-- Expect regressions, rough edges, and behavior changes between builds
+- Expect regressions, rough edges, and breaking behavior changes between builds
 - If you hit issues, report them on [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 
 Use unstable builds only if you are comfortable testing and troubleshooting.
