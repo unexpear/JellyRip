@@ -88,6 +88,7 @@ DEFAULTS = {
     "opt_log_cap_lines":               300000,
     "opt_log_trim_lines":             200000,
     "opt_smart_rip_mode":             False,
+    "opt_smart_min_minutes":          20,
     "opt_makemkv_global_args":        "",
     "opt_makemkv_info_args":          "",
     "opt_makemkv_rip_args":           "",
@@ -1980,6 +1981,25 @@ class RipperController:
         if not best:
             self.log("Could not select a valid title for Smart Rip.")
             return
+
+        # Guardrail: movie discs where the "best" title is very short
+        # are often extras/featurettes, not the main feature.
+        min_minutes = max(1, int(cfg.get("opt_smart_min_minutes", 20)))
+        best_seconds = int(best.get("duration_seconds", 0) or 0)
+        if best_seconds > 0 and best_seconds < min_minutes * 60:
+            mins = best_seconds / 60
+            self.log(
+                f"WARNING: Smart Rip best title is only {mins:.1f} min "
+                f"(< {min_minutes} min threshold)."
+            )
+            if not self.gui.ask_yesno(
+                f"Smart Rip warning: best title is only {mins:.1f} min.\n\n"
+                f"This is often an extra, not the main movie.\n"
+                f"Continue anyway?"
+            ):
+                self.log("Cancelled due to Smart Rip short-title warning.")
+                return
+
         selected_ids  = [best["id"]]
         selected_size = best.get("size_bytes", 0)
 
@@ -4724,6 +4744,8 @@ class JellyRipperGUI(tk.Tk):
                        "Scan disc size before ripping")
             toggle_row("opt_confirm_before_rip",
                        "Confirm selection before ripping")
+            number_row("opt_smart_min_minutes",
+                       "Smart Rip minimum title length (minutes):", 20)
             toggle_row("opt_stall_detection",
                        "Stall detection")
             number_row("opt_stall_timeout_seconds",
