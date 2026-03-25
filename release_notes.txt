@@ -1,0 +1,13 @@
+﻿## Critical Bug Fixes
+
+### 🔴 Movie and Unattended Mode - Now Working!
+- **FIXED: Deadlock on Movie/Unattended button clicks** - These buttons previously froze the UI. The mode picker dialog is now safely dispatched on the background thread, preventing tkinter main-thread deadlock.
+
+### 🔧 Log File Handling  
+- **FIXED: Permission denied errors** - Log paths without .txt extension are now automatically suffixed with .txt to prevent Windows file creation errors.
+
+### 📊 Enhanced Diagnostics
+- Better error messages when file analysis fails
+- Retry prompts instead of silent skips
+
+Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
