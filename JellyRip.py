@@ -343,14 +343,24 @@ class RipperEngine:
             if self.abort_event.is_set():
                 return
             self.abort_event.set()
-        if self.current_process and self.current_process.poll() is None:
+        proc = self.current_process
+        if proc is not None:
             try:
-                self.current_process.terminate()
-                self.current_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.current_process.kill()
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
+            finally:
+                self.current_process = None
 
     def reset_abort(self):
         self.abort_event.clear()
@@ -1111,7 +1121,10 @@ class RipperEngine:
                 if abort.is_set():
                     on_log("Analysis aborted.")
                     return []
-                res = future.result()
+                try:
+                    res = future.result()
+                except Exception:
+                    res = None
                 if res is not None:
                     results.append(res)
                     on_log(
@@ -2099,6 +2112,8 @@ class RipperController:
         self.global_extra_counter = 1
         self.session_report       = []
         disc_number = 0
+        season      = 0
+        year        = "0000"
 
         self.engine.cleanup_partial_files(temp_root, self.log)
         if cfg.get("opt_show_temp_manager", True):
@@ -2855,7 +2870,10 @@ class JellyRipperGUI(tk.Tk):
 
             def yes():
                 result[0] = True
-                btn_frame.destroy()
+                try:
+                    btn_frame.destroy()
+                except Exception:
+                    pass
                 self.log_text.config(state="normal")
                 self.log_text.insert(
                     "end",
@@ -2869,7 +2887,10 @@ class JellyRipperGUI(tk.Tk):
 
             def no():
                 result[0] = False
-                btn_frame.destroy()
+                try:
+                    btn_frame.destroy()
+                except Exception:
+                    pass
                 self.log_text.config(state="normal")
                 self.log_text.insert(
                     "end",
@@ -2899,11 +2920,29 @@ class JellyRipperGUI(tk.Tk):
             self.log_text.see("end")
             self.log_text.config(state="disabled")
 
+            # Abort watcher — unblocks immediately if abort fires
+            def _abort_watch():
+                while not done.is_set():
+                    if self.engine.abort_event.is_set():
+                        def _cleanup():
+                            try:
+                                btn_frame.destroy()
+                            except Exception:
+                                pass
+                            result[0] = False
+                            done.set()
+                        self.after(0, _cleanup)
+                        return
+                    time.sleep(0.1)
+
+            threading.Thread(
+                target=_abort_watch, daemon=True
+            ).start()
+
         self.after(0, _show)
         while not done.wait(timeout=0.1):
-            if self.engine.abort_event.is_set():
-                return False
-        return result[0]
+            pass
+        return result[0] if result[0] is not None else False
 
     def _run_on_main(self, fn):
         result = [None]
@@ -3518,32 +3557,57 @@ class JellyRipperGUI(tk.Tk):
                     row, text=label, bg="#0d1117", fg="#c9d1d9",
                     font=("Segoe UI", 10), width=28, anchor="w"
                 ).pack(side="left")
-                # Use configured value or default
-                default_val = cfg.get(key, DEFAULTS.get(key, ""))
-                var = tk.StringVar(value=default_val)
+                var = tk.StringVar(
+                    value=cfg.get(key, DEFAULTS.get(key, ""))
+                )
                 tk.Entry(
                     row, textvariable=var,
                     bg="#161b22", fg="#c9d1d9",
                     font=("Segoe UI", 10),
                     insertbackground="white",
-                    relief="flat", bd=3, width=32
+                    relief="flat", bd=3, width=28
                 ).pack(side="left", padx=4)
 
                 def browse(k=key, v=var):
+                    current = v.get().strip()
+                    if current and os.path.exists(current):
+                        start_dir = (
+                            os.path.dirname(current)
+                            if os.path.isfile(current)
+                            else current
+                        )
+                    else:
+                        start_dir = os.path.expanduser("~")
+
                     if k.endswith("_path") and "log" not in k:
                         path = filedialog.askopenfilename(
+                            title=f"Select {label}",
+                            initialdir=start_dir,
                             filetypes=[
                                 ("Executable", "*.exe"),
-                                ("All", "*.*")
-                            ]
+                                ("All files", "*.*")
+                            ],
+                            parent=win
                         )
                     elif k == "log_file":
                         path = filedialog.asksaveasfilename(
+                            title="Select log file location",
+                            initialdir=start_dir,
+                            initialfile=os.path.basename(current)
+                                if current else "rip_log.txt",
                             defaultextension=".txt",
-                            filetypes=[("Text", "*.txt")]
+                            filetypes=[
+                                ("Text files", "*.txt"),
+                                ("All files", "*.*")
+                            ],
+                            parent=win
                         )
                     else:
-                        path = filedialog.askdirectory()
+                        path = filedialog.askdirectory(
+                            title=f"Select {label}",
+                            initialdir=start_dir,
+                            parent=win
+                        )
                     if path:
                         v.set(os.path.normpath(path))
 
@@ -3671,16 +3735,19 @@ class JellyRipperGUI(tk.Tk):
                     self.engine.cfg = cfg
                     save_config(cfg)
                     self.controller.log("Settings saved.")
-                    win.destroy()
                 except Exception as e:
                     self.controller.log(f"Error saving settings: {e}")
+                finally:
                     win.destroy()
+                    done.set()
 
             def cancel():
                 try:
                     win.destroy()
-                except:
+                except Exception:
                     pass
+                finally:
+                    done.set()
 
             win.protocol("WM_DELETE_WINDOW", cancel)
 
@@ -3743,13 +3810,11 @@ class JellyRipperGUI(tk.Tk):
             btn.config(state="normal")
 
     def request_abort(self):
-        if self.ask_yesno(
-            "Abort session — stop everything right now?"
-        ):
-            self.controller.log("ABORT REQUESTED BY USER")
-            self.set_status("Aborting...")
-            self.abort_btn.config(state="disabled")
-            self.engine.abort()
+        """Abort immediately — no confirmation dialog required."""
+        self.controller.log("ABORT REQUESTED BY USER")
+        self.set_status("Aborting...")
+        self.abort_btn.config(state="disabled")
+        self.engine.abort()
 
     def on_close(self):
         if messagebox.askokcancel(
