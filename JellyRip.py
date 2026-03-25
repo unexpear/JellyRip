@@ -85,8 +85,8 @@ DEFAULTS = {
     "opt_debug_safe_int":             False,
     "opt_debug_duration":             False,
     "opt_session_failure_report":     True,
-    "opt_log_cap":                    300000,
-    "opt_log_trim":                   200000,
+    "opt_log_cap_lines":               300000,
+    "opt_log_trim_lines":             200000,
     "opt_smart_rip_mode":             False,
     "opt_makemkv_global_args":        "",
     "opt_makemkv_info_args":          "",
@@ -298,9 +298,10 @@ def parse_size_to_bytes(val):
         if s.isdigit():
             return int(s)
 
-        # Accept variants like "3.7GB", "3,7 GB", and values with tail text.
+        # Accept variants like "3.7GB", "3,7 GB", "3.7 GiB", and values
+        # with leading or trailing text (e.g. "Size: 3.7 GB").
         match = re.search(
-            r'([\d.,]+)\s*([KMGTP]?B)\b', s, re.IGNORECASE
+            r'([\d.,]+)\s*([KMGTPE]?i?B)', s, re.IGNORECASE
         )
         if not match:
             return 0
@@ -311,7 +312,8 @@ def parse_size_to_bytes(val):
             raw = head.replace(".", "") + "." + tail
 
         number = float(raw)
-        unit = match.group(2).upper()
+        # Normalise binary prefixes: GiB -> GB, MiB -> MB, etc.
+        unit = match.group(2).upper().replace("IB", "B")
         multipliers = {
             "B": 1,
             "KB": 1024,
@@ -319,6 +321,7 @@ def parse_size_to_bytes(val):
             "GB": 1024**3,
             "TB": 1024**4,
             "PB": 1024**5,
+            "EB": 1024**6,
         }
         return int(number * multipliers.get(unit, 1))
     except Exception:
@@ -1732,8 +1735,8 @@ class RipperController:
         timestamp = datetime.now().strftime("%H:%M:%S")
         full = f"[{timestamp}] {msg}"
         self.session_log.append(full)
-        cap  = int(self.engine.cfg.get("opt_log_cap", 300000))
-        trim = int(self.engine.cfg.get("opt_log_trim", 200000))
+        cap  = int(self.engine.cfg.get("opt_log_cap_lines", 300000))
+        trim = int(self.engine.cfg.get("opt_log_trim_lines", 200000))
         if len(self.session_log) > cap:
             self.session_log = self.session_log[-trim:]
         self.gui.append_log(full)
@@ -2141,7 +2144,7 @@ class RipperController:
         if not titles:
             return None
         parts = [str(len(titles))]
-        for t in titles[:8]:
+        for t in titles[:12]:
             parts.append(
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
@@ -4623,10 +4626,10 @@ class JellyRipperGUI(tk.Tk):
 
             section("Log")
             number_row(
-                "opt_log_cap", "Log memory cap (lines):", 300000
+                "opt_log_cap_lines", "Log memory cap (lines):", 300000
             )
             number_row(
-                "opt_log_trim", "Trim to (lines):", 200000
+                "opt_log_trim_lines", "Trim to (lines):", 200000
             )
 
             btn_row = tk.Frame(win, bg="#0d1117")
