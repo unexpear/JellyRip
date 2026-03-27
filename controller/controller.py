@@ -575,7 +575,14 @@ class RipperController:
             # Cap timeout: don't scale unboundedly with size.
             timeout = max(base_timeout, min(300, int(size_gb * 5)))
             polls = default_polls if size_gb >= 5 else max(3, default_polls - 1)
-            min_size = max(min_size_floor, int(expected * 0.5))
+            # When we have expected size from the disc scan, use 50% of that
+            # as the floor — do NOT apply the global floor because extras are
+            # legitimately small and the floor would lock them out forever.
+            # When expected is unknown, fall back to the configured floor.
+            if expected > 0:
+                min_size = int(expected * 0.5)
+            else:
+                min_size = min_size_floor
 
             ok, timed_out = self._stabilize_file(f, timeout, polls, min_size)
             if not ok:
