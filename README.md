@@ -10,12 +10,29 @@ Git navigation: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
 
 ## Quick Navigation
 
-- Main app code: [JellyRip.py](JellyRip.py)
-- Release history: [CHANGELOG.md](CHANGELOG.md)
-- Release summary post: [release_notes.txt](release_notes.txt)
+### Code
+
+- Main app: [JellyRip.py](JellyRip.py)
 - Build helper: [build.bat](build.bat)
-- Test suite: [tests](tests)
+
+### Docs
+
+- Overview and setup: [README.md](README.md)
 - Git/history guide: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
+- Release history: [CHANGELOG.md](CHANGELOG.md)
+- Release summary text: [release_notes.txt](release_notes.txt)
+
+### Downloads
+
+- Stable and tagged releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
+- Latest unstable build: [unstable-latest](https://github.com/unexpear/JellyRip/releases/tag/unstable-latest)
+- Direct unstable exe: [JellyRip.exe (unstable-latest)](https://github.com/unexpear/JellyRip/releases/download/unstable-latest/JellyRip.exe)
+
+### Reports and Tests
+
+- Tester worksheet: [TESTERS.md](TESTERS.md)
+- Automated tests: [tests](tests)
+- Issue reporting: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 
 ## Project Status
 

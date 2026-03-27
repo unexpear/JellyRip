@@ -4,14 +4,27 @@ This guide makes it easier to move through JellyRip's history, files, and releas
 
 ## Quick Repo Map
 
+### Code
+
 - `JellyRip.py`: Main single-file application (engine, controller, UI)
-- `README.md`: User install and usage overview
+- `build.bat`: Windows build helper for `dist/JellyRip.exe`
+
+### Docs
+
+- `README.md`: Install and usage overview
 - `CHANGELOG.md`: Versioned release history
 - `release_notes.txt`: Short release summary text
-- `build.bat`: Windows build helper for `dist/JellyRip.exe`
-- `tests/`: Focused test suite (`pytest`)
-- `TESTERS.md`: Manual rip-testing worksheet
 - `.github/ISSUE_TEMPLATE/`: Issue templates
+
+### Downloads
+
+- `dist/JellyRip.exe`: Locally built executable output
+- GitHub Releases page: stable and pre-release downloads
+
+### Reports and Tests
+
+- `tests/`: Focused automated test suite (`pytest`)
+- `TESTERS.md`: Manual rip-testing worksheet
 
 ## Fast History Commands
 
