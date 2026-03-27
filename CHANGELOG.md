@@ -18,6 +18,8 @@
 - Enforced all-or-nothing rip normalization: aborts, failed titles, missing outputs, or invalid outputs are treated as session failure.
 - Added failed-session cleanup that wipes output files while preserving metadata for future workflow resume.
 - Added pre-rip target file purge for `.mkv` and `.partial` files to prevent file-level resume artifacts.
+- Added regression guard coverage that enforces `rc != 0` as failure even if MKV output files exist.
+- Added complementary guard coverage that enforces abort as failure even when output files are present and ffprobe-valid.
 
 ### UI and settings
 

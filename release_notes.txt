@@ -18,6 +18,8 @@
 - Enforced all-or-nothing rip result handling.
 - Invalid, missing, aborted, or failed-title outputs are treated as session failure.
 - Failed sessions wipe media outputs while preserving metadata for workflow resume.
+- Added regression tests to ensure non-zero MakeMKV exits are always treated as failure, even when files are written.
+- Added regression tests to ensure abort always forces failure, even when files are present and valid.
 
 ### UI and Settings
 - Added naming mode options: timestamp, auto title, and auto title + timestamp.
