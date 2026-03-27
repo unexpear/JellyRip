@@ -11,7 +11,13 @@ from controller.controller import RipperController
 from engine.ripper_engine import RipperEngine
 from utils.helpers import get_available_drives, is_network_path
 from utils.scoring import choose_best_title, format_audio_summary
-from utils.updater import download_asset, fetch_latest_release, is_newer_version
+from utils.updater import (
+    download_asset,
+    fetch_latest_release,
+    is_newer_version,
+    sha256_file,
+    verify_downloaded_update,
+)
 
 
 class JellyRipperGUI(tk.Tk):
@@ -434,6 +440,36 @@ class JellyRipperGUI(tk.Tk):
                     lambda: self.show_error(
                         "Update Download Failed",
                         f"Could not download update package:\n{e}"
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+
+            try:
+                digest = sha256_file(destination)
+                self.controller.log(f"Update SHA256: {digest}")
+            except Exception as e:
+                self.controller.log(f"Could not compute update SHA256: {e}")
+
+            require_sig = bool(
+                self.cfg.get("opt_update_require_signature", True)
+            )
+            pinned_thumbprint = str(
+                self.cfg.get("opt_update_signer_thumbprint", "")
+            )
+            ok, verify_msg = verify_downloaded_update(
+                destination,
+                require_signature=require_sig,
+                required_thumbprint=pinned_thumbprint,
+            )
+            self.controller.log(verify_msg)
+            if not ok:
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Blocked",
+                        "Downloaded update failed signature verification.\n\n"
+                        "The package will not be launched automatically."
                     )
                 )
                 self.after(0, _finish_ready)

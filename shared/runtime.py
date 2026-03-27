@@ -90,6 +90,8 @@ DEFAULTS = {
     "opt_makemkv_global_args": "",
     "opt_makemkv_info_args": "",
     "opt_makemkv_rip_args": "",
+    "opt_update_require_signature": True,
+    "opt_update_signer_thumbprint": "",
 }
 
 RIP_ATTEMPT_FLAGS = [

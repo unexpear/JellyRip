@@ -16,7 +16,14 @@ from .parsing import (
     safe_int,
 )
 from .scoring import choose_best_title, format_audio_summary, score_title
-from .updater import download_asset, fetch_latest_release, is_newer_version
+from .updater import (
+    download_asset,
+    fetch_latest_release,
+    get_authenticode_signature,
+    is_newer_version,
+    sha256_file,
+    verify_downloaded_update,
+)
 
 __all__ = [
     "clean_name",
@@ -35,5 +42,8 @@ __all__ = [
     "score_title",
     "download_asset",
     "fetch_latest_release",
+    "get_authenticode_signature",
     "is_newer_version",
+    "sha256_file",
+    "verify_downloaded_update",
 ]
