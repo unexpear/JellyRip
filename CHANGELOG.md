@@ -25,6 +25,12 @@
 
 - Reworked Settings into tabbed sections for easier navigation across Paths, Everyday, Validation, Advanced, and Logs.
 - Added low-confidence Smart Rip threshold control and improved naming-mode presentation in the settings UI.
+- Added a top-bar Check Updates action that checks GitHub Releases and can download/launch update packages.
+
+### Distribution
+
+- Added Inno Setup installer support (`installer/JellyRip.iss`) targeting per-user install at `%LOCALAPPDATA%\Programs\JellyRip`.
+- Added `build_installer.bat` to build both `JellyRip.exe` and `JellyRipInstaller.exe`.
 
 ## 1.0.5 - 2026-03-25
 
