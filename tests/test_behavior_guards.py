@@ -126,6 +126,22 @@ def test_zero_output_is_failure(tmp_path):
     assert files == []
 
 
+def test_abort_forces_failure_even_with_files(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+    mkv = Path(tmp_path, "file.mkv")
+    mkv.write_text("ok")
+
+    monkeypatch.setattr(engine, "_quick_ffprobe_ok", lambda _f, _l: True)
+    engine.abort()
+
+    normalized_success, files = controller._normalize_rip_result(
+        str(tmp_path), True, []
+    )
+
+    assert normalized_success is False
+    assert files == [str(mkv)]
+
+
 def test_mixed_quality_output_fails(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine()
     good = Path(tmp_path, "good.mkv")
@@ -301,6 +317,27 @@ def test_retry_exhaustion(tmp_path, monkeypatch):
 
     assert result is False
     assert len(calls) == 3
+
+
+def test_rip_all_titles_nonzero_exit_with_output_is_failure(tmp_path, monkeypatch):
+    engine = RipperEngine(_engine_cfg(opt_auto_retry=False, opt_retry_attempts=1))
+    logs = []
+
+    def fake_run(_cmd, _on_progress, _on_log):
+        Path(tmp_path, "partial.mkv").write_text("partial")
+        return False
+
+    monkeypatch.setattr(engine, "_run_rip_process", fake_run)
+
+    result = engine.rip_all_titles(
+        str(tmp_path), on_progress=lambda _p: None, on_log=logs.append
+    )
+
+    assert result is False
+    assert any(
+        "forcing failure regardless of output" in line
+        for line in logs
+    )
 
 
 def test_abort_stops_rip(tmp_path):
