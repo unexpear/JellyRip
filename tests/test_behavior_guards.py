@@ -170,6 +170,24 @@ def test_normalize_session_result_mixed_validity_is_failure():
     ) is False
 
 
+def test_normalize_session_result_no_files_is_failure():
+    assert normalize_session_result(
+        abort=False,
+        failed_titles=[],
+        files=[],
+        valid_files=[],
+    ) is False
+
+
+def test_normalize_session_result_full_success_passes():
+    assert normalize_session_result(
+        abort=False,
+        failed_titles=[],
+        files=["a.mkv", "b.mkv"],
+        valid_files=["a.mkv", "b.mkv"],
+    ) is True
+
+
 def test_mixed_quality_output_fails(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine()
     good = Path(tmp_path, "good.mkv")

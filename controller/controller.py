@@ -1054,6 +1054,9 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        success, mkv_files = self._normalize_rip_result(
+            rip_path, success, []
+        )
 
         if not success:
             self.log("Rip did not complete.")
@@ -1062,9 +1065,6 @@ class RipperController:
             return
 
         self.engine.update_temp_metadata(rip_path, status="ripped")
-        mkv_files = sorted(
-            glob.glob(os.path.join(rip_path, "*.mkv"))
-        )
         self.log(
             f"Dump complete. "
             f"{len(mkv_files)} file(s) saved to: {rip_path}"
@@ -1410,6 +1410,9 @@ class RipperController:
                 on_progress=self.gui.set_progress,
                 on_log=self.log
             )
+            success, mkv_files = self._normalize_rip_result(
+                rip_path, success, []
+            )
 
             if not success:
                 self.report(
@@ -1424,9 +1427,6 @@ class RipperController:
                 break
 
             self.engine.update_temp_metadata(rip_path, status="ripped")
-            mkv_files = sorted(
-                glob.glob(os.path.join(rip_path, "*.mkv"))
-            )
             self.log(
                 f"Dump disc {disc_number} complete. "
                 f"{len(mkv_files)} file(s) saved to: {rip_path}"
@@ -1550,6 +1550,9 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        success, mkv_files = self._normalize_rip_result(
+            rip_path, success, []
+        )
 
         if not success:
             self.report("Unattended single: rip failed.")
@@ -1560,9 +1563,6 @@ class RipperController:
             return
 
         self.engine.update_temp_metadata(rip_path, status="ripped")
-        mkv_files = sorted(
-            glob.glob(os.path.join(rip_path, "*.mkv"))
-        )
         self.log(f"Done. {len(mkv_files)} file(s) in: {rip_path}")
         self._log_ripped_file_sizes(mkv_files)
         stabilized, timed_out = self._stabilize_ripped_files(mkv_files)
@@ -1769,6 +1769,9 @@ class RipperController:
                     on_progress=self.gui.set_progress,
                     on_log=self.log
                 )
+                success, mkv_files = self._normalize_rip_result(
+                    rip_path, success, []
+                )
 
                 if not success:
                     if self.engine.abort_event.is_set():
@@ -1786,9 +1789,6 @@ class RipperController:
 
                 self.engine.update_temp_metadata(
                     rip_path, status="ripped"
-                )
-                mkv_files = sorted(
-                    glob.glob(os.path.join(rip_path, "*.mkv"))
                 )
                 self.log(
                     f"Disc {disc_number} done. "
