@@ -2,6 +2,8 @@
 
 This guide makes it easier to move through JellyRip's history, files, and release flow.
 
+Quick links: [Code](#code) | [Docs](#docs) | [Downloads](#downloads) | [Reports and Tests](#reports-and-tests) | [Built exe](../dist/JellyRip.exe)
+
 ## Quick Repo Map
 
 ### Code

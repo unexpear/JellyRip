@@ -8,6 +8,8 @@ Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 Git navigation: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
 
+Quick links: [Code](#code) | [Docs](#docs) | [Downloads](#downloads) | [Reports and Tests](#reports-and-tests) | [Latest exe](dist/JellyRip.exe)
+
 ## Quick Navigation
 
 ### Code
