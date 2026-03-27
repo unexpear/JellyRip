@@ -37,6 +37,13 @@ import queue as queue_module
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
+from controller.naming import (
+    build_fallback_title,
+    build_naming_preview_text,
+    normalize_naming_mode,
+    resolve_naming_mode,
+)
+
 __version__ = "1.0.6"
 
 
@@ -103,7 +110,7 @@ DEFAULTS = {
     "opt_log_trim_lines":             200000,
     "opt_smart_rip_mode":             False,
     "opt_smart_min_minutes":          20,
-    "opt_fallback_title_mode":        "timestamp",
+    "opt_naming_mode":               "timestamp",
     "opt_makemkv_global_args":        "",
     "opt_makemkv_info_args":          "",
     "opt_makemkv_rip_args":           "",
@@ -601,6 +608,15 @@ def load_config():
     for k, v in DEFAULTS.items():
         if k not in cfg:
             cfg[k] = v
+
+    # Backward compatibility: migrate old naming key to the new one.
+    if "opt_naming_mode" not in cfg and "opt_fallback_title_mode" in cfg:
+        cfg["opt_naming_mode"] = cfg.get("opt_fallback_title_mode")
+
+    # Keep config file tidy after migration.
+    if "opt_fallback_title_mode" in cfg:
+        cfg.pop("opt_fallback_title_mode", None)
+
     return cfg
 
 
@@ -2304,33 +2320,13 @@ class RipperController:
 
     def _fallback_title_from_mode(self, disc_titles=None):
         """Build fallback title string based on configured naming mode."""
-        mode = (self.engine.cfg.get("opt_fallback_title_mode", "timestamp") or "timestamp").strip().lower()
-        timestamp_title = make_temp_title()
-        if mode in {"auto-title", "disc-title"}:
-            mode = "disc-title"
-        elif mode in {"auto-title+timestamp", "disc-title+timestamp"}:
-            mode = "disc-title+timestamp"
-
-        if mode not in {"disc-title", "disc-title+timestamp"}:
-            return timestamp_title
-
-        best = None
-        if disc_titles:
-            best, _ = choose_best_title(disc_titles, require_valid=True)
-            if not best:
-                best, _ = choose_best_title(disc_titles)
-
-        if not best:
-            return timestamp_title
-
-        raw = clean_name(best.get("name", "").strip())
-        if not raw or raw.lower().startswith("title "):
-            raw = f"Disc_Title_{best.get('id', 0) + 1}"
-
-        if mode == "disc-title+timestamp":
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            return clean_name(f"{raw}_{ts}")
-        return raw
+        return build_fallback_title(
+            self.engine.cfg,
+            make_temp_title,
+            clean_name,
+            choose_best_title,
+            disc_titles=disc_titles,
+        )
 
     def _log_ripped_file_sizes(self, mkv_files):
         """Log final sizes for newly ripped files so anomalies stand out."""
@@ -6249,35 +6245,16 @@ class JellyRipperGUI(tk.Tk):
             path_row(paths_tab, "temp_folder",     "Temp folder")
             path_row(paths_tab, "tv_folder",       "TV shows library folder")
             path_row(paths_tab, "movies_folder",   "Movies folder")
-            path_row(paths_tab, "log_file",        "Log file")
 
-            section(everyday_tab, "Common Options")
-            toggle_row(everyday_tab, "opt_safe_mode",
-                       "Safe Mode (recommended)")
-            toggle_row(everyday_tab, "opt_confirm_before_rip",
-                       "Ask before ripping")
-            toggle_row(everyday_tab, "opt_confirm_before_move",
-                       "Ask before moving files")
-            toggle_row(everyday_tab, "opt_smart_rip_mode",
-                       "Smart Rip (auto-pick best title)")
-            number_row(everyday_tab, "opt_smart_min_minutes",
-                       "Shortest movie length for Smart Rip (minutes):", 20)
-            float_row(everyday_tab, "opt_smart_low_confidence_threshold",
-                      "Smart Rip low-confidence warning threshold:", 0.45)
-            row = tk.Frame(everyday_tab, bg="#0d1117")
+            row = tk.Frame(paths_tab, bg="#0d1117")
             row.pack(fill="x", padx=16, pady=2)
             tk.Label(
-                row, text="Fallback title naming mode:",
+                row, text="Naming mode:",
                 bg="#0d1117", fg="#c9d1d9",
                 font=("Segoe UI", 10), anchor="w", width=36
             ).pack(side="left")
 
-            mode_value = str(
-                cfg.get(
-                    "opt_fallback_title_mode",
-                    DEFAULTS.get("opt_fallback_title_mode", "timestamp")
-                )
-            ).strip().lower()
+            mode_value = resolve_naming_mode(cfg)
             if mode_value == "disc-title":
                 mode_value = "auto-title"
             elif mode_value == "disc-title+timestamp":
@@ -6296,7 +6273,49 @@ class JellyRipperGUI(tk.Tk):
                 width=30,
             )
             naming_dropdown.pack(side="left")
-            vars_map["opt_fallback_title_mode"] = ("naming_mode", naming_mode_var)
+            vars_map["opt_naming_mode"] = ("naming_mode", naming_mode_var)
+
+            naming_preview_var = tk.StringVar()
+            tk.Label(
+                paths_tab,
+                textvariable=naming_preview_var,
+                bg="#0d1117",
+                fg="#8b949e",
+                font=("Segoe UI", 9),
+                anchor="w",
+            ).pack(fill="x", padx=16, pady=(0, 4))
+
+            def update_naming_preview(*_args):
+                selected = naming_mode_var.get().strip()
+                mode = normalize_naming_mode(
+                    naming_mode_label_to_value.get(selected, "timestamp")
+                )
+                sample_title = "Inception"
+                sample_rip = make_rip_folder_name()
+                naming_preview_var.set(
+                    build_naming_preview_text(
+                        mode, sample_title, sample_rip
+                    )
+                )
+
+            naming_mode_var.trace_add("write", update_naming_preview)
+            update_naming_preview()
+
+            path_row(paths_tab, "log_file",        "Log file")
+
+            section(everyday_tab, "Common Options")
+            toggle_row(everyday_tab, "opt_safe_mode",
+                       "Safe Mode (recommended)")
+            toggle_row(everyday_tab, "opt_confirm_before_rip",
+                       "Ask before ripping")
+            toggle_row(everyday_tab, "opt_confirm_before_move",
+                       "Ask before moving files")
+            toggle_row(everyday_tab, "opt_smart_rip_mode",
+                       "Smart Rip (auto-pick best title)")
+            number_row(everyday_tab, "opt_smart_min_minutes",
+                       "Shortest movie length for Smart Rip (minutes):", 20)
+            float_row(everyday_tab, "opt_smart_low_confidence_threshold",
+                      "Smart Rip low-confidence warning threshold:", 0.45)
             toggle_row(everyday_tab, "opt_show_temp_manager",
                        "Show temp folders at startup")
             toggle_row(everyday_tab, "opt_auto_delete_temp",
