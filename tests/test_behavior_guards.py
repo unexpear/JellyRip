@@ -10,6 +10,7 @@ from controller.controller import RipperController
 import controller.controller as controller_module
 from controller.naming import build_fallback_title
 from engine.ripper_engine import RipperEngine
+from utils.session_result import normalize_session_result
 from utils.scoring import choose_best_title
 
 
@@ -140,6 +141,33 @@ def test_abort_forces_failure_even_with_files(tmp_path, monkeypatch):
 
     assert normalized_success is False
     assert files == [str(mkv)]
+
+
+def test_normalize_session_result_abort_is_failure():
+    assert normalize_session_result(
+        abort=True,
+        failed_titles=[],
+        files=["a.mkv"],
+        valid_files=["a.mkv"],
+    ) is False
+
+
+def test_normalize_session_result_failed_titles_is_failure():
+    assert normalize_session_result(
+        abort=False,
+        failed_titles=[1],
+        files=["a.mkv"],
+        valid_files=["a.mkv"],
+    ) is False
+
+
+def test_normalize_session_result_mixed_validity_is_failure():
+    assert normalize_session_result(
+        abort=False,
+        failed_titles=[],
+        files=["a.mkv", "b.mkv"],
+        valid_files=["a.mkv"],
+    ) is False
 
 
 def test_mixed_quality_output_fails(tmp_path, monkeypatch):

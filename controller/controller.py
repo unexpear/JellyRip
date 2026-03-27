@@ -5,6 +5,7 @@ from shared.runtime import *
 from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
 from utils.parsing import parse_episode_names, parse_ordered_titles, safe_int
 from utils.scoring import choose_best_title
+from utils.session_result import normalize_session_result
 
 
 class RipperController:
@@ -322,34 +323,38 @@ class RipperController:
         """Collapse rip outcomes into one all-or-nothing success state."""
         mkv_files = sorted(glob.glob(os.path.join(rip_path, "*.mkv")))
 
-        if self.engine.abort_flag:
-            self.log("Rip aborted — treating session as failure.")
-            success = False
-
-        if failed_titles:
-            self.log(f"Titles failed: {failed_titles}")
-            success = False
-
-        if not mkv_files:
-            self.log("No MKV files produced — treating as failure.")
-            success = False
-            return False, []
-
         valid_files = [
             f for f in mkv_files
             if self.engine._quick_ffprobe_ok(f, self.log)
         ]
+
+        if self.engine.abort_flag:
+            self.log("Rip aborted — treating session as failure.")
+        if failed_titles:
+            self.log(f"Titles failed: {failed_titles}")
+        if not mkv_files:
+            self.log("No MKV files produced — treating as failure.")
+
         self.log(
             "Failure gate: "
             f"abort={self.engine.abort_flag}, "
             f"failed_titles={len(failed_titles or [])}, "
             f"files={len(mkv_files)}, valid={len(valid_files)}"
         )
+
+        normalized = normalize_session_result(
+            self.engine.abort_flag,
+            failed_titles,
+            mkv_files,
+            valid_files,
+        )
+
         if len(valid_files) != len(mkv_files):
             self.log("One or more MKV files are invalid — treating as failure.")
+        if not normalized:
             return False, mkv_files
 
-        return success, mkv_files
+        return bool(success), mkv_files
 
     def _mark_session_failed(self, rip_path, **metadata):
         """Wipe session outputs and persist a single failed session state."""

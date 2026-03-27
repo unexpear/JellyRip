@@ -16,6 +16,7 @@ from .parsing import (
     safe_int,
 )
 from .scoring import choose_best_title, format_audio_summary, score_title
+from .session_result import normalize_session_result
 from .updater import (
     download_asset,
     fetch_latest_release,
@@ -40,6 +41,7 @@ __all__ = [
     "choose_best_title",
     "format_audio_summary",
     "score_title",
+    "normalize_session_result",
     "download_asset",
     "fetch_latest_release",
     "get_authenticode_signature",
