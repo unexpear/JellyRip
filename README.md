@@ -6,6 +6,16 @@ MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
+Git navigation: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
+
+## Quick Navigation
+
+- Main app code: [JellyRip.py](JellyRip.py)
+- Release history: [CHANGELOG.md](CHANGELOG.md)
+- Release summary post: [release_notes.txt](release_notes.txt)
+- Build helper: [build.bat](build.bat)
+- Test suite: [tests](tests)
+- Git/history guide: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
 
 ## Project Status
 
