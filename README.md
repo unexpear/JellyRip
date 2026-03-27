@@ -7,12 +7,13 @@ MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
-Quick links: [App code](JellyRip.py) | [Build script](build.bat) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.md) | [Tester sheet](TESTERS.md) | [Tests](tests)
+Quick links: [App code](JellyRip.py) | [Build script](build.bat) | [Requirements](requirements.txt) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.md) | [Tester sheet](TESTERS.md) | [Tests](tests)
 
 ## Quick Navigation
 
 - App code: [JellyRip.py](JellyRip.py)
 - Build script: [build.bat](build.bat)
+- Requirements: [requirements.txt](requirements.txt)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Release post text: [release_notes.md](release_notes.md)
 - Tester worksheet: [TESTERS.md](TESTERS.md)
