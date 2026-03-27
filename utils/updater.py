@@ -1,6 +1,8 @@
 """Update helpers for checking GitHub releases and downloading assets."""
 
+import hashlib
 import json
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -80,8 +82,86 @@ def download_asset(url, destination_path, progress_callback=None, timeout=15):
                     progress_callback(written, total)
 
 
+def sha256_file(path):
+    """Return lowercase SHA256 hex for the given file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(1024 * 1024)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def get_authenticode_signature(path):
+    """Get Authenticode signature details via PowerShell on Windows."""
+    ps = (
+        "$sig = Get-AuthenticodeSignature -FilePath '{p}'; "
+        "$out = [PSCustomObject]@{{"
+        "Status = [string]$sig.Status; "
+        "StatusMessage = [string]$sig.StatusMessage; "
+        "Thumbprint = [string]($sig.SignerCertificate.Thumbprint); "
+        "Subject = [string]($sig.SignerCertificate.Subject)"
+        "}}; "
+        "$out | ConvertTo-Json -Compress"
+    ).format(p=path.replace("'", "''"))
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "signature query failed")
+    data = json.loads(proc.stdout.strip() or "{}")
+    return {
+        "status": str(data.get("Status") or "").strip(),
+        "status_message": str(data.get("StatusMessage") or "").strip(),
+        "thumbprint": str(data.get("Thumbprint") or "").strip().upper(),
+        "subject": str(data.get("Subject") or "").strip(),
+    }
+
+
+def verify_downloaded_update(
+    path,
+    *,
+    require_signature=True,
+    required_thumbprint="",
+):
+    """Validate downloaded update package before launch."""
+    if not require_signature:
+        return True, "Signature verification is disabled by configuration."
+
+    try:
+        sig = get_authenticode_signature(path)
+    except Exception as e:
+        return False, f"Could not verify Authenticode signature: {e}"
+
+    if sig.get("status") != "Valid":
+        msg = sig.get("status_message") or "Unsigned or invalid signature"
+        return False, f"Signature validation failed: {msg}"
+
+    pin = (required_thumbprint or "").strip().upper().replace(" ", "")
+    got = (sig.get("thumbprint") or "").strip().upper().replace(" ", "")
+    if pin and got != pin:
+        return (
+            False,
+            "Signer certificate thumbprint mismatch. "
+            f"Expected {pin}, got {got or '<none>'}."
+        )
+
+    return True, (
+        "Authenticode signature is valid"
+        + (f" (subject: {sig.get('subject')})" if sig.get("subject") else "")
+    )
+
+
 __all__ = [
     "download_asset",
     "fetch_latest_release",
+    "get_authenticode_signature",
     "is_newer_version",
+    "sha256_file",
+    "verify_downloaded_update",
 ]
