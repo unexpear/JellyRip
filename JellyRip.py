@@ -1,5 +1,5 @@
 '''
-JellyRip v1.0.5
+JellyRip v1.0.6
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 Architecture — three strict layers:
@@ -9,11 +9,11 @@ Architecture — three strict layers:
 
 See CONTRIBUTING.md for design rules and contribution guidelines.
 
-Unstable Section (1.0.5)
-    - Parser hardening for malformed size/duration fields
-    - Safe dictionary access for optional track lists
-    - Optional safe_int debug visibility (off by default)
-    - Extra guardrails for rare destination path race conditions
+Unstable Section (1.0.6)
+    - Per-title preview support in title selection UI
+    - Workflow-level resume with metadata restore and input prefill
+    - All-or-nothing rip normalization with failed-session cleanup
+    - Fallback naming mode options in Settings
 
 Git Status Note
     - Current public versions are not fully reliable yet.
@@ -37,7 +37,7 @@ import queue as queue_module
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 
 # ==========================================
@@ -103,6 +103,7 @@ DEFAULTS = {
     "opt_log_trim_lines":             200000,
     "opt_smart_rip_mode":             False,
     "opt_smart_min_minutes":          20,
+    "opt_fallback_title_mode":        "timestamp",
     "opt_makemkv_global_args":        "",
     "opt_makemkv_info_args":          "",
     "opt_makemkv_rip_args":           "",
@@ -560,14 +561,33 @@ def parse_cli_args(raw, on_log=None, label="args"):
     if not s:
         return []
     try:
-        return shlex.split(s, posix=(os.name != "nt"))
+        tokens = shlex.split(s, posix=(os.name != "nt"))
     except Exception:
         if on_log:
             on_log(
                 f"Warning: could not parse {label}; "
                 f"falling back to simple split."
             )
-        return s.split()
+        tokens = s.split()
+
+    # Users sometimes paste MakeMKV profile-selection syntax into CLI args.
+    # Those tokens are not valid makemkvcon argv and cause noisy parse errors.
+    filtered = []
+    dropped = []
+    for tok in tokens:
+        low = tok.lower()
+        if low.startswith(("+sel:", "-sel:")):
+            dropped.append(tok)
+            continue
+        filtered.append(tok)
+
+    if dropped and on_log:
+        on_log(
+            f"Warning: removed unsupported MakeMKV profile token(s) in {label}: "
+            + ", ".join(dropped)
+        )
+
+    return filtered
 
 
 def load_config():
@@ -789,7 +809,7 @@ class RipperEngine:
         return folders
 
     def find_resumable_sessions(self, temp_root):
-        """Find temp sessions marked as in-progress so users can resume manually."""
+        """Find temp sessions with saved workflow metadata that can be resumed."""
         resumable = []
         if not os.path.isdir(temp_root):
             return resumable
@@ -798,7 +818,7 @@ class RipperEngine:
             if not os.path.isdir(full):
                 continue
             meta = self.read_temp_metadata(full)
-            if meta and meta.get("status") == "ripping":
+            if meta and meta.get("phase") not in {"complete", "organized"}:
                 # Count MKV files efficiently: one pass
                 mkv_count = 0
                 try:
@@ -826,24 +846,34 @@ class RipperEngine:
                     pass
 
     def write_temp_metadata(self, rip_path, title, disc_number,
-                            season=None):
+                            season=None, year=None, media_type=None,
+                            selected_titles=None, episode_names=None,
+                            episode_numbers=None, dest_folder=None,
+                            completed_titles=None, phase="ripping"):
         """Create initial metadata file for a rip temp folder."""
         meta = {
-            "title":       title,
-            "disc_number": disc_number,
-            "timestamp":   datetime.now().strftime(
+            "title":            title,
+            "year":             year,
+            "media_type":       media_type,
+            "season":           season,
+            "selected_titles":  list(selected_titles or []),
+            "episode_names":    list(episode_names or []),
+            "episode_numbers":  list(episode_numbers or []),
+            "completed_titles": list(completed_titles or []),
+            "phase":            phase,
+            "dest_folder":      dest_folder,
+            "disc_number":      disc_number,
+            "timestamp":        datetime.now().strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
-            "file_count":  0,
-            "status":      "ripping",
+            "file_count":       0,
+            "status":           "ripping",
         }
-        if season is not None:
-            meta["season"] = season
         self._atomic_write_json(
             os.path.join(rip_path, "_rip_meta.json"), meta
         )
 
-    def update_temp_metadata(self, rip_path, status=None):
+    def update_temp_metadata(self, rip_path, status=None, **updates):
         """Refresh metadata counters/status for a temp session folder."""
         meta_path = os.path.join(rip_path, "_rip_meta.json")
         try:
@@ -861,6 +891,8 @@ class RipperEngine:
             meta["file_count"] = file_count
             if status:
                 meta["status"] = status
+            for key, value in updates.items():
+                meta[key] = value
             self._atomic_write_json(meta_path, meta)
         except Exception:
             pass
@@ -1147,6 +1179,41 @@ class RipperEngine:
             )
         )
 
+    def _purge_rip_target_files(self, rip_path, on_log):
+        """Ensure each rip starts fresh; never resume prior file fragments."""
+        removed = 0
+        for pattern in ("**/*.mkv", "**/*.partial"):
+            for f in glob.glob(
+                os.path.join(rip_path, pattern), recursive=True
+            ):
+                try:
+                    os.remove(f)
+                    removed += 1
+                except Exception:
+                    pass
+        if removed:
+            on_log(
+                f"Removed {removed} pre-existing file(s) from rip target "
+                "to avoid file-level resume."
+            )
+
+    def wipe_session_outputs(self, rip_path, on_log):
+        """Delete ripped outputs for a session while preserving metadata."""
+        removed = 0
+        for pattern in ("**/*.mkv", "**/*.partial"):
+            for f in glob.glob(
+                os.path.join(rip_path, pattern), recursive=True
+            ):
+                try:
+                    os.remove(f)
+                    removed += 1
+                except Exception:
+                    pass
+        on_log(
+            f"Cleared {removed} session output file(s); preserved metadata "
+            "for workflow resume."
+        )
+
     def _clean_new_mkv_files(self, rip_path, before_set, on_log):
         """
         Delete only MKV files created since before_set snapshot.
@@ -1202,7 +1269,6 @@ class RipperEngine:
         reads from that queue with a 1-second timeout. This approach:
           - Avoids blocking readline() on Windows where select() doesn't
             work on pipes
-          - Enables real stall detection (timeout fires if queue stays empty)
           - Keeps abort checks responsive regardless of MakeMKV output rate
 
         Returns True on rc==0, False otherwise.
@@ -1231,6 +1297,7 @@ class RipperEngine:
         stall_timeout   = int(
             self.cfg.get("opt_stall_timeout_seconds", 120)
         )
+        stall_warned = False
 
         while True:
             if self.abort_event.is_set():
@@ -1252,24 +1319,17 @@ class RipperEngine:
                 if proc.poll() is not None:
                     break
                 if stall_detection:
-                    if time.time() - last_output > stall_timeout:
+                    if (not stall_warned and
+                            time.time() - last_output > stall_timeout):
                         on_log(
                             f"No output for {stall_timeout}s — "
-                            f"killing stalled process."
+                            "process may be reading difficult sectors; waiting."
                         )
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                        try:
-                            proc.wait(timeout=5)
-                        except Exception:
-                            pass
-                        self.current_process = None
-                        return False
+                        stall_warned = True
                 continue
 
             last_output = time.time()
+            stall_warned = False
             line = line.strip()
             if not line:
                 continue
@@ -1358,6 +1418,116 @@ class RipperEngine:
 
         return rc == 0
 
+    def _run_preview_process(self, cmd, preview_seconds, on_log):
+        """Run a disposable preview rip with a hard time limit and no retries."""
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        self.current_process = proc
+
+        line_queue = queue_module.Queue()
+        reader = threading.Thread(
+            target=self._stdout_reader,
+            args=(proc.stdout, line_queue),
+            daemon=True
+        )
+        reader.start()
+
+        start = time.time()
+        timed_out = False
+
+        while True:
+            if self.abort_event.is_set():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+                self.current_process = None
+                return False
+
+            if time.time() - start >= preview_seconds and proc.poll() is None:
+                timed_out = True
+                on_log(
+                    f"Preview sample reached {preview_seconds}s; stopping rip."
+                )
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                break
+
+            try:
+                line = line_queue.get(timeout=0.5)
+            except queue_module.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+
+            line = line.strip()
+            if not line:
+                continue
+
+            if line.startswith("PRGT:"):
+                parts = line[5:].split(",")
+                if len(parts) >= 3:
+                    on_log(f"Preview task: {parts[2].strip()}")
+            elif line.startswith("MSG:"):
+                parts = line[4:].split(",", 4)
+                if len(parts) >= 5:
+                    msg = parts[4].strip().strip('"')
+                    if msg:
+                        on_log(msg)
+
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+        self.current_process = None
+
+        try:
+            reader.join(timeout=1)
+        except Exception:
+            pass
+
+        return timed_out or proc.returncode == 0
+
+    def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
+        """Rip a short disposable preview clip for a single title."""
+        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        disc_target = self.get_disc_target()
+        global_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_global_args", ""),
+            on_log,
+            "MakeMKV global args"
+        )
+        rip_args = parse_cli_args(
+            self.cfg.get("opt_makemkv_rip_args", ""),
+            on_log,
+            "MakeMKV rip args"
+        )
+        os.makedirs(rip_path, exist_ok=True)
+        self._purge_rip_target_files(rip_path, on_log)
+        cmd = (
+            [makemkvcon] + global_args +
+            ["mkv", disc_target, str(title_id), rip_path] +
+            RIP_ATTEMPT_FLAGS[0] + rip_args
+        )
+        return self._run_preview_process(cmd, preview_seconds, on_log)
+
     def _get_rip_attempts(self):
         """Resolve retry strategy flags based on config toggles."""
         count = int(self.cfg.get("opt_retry_attempts", 3))
@@ -1382,6 +1552,7 @@ class RipperEngine:
             "MakeMKV rip args"
         )
         os.makedirs(rip_path, exist_ok=True)
+        self._purge_rip_target_files(rip_path, on_log)
         attempts = self._get_rip_attempts()
         before   = self._snapshot_mkv_files(rip_path)
 
@@ -1405,17 +1576,6 @@ class RipperEngine:
             )
             if self.abort_event.is_set():
                 return False
-            if not success:
-                # MakeMKV can return non-zero even when files were saved.
-                # If new MKV files exist, treat it as success.
-                after     = self._snapshot_mkv_files(rip_path)
-                new_files = after - before
-                if new_files:
-                    on_log(
-                        f"MakeMKV exited with error but saved "
-                        f"{len(new_files)} file(s) — treating as success."
-                    )
-                    success = True
             if success:
                 return True
             on_log(f"Attempt {attempt_num} failed.")
@@ -1441,6 +1601,7 @@ class RipperEngine:
             "MakeMKV rip args"
         )
         os.makedirs(rip_path, exist_ok=True)
+        self._purge_rip_target_files(rip_path, on_log)
         on_log(
             f"Ripping {len(title_ids)} selected title(s) "
             f"to: {rip_path}"
@@ -1490,17 +1651,6 @@ class RipperEngine:
                 )
                 if self.abort_event.is_set():
                     return False, failed_titles
-                if not success:
-                    # MakeMKV can return non-zero even when files were saved.
-                    # If new MKV files exist, treat it as success.
-                    after     = self._snapshot_mkv_files(rip_path)
-                    new_files = after - before
-                    if new_files:
-                        on_log(
-                            f"MakeMKV exited with error but saved "
-                            f"{len(new_files)} file(s) — treating as success."
-                        )
-                        success = True
                 if success:
                     title_success = True
                     break
@@ -2009,6 +2159,8 @@ class RipperController:
         self.start_time           = datetime.now()
         self.global_extra_counter = 1
         self.session_report       = []
+        self._preview_lock        = threading.Lock()
+        self._wiped_session_paths = set()
 
     def log(self, msg):
         """Record a timestamped log line and forward it to the GUI queue."""
@@ -2095,25 +2247,90 @@ class RipperController:
         self.log("Scan failed after 3 attempts.")
         return None
 
-    def check_resume(self, temp_root):
-        """Prompt user to resume interrupted sessions discovered in temp storage."""
+    def check_resume(self, temp_root, media_type=None):
+        """Offer workflow-level resume using saved session metadata."""
         resumable = self.engine.find_resumable_sessions(temp_root)
         if not resumable:
-            return
+            return None
         for full_path, name, meta, file_count in resumable:
+            if media_type and meta.get("media_type") not in {None, media_type}:
+                continue
             title = meta.get("title", "Unknown")
             ts    = meta.get("timestamp", name)
+            phase = meta.get("phase", meta.get("status", "unknown"))
             if self.gui.ask_yesno(
                 f"Resume previous session?\n\n"
                 f"Title: {title}\n"
                 f"Started: {ts}\n"
+                f"Phase: {phase}\n"
                 f"Files so far: {file_count}\n\n"
-                f"Click Yes to resume, No to skip."
+                "This reloads saved workflow metadata only. Any partial "
+                "rip files will be replaced by a fresh rip."
             ):
                 self.log(f"Resuming session: {name}")
-                self.engine.update_temp_metadata(
-                    full_path, status="ripping"
-                )
+                return {
+                    "path": full_path,
+                    "name": name,
+                    "meta": meta,
+                }
+        return None
+
+    def _parse_int_or_default(self, value, default=0):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _restore_selected_titles(self, disc_titles, resume_meta):
+        """Return saved selected title ids if they still exist on this disc."""
+        saved = resume_meta.get("selected_titles") or []
+        if not saved:
+            return None
+        valid_ids = {int(t.get("id", -1)) for t in disc_titles}
+        restored = [int(tid) for tid in saved if int(tid) in valid_ids]
+        return restored or None
+
+    def _map_title_ids_to_analyzed_indices(self, titles_list, title_ids):
+        """Map MakeMKV title ids to analyze_files indices using filename tags."""
+        wanted = {int(tid) for tid in (title_ids or [])}
+        if not wanted:
+            return []
+        mapped = []
+        for idx, (path, _dur, _mb) in enumerate(titles_list):
+            title_id = self._title_id_from_filename(path)
+            if title_id in wanted:
+                mapped.append(idx)
+        return mapped
+
+    def _fallback_title_from_mode(self, disc_titles=None):
+        """Build fallback title string based on configured naming mode."""
+        mode = (self.engine.cfg.get("opt_fallback_title_mode", "timestamp") or "timestamp").strip().lower()
+        timestamp_title = make_temp_title()
+        if mode in {"auto-title", "disc-title"}:
+            mode = "disc-title"
+        elif mode in {"auto-title+timestamp", "disc-title+timestamp"}:
+            mode = "disc-title+timestamp"
+
+        if mode not in {"disc-title", "disc-title+timestamp"}:
+            return timestamp_title
+
+        best = None
+        if disc_titles:
+            best, _ = choose_best_title(disc_titles, require_valid=True)
+            if not best:
+                best, _ = choose_best_title(disc_titles)
+
+        if not best:
+            return timestamp_title
+
+        raw = clean_name(best.get("name", "").strip())
+        if not raw or raw.lower().startswith("title "):
+            raw = f"Disc_Title_{best.get('id', 0) + 1}"
+
+        if mode == "disc-title+timestamp":
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            return clean_name(f"{raw}_{ts}")
+        return raw
 
     def _log_ripped_file_sizes(self, mkv_files):
         """Log final sizes for newly ripped files so anomalies stand out."""
@@ -2247,6 +2464,107 @@ class RipperController:
             return False
         return True
 
+    def _normalize_rip_result(self, rip_path, success, failed_titles):
+        """Collapse rip outcomes into one all-or-nothing success state."""
+        mkv_files = sorted(glob.glob(os.path.join(rip_path, "*.mkv")))
+
+        if self.engine.abort_flag:
+            self.log("Rip aborted — treating session as failure.")
+            success = False
+
+        if failed_titles:
+            self.log(f"Titles failed: {failed_titles}")
+            success = False
+
+        if not mkv_files:
+            self.log("No MKV files produced — treating as failure.")
+            success = False
+            return False, []
+
+        valid_files = [
+            f for f in mkv_files
+            if self.engine._quick_ffprobe_ok(f, self.log)
+        ]
+        self.log(
+            "Failure gate: "
+            f"abort={self.engine.abort_flag}, "
+            f"failed_titles={len(failed_titles or [])}, "
+            f"files={len(mkv_files)}, valid={len(valid_files)}"
+        )
+        if len(valid_files) != len(mkv_files):
+            self.log("One or more MKV files are invalid — treating as failure.")
+            return False, mkv_files
+
+        return success, mkv_files
+
+    def _mark_session_failed(self, rip_path, **metadata):
+        """Wipe session outputs and persist a single failed session state."""
+        self.log("Session failed — wiping outputs.")
+        self.engine.update_temp_metadata(
+            rip_path,
+            status="failed",
+            phase="failed",
+            **metadata,
+        )
+        if rip_path not in self._wiped_session_paths:
+            self.engine.wipe_session_outputs(rip_path, self.log)
+            self._wiped_session_paths.add(rip_path)
+
+    def preview_title(self, title_id):
+        """Rip a short preview clip for one title and open it in VLC."""
+        preview_dir = os.path.join(
+            self.engine.cfg["temp_folder"], "preview"
+        )
+
+        try:
+            shutil.rmtree(preview_dir, ignore_errors=True)
+            os.makedirs(preview_dir, exist_ok=True)
+        except Exception as e:
+            self.log(f"Preview setup failed: {e}")
+            return
+
+        def run_preview():
+            try:
+                if not self._preview_lock.acquire(blocking=False):
+                    self.log("Preview already running. Wait for it to finish.")
+                    return
+
+                self.log(f"Preview: starting Title {title_id + 1} for 40s...")
+                self.gui.set_status(
+                    f"Previewing Title {title_id + 1}... (40s sample)"
+                )
+                self.engine.reset_abort()
+                self.engine.rip_preview_title(
+                    preview_dir, title_id, 40, self.log
+                )
+
+                files = glob.glob(os.path.join(preview_dir, "*.mkv"))
+                if not files:
+                    self.log("Preview failed: no preview file found.")
+                    return
+
+                latest = max(files, key=os.path.getctime)
+                vlc = shutil.which("vlc")
+                if vlc:
+                    subprocess.Popen([vlc, latest])
+                    self.log(
+                        f"Preview opened in VLC: {os.path.basename(latest)}"
+                    )
+                else:
+                    self.log(
+                        "Preview ready, but VLC was not found in PATH. "
+                        f"File: {latest}"
+                    )
+            except Exception as e:
+                self.log(f"Preview open failed: {e}")
+            finally:
+                self.engine.reset_abort()
+                self.gui.set_status("Ready")
+                if self._preview_lock.locked():
+                    self._preview_lock.release()
+
+        threading.Thread(target=run_preview, daemon=True).start()
+
     def _retry_rip_once_after_size_failure(self, rip_path, selected_ids,
                                            expected_size_by_title):
         """Retry rip once after size sanity failure and re-run checks."""
@@ -2273,13 +2591,13 @@ class RipperController:
             self.report(
                 f"Retry: titles failed — {failed_titles}"
             )
+        success, mkv_files = self._normalize_rip_result(
+            rip_path, success, failed_titles
+        )
         if not success:
             return False
 
         self.engine.update_temp_metadata(rip_path, status="ripped")
-        mkv_files = sorted(glob.glob(os.path.join(rip_path, "*.mkv")))
-        if not mkv_files:
-            return False
 
         self._log_ripped_file_sizes(mkv_files)
         stabilized, timed_out = self._stabilize_ripped_files(
@@ -2421,6 +2739,7 @@ class RipperController:
         temp_root  = os.path.normpath(cfg["temp_folder"])
 
         self.engine.reset_abort()
+        self._wiped_session_paths.clear()
         self.session_report = []
         self.engine.cleanup_partial_files(temp_root, self.log)
         if cfg.get("opt_show_temp_manager", True):
@@ -2435,9 +2754,12 @@ class RipperController:
         )
 
         title = self.gui.ask_input("Title", "Movie title:")
-        if not title:
-            title = make_temp_title()
-            self.log(f"WARNING: No title — using: {title}")
+        auto_title_pending = not bool(title)
+        if auto_title_pending:
+            self.log(
+                "WARNING: No title entered — will use fallback naming "
+                "mode after scan."
+            )
 
         year = self.gui.ask_input("Year", "Release year:")
         if not year:
@@ -2466,6 +2788,10 @@ class RipperController:
                 "This can happen with unsupported or empty media."
             )
             return
+
+        if auto_title_pending:
+            title = self._fallback_title_from_mode(disc_titles)
+            self.log(f"Auto title used: {title}")
 
         best, smart_score = choose_best_title(
             disc_titles, require_valid=True
@@ -2582,24 +2908,30 @@ class RipperController:
             "Ripping main feature..."
         )
         self.gui.set_status("Ripping... (this may take 20-60 min)")
-        success, _ = self.engine.rip_selected_titles(
+        success, failed_titles = self.engine.rip_selected_titles(
             rip_path, selected_ids,
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        success, mkv_files = self._normalize_rip_result(
+            rip_path, success, failed_titles
+        )
 
         if not success:
             self.report(f"Smart Rip failed for {title} ({year})")
+            self._mark_session_failed(
+                rip_path,
+                title=title,
+                year=year,
+                media_type="movie",
+                selected_titles=list(selected_ids),
+                dest_folder=movie_folder,
+                failed_titles=list(failed_titles),
+            )
             self.flush_log()
             return
 
         self.engine.update_temp_metadata(rip_path, status="ripped")
-        mkv_files = sorted(
-            glob.glob(os.path.join(rip_path, "*.mkv"))
-        )
-        if not mkv_files:
-            self.log("No files found after ripping.")
-            return
 
         self._log_ripped_file_sizes(mkv_files)
         stabilized, timed_out = self._stabilize_ripped_files(
@@ -2609,6 +2941,14 @@ class RipperController:
             self.log("File stabilization check failed after rip.")
             self.report(
                 f"Smart Rip stabilization failed for {title} ({year})"
+            )
+            self._mark_session_failed(
+                rip_path,
+                title=title,
+                year=year,
+                media_type="movie",
+                selected_titles=list(selected_ids),
+                dest_folder=movie_folder,
             )
             self.gui.show_error(
                 "Rip Failed",
@@ -2635,6 +2975,14 @@ class RipperController:
                 self.report(
                     f"Smart Rip failed size sanity check for {title} ({year})"
                 )
+                self._mark_session_failed(
+                    rip_path,
+                    title=title,
+                    year=year,
+                    media_type="movie",
+                    selected_titles=list(selected_ids),
+                    dest_folder=movie_folder,
+                )
                 self.flush_log()
                 self.gui.show_error(
                     "Rip Failed",
@@ -2656,6 +3004,14 @@ class RipperController:
 
         if not self._verify_container_integrity(mkv_files):
             self.report(f"Smart Rip ffprobe integrity check failed for {title} ({year})")
+            self._mark_session_failed(
+                rip_path,
+                title=title,
+                year=year,
+                media_type="movie",
+                selected_titles=list(selected_ids),
+                dest_folder=movie_folder,
+            )
             self.gui.show_error(
                 "Rip Failed",
                 "Container integrity check failed (ffprobe).\n\n"
@@ -2794,7 +3150,7 @@ class RipperController:
             "Title", "Exact title (used for folder name):"
         )
         if not title:
-            title = make_temp_title()
+            title = self._fallback_title_from_mode()
             self.log(f"WARNING: No title — using: {title}")
 
         rip_path = os.path.join(temp_root, make_rip_folder_name())
@@ -3039,7 +3395,7 @@ class RipperController:
             "Optional batch name for temp folder (blank = timestamp):"
         )
         if not batch_title:
-            batch_title = make_temp_title()
+            batch_title = self._fallback_title_from_mode()
 
         batch_root = os.path.join(
             temp_root,
@@ -3343,7 +3699,7 @@ class RipperController:
             "Series Title", "Exact series title:"
         )
         if not title:
-            title = make_temp_title()
+            title = self._fallback_title_from_mode()
             self.log(f"WARNING: No title — using: {title}")
 
         num_seasons_str = self.gui.ask_input(
@@ -3529,6 +3885,39 @@ class RipperController:
                     f"Disc {disc_number} done. "
                     f"{len(mkv_files)} file(s) ripped."
                 )
+                self._log_ripped_file_sizes(mkv_files)
+                stabilized, timed_out = self._stabilize_ripped_files(
+                    mkv_files
+                )
+                if not stabilized:
+                    self.log("File stabilization check failed after rip.")
+                    self.report(
+                        f"{title} S{current_season:02d} Disc {disc_number}: "
+                        "failed stabilization check"
+                    )
+                    self.gui.show_error(
+                        "Rip Failed",
+                        (
+                            f"Disc {disc_number} did not stabilize in time.\n\n"
+                            if timed_out else
+                            f"Disc {disc_number} failed stabilization checks.\n\n"
+                        ) +
+                        "Stopping unattended series to prevent partial files."
+                    )
+                    stop_requested = True
+                    break
+                if not self._verify_container_integrity(mkv_files):
+                    self.report(
+                        f"{title} S{current_season:02d} Disc {disc_number}: "
+                        "failed ffprobe integrity check"
+                    )
+                    self.gui.show_error(
+                        "Rip Failed",
+                        "Container integrity check failed (ffprobe).\n\n"
+                        "Stopping unattended series to prevent corrupt files."
+                    )
+                    stop_requested = True
+                    break
                 self.gui.set_progress(0)
 
                 if not self.gui.ask_yesno(
@@ -3598,7 +3987,7 @@ class RipperController:
 
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
-            title = make_temp_title()
+            title = self._fallback_title_from_mode()
             self.log(f"WARNING: No title — using: {title}")
         self.log(f"Title: {title}")
 
@@ -3693,6 +4082,7 @@ class RipperController:
         temp_root  = os.path.normpath(cfg["temp_folder"])
 
         self.engine.reset_abort()
+        self._wiped_session_paths.clear()
         self.global_extra_counter = 1
         self.session_report       = []
         disc_number = 0
@@ -3705,17 +4095,35 @@ class RipperController:
         if self.engine.abort_event.is_set():
             return
 
-        self.check_resume(temp_root)
+        resume_session = self.check_resume(
+            temp_root, media_type="tv" if is_tv else "movie"
+        )
+        resume_meta = resume_session["meta"] if resume_session else {}
+        resume_path = resume_session["path"] if resume_session else None
+        if resume_meta:
+            disc_number = max(
+                0,
+                self._parse_int_or_default(
+                    resume_meta.get("disc_number", 1), 1
+                ) - 1
+            )
+            year = str(resume_meta.get("year") or year)
 
         if is_tv:
             title = self.gui.ask_input(
-                "Title", "Exact TV show title:"
+                "Title", "Exact TV show title:",
+                default_value=resume_meta.get("title", "")
             )
             if not title:
-                title = make_temp_title()
+                title = self._fallback_title_from_mode()
                 self.log(f"WARNING: No title — using: {title}")
             self.log(f"Title: {title}")
-            series_root = os.path.join(temp_root, clean_name(title))
+            if resume_path:
+                series_root = os.path.dirname(
+                    os.path.dirname(resume_path)
+                )
+            else:
+                series_root = os.path.join(temp_root, clean_name(title))
             os.makedirs(series_root, exist_ok=True)
 
         while True:
@@ -3732,10 +4140,22 @@ class RipperController:
                 f"and click OK when ready."
             )
 
+            active_resume = None
+            if resume_meta and self._parse_int_or_default(
+                resume_meta.get("disc_number", 0), 0
+            ) == disc_number:
+                active_resume = resume_meta
+
+            auto_title_pending = False
+
             if is_tv:
                 season_str = self.gui.ask_input(
                     "Season",
-                    f"Season number for disc {disc_number}:"
+                    f"Season number for disc {disc_number}:",
+                    default_value=str(
+                        active_resume.get("season", "")
+                        if active_resume else ""
+                    )
                 )
                 season = int(season_str) if (
                     season_str and season_str.isdigit()
@@ -3763,12 +4183,22 @@ class RipperController:
 
             else:
                 title = self.gui.ask_input(
-                    "Title", f"Title for disc {disc_number}:"
+                    "Title", f"Title for disc {disc_number}:",
+                    default_value=(active_resume or {}).get("title", "")
                 )
                 if not title:
+                    auto_title_pending = True
                     title = make_temp_title()
-                    self.log(f"WARNING: No title — using: {title}")
-                year = self.gui.ask_input("Year", "Release year:")
+                    self.log(
+                        "WARNING: No title entered — using fallback naming "
+                        "mode after scan when possible."
+                    )
+                year = self.gui.ask_input(
+                    "Year", "Release year:",
+                    default_value=str(
+                        (active_resume or {}).get("year", year)
+                    )
+                )
                 if not year:
                     year = "0000"
                     self.log("WARNING: No year — using 0000")
@@ -3780,15 +4210,35 @@ class RipperController:
                 os.makedirs(extras_folder, exist_ok=True)
                 dest_folder = movie_folder
                 self.log(f"Movie folder: {movie_folder}")
-                rip_path = os.path.join(
-                    temp_root, make_rip_folder_name()
-                )
+                if active_resume and resume_path:
+                    rip_path = resume_path
+                else:
+                    rip_path = os.path.join(
+                        temp_root, make_rip_folder_name()
+                    )
 
             os.makedirs(rip_path, exist_ok=True)
-            self.engine.write_temp_metadata(
-                rip_path, title, disc_number,
-                season=season if is_tv else None
-            )
+            if active_resume and resume_path:
+                self.engine.update_temp_metadata(
+                    rip_path,
+                    status="ripping",
+                    title=title,
+                    year=year if not is_tv else None,
+                    media_type="tv" if is_tv else "movie",
+                    season=season if is_tv else None,
+                    dest_folder=dest_folder,
+                    phase="setup",
+                    disc_number=disc_number,
+                )
+            else:
+                self.engine.write_temp_metadata(
+                    rip_path, title, disc_number,
+                    season=season if is_tv else None,
+                    year=year if not is_tv else None,
+                    media_type="tv" if is_tv else "movie",
+                    dest_folder=dest_folder,
+                    phase="setup"
+                )
             self.log(f"Temp folder: {rip_path}")
 
             if self.engine.abort_event.is_set():
@@ -3827,8 +4277,46 @@ class RipperController:
                     break
                 continue
 
+            if (not is_tv) and auto_title_pending:
+                auto_title = self._fallback_title_from_mode(disc_titles)
+                if auto_title and auto_title != title:
+                    title = auto_title
+                    movie_folder = os.path.join(
+                        movie_root, f"{clean_name(title)} ({year})"
+                    )
+                    extras_folder = os.path.join(movie_folder, "Extras")
+                    os.makedirs(movie_folder, exist_ok=True)
+                    os.makedirs(extras_folder, exist_ok=True)
+                    dest_folder = movie_folder
+                    self.log(f"Auto title used: {title}")
+                    self.log(f"Movie folder: {movie_folder}")
+                    self.engine.update_temp_metadata(
+                        rip_path,
+                        title=title,
+                        year=year,
+                        dest_folder=dest_folder,
+                    )
+
+            restored_selected_ids = (
+                self._restore_selected_titles(disc_titles, active_resume)
+                if active_resume else None
+            )
+
+            if restored_selected_ids:
+                selected_ids = restored_selected_ids
+                selected_size = sum(
+                    t["size_bytes"] for t in disc_titles
+                    if t["id"] in selected_ids
+                )
+                self.log(
+                    "Restored selected titles from session metadata: "
+                    + ", ".join(str(tid + 1) for tid in selected_ids)
+                )
+
             # Select best by score, not incoming list position.
-            if cfg.get("opt_smart_rip_mode", False):
+            if not restored_selected_ids and cfg.get("opt_smart_rip_mode", False):
+                selected_ids = None
+                selected_size = 0
                 best, smart_score = choose_best_title(
                     disc_titles, require_valid=True
                 )
@@ -3848,20 +4336,53 @@ class RipperController:
                         "Disc structure may be ambiguous or damaged.\n"
                         "Use this auto-selected title?"
                     ):
-                        if not self.gui.ask_yesno("Try again?"):
-                            break
-                        continue
-                selected_ids  = [best["id"]]
-                selected_size = best.get("size_bytes", 0)
-                self.log(
-                    f"Smart Rip: auto-selected Title "
-                    f"{best['id']+1} "
-                    f"(score={smart_score:.3f}) "
-                    f"{best['duration']} {best['size']}"
-                )
-            else:
+                        if self.gui.ask_yesno(
+                            "Open manual title picker with Preview buttons?"
+                        ):
+                            selected_ids = self.gui.show_disc_tree(
+                                disc_titles, is_tv, self.preview_title
+                            )
+                            if selected_ids is None:
+                                self.log("Cancelled.")
+                                break
+                            if not selected_ids:
+                                self.log("No titles selected.")
+                                if not self.gui.ask_yesno("Try again?"):
+                                    break
+                                continue
+                            selected_size = sum(
+                                t["size_bytes"] for t in disc_titles
+                                if t["id"] in selected_ids
+                            )
+                            self.log(
+                                "Ambiguous Smart Rip: switched to manual "
+                                "selection with preview."
+                            )
+                        else:
+                            if not self.gui.ask_yesno("Try again?"):
+                                break
+                            continue
+                    else:
+                        selected_ids  = [best["id"]]
+                        selected_size = best.get("size_bytes", 0)
+                        self.log(
+                            f"Smart Rip: auto-selected Title "
+                            f"{best['id']+1} "
+                            f"(score={smart_score:.3f}) "
+                            f"{best['duration']} {best['size']}"
+                        )
+                else:
+                    selected_ids  = [best["id"]]
+                    selected_size = best.get("size_bytes", 0)
+                    self.log(
+                        f"Smart Rip: auto-selected Title "
+                        f"{best['id']+1} "
+                        f"(score={smart_score:.3f}) "
+                        f"{best['duration']} {best['size']}"
+                    )
+            elif not restored_selected_ids:
                 selected_ids = self.gui.show_disc_tree(
-                    disc_titles, is_tv
+                    disc_titles, is_tv, self.preview_title
                 )
                 if selected_ids is None:
                     self.log("Cancelled.")
@@ -3881,6 +4402,18 @@ class RipperController:
                 for t in disc_titles
                 if int(t.get("id", -1)) in selected_ids
             }
+            self.engine.update_temp_metadata(
+                rip_path,
+                status="ripping",
+                title=title,
+                year=year if not is_tv else None,
+                media_type="tv" if is_tv else "movie",
+                season=season if is_tv else None,
+                selected_titles=list(selected_ids),
+                dest_folder=dest_folder,
+                phase="ripping",
+                completed_titles=[],
+            )
 
             if cfg.get("opt_confirm_before_rip", True):
                 if not self.gui.ask_yesno(
@@ -3931,17 +4464,22 @@ class RipperController:
                     f"{failed_titles}"
                 )
 
+            success, mkv_files = self._normalize_rip_result(
+                rip_path, success, failed_titles
+            )
+
             if not success:
+                self._mark_session_failed(
+                    rip_path,
+                    title=title,
+                    year=year if not is_tv else None,
+                    media_type="tv" if is_tv else "movie",
+                    season=season if is_tv else None,
+                    selected_titles=list(selected_ids),
+                    dest_folder=dest_folder,
+                    failed_titles=list(failed_titles),
+                )
                 if self.engine.abort_event.is_set():
-                    self.log("Rip aborted — cleaning up...")
-                    for f in glob.glob(
-                        os.path.join(rip_path, "*.partial")
-                    ):
-                        try:
-                            os.remove(f)
-                        except Exception:
-                            pass
-                    self.log(f"Temp preserved at: {rip_path}")
                     break
                 self.log("Rip did not complete.")
                 self.flush_log()
@@ -3950,20 +4488,11 @@ class RipperController:
                 continue
 
             self.engine.update_temp_metadata(
-                rip_path, status="ripped"
+                rip_path, status="ripped", phase="analyzing"
             )
             self.log("Ripping complete.")
             self.gui.set_progress(0)
             time.sleep(2)
-
-            mkv_files = sorted(
-                glob.glob(os.path.join(rip_path, "*.mkv"))
-            )
-            if not mkv_files:
-                self.log("No .mkv files found after ripping.")
-                if not self.gui.ask_yesno("Try another disc?"):
-                    break
-                continue
 
             self.log(f"Found {len(mkv_files)} file(s).")
             self._log_ripped_file_sizes(mkv_files)
@@ -3974,6 +4503,15 @@ class RipperController:
                 self.log("File stabilization check failed after rip.")
                 self.report(
                     f"Disc {disc_number}: failed stabilization check"
+                )
+                self._mark_session_failed(
+                    rip_path,
+                    title=title,
+                    year=year if not is_tv else None,
+                    media_type="tv" if is_tv else "movie",
+                    season=season if is_tv else None,
+                    selected_titles=list(selected_ids),
+                    dest_folder=dest_folder,
                 )
                 self.gui.show_error(
                     "Rip Failed",
@@ -4002,6 +4540,15 @@ class RipperController:
                     self.report(
                         f"Disc {disc_number}: failed size sanity check"
                     )
+                    self._mark_session_failed(
+                        rip_path,
+                        title=title,
+                        year=year if not is_tv else None,
+                        media_type="tv" if is_tv else "movie",
+                        season=season if is_tv else None,
+                        selected_titles=list(selected_ids),
+                        dest_folder=dest_folder,
+                    )
                     self.gui.show_error(
                         "Rip Failed",
                         "Rip incomplete — file too small.\n\n"
@@ -4026,6 +4573,15 @@ class RipperController:
             if not self._verify_container_integrity(mkv_files):
                 self.report(
                     f"Disc {disc_number}: ffprobe integrity check failed"
+                )
+                self._mark_session_failed(
+                    rip_path,
+                    title=title,
+                    year=year if not is_tv else None,
+                    media_type="tv" if is_tv else "movie",
+                    season=season if is_tv else None,
+                    selected_titles=list(selected_ids),
+                    dest_folder=dest_folder,
                 )
                 self.gui.show_error(
                     "Rip Failed",
@@ -4059,7 +4615,10 @@ class RipperController:
                 titles_list, is_tv, title, dest_folder, extras_folder,
                 season if is_tv else None,
                 year if not is_tv else None,
-                expected_size_by_title=expected_size_by_title
+                expected_size_by_title=expected_size_by_title,
+                session_rip_path=rip_path,
+                session_meta=active_resume,
+                selected_title_ids=selected_ids,
             )
 
             if move_ok:
@@ -4089,7 +4648,8 @@ class RipperController:
 
     def _select_and_move(self, titles_list, is_tv, title,
                          dest_folder, extras_folder, season, year,
-                         expected_size_by_title=None):
+                         expected_size_by_title=None, session_rip_path=None,
+                         session_meta=None, selected_title_ids=None):
         options = []
         for i, (f, dur, mb) in enumerate(titles_list, 1):
             mins = int(dur // 60) if dur > 0 else "?"
@@ -4097,29 +4657,49 @@ class RipperController:
                 f"{i}: {os.path.basename(f)}  ~{mins} min  {mb} MB"
             )
 
+        restored_main_indices = self._map_title_ids_to_analyzed_indices(
+            titles_list, selected_title_ids
+        )
+
         self.log("Files (longest first, unknowns at end):")
         for opt in options:
             self.log(f"  {opt}")
 
         if is_tv:
-            selected = self.gui.show_file_list(
-                "Select Main Episodes",
-                "Select MAIN EPISODE files:",
-                options
-            )
-            if not selected:
-                self.log("Cancelled.")
-                return False
+            if restored_main_indices:
+                main_indices = restored_main_indices
+                self.log(
+                    "Restored episode file selection from session metadata."
+                )
+            else:
+                selected = self.gui.show_file_list(
+                    "Select Main Episodes",
+                    "Select MAIN EPISODE files:",
+                    options
+                )
+                if not selected:
+                    self.log("Cancelled.")
+                    return False
 
-            main_indices = [
-                int(s.split(":")[0]) - 1 for s in selected
-            ]
+                main_indices = [
+                    int(s.split(":")[0]) - 1 for s in selected
+                ]
+
+            default_episode_numbers = []
+            if session_meta:
+                default_episode_numbers = session_meta.get(
+                    "episode_numbers", []
+                ) or []
+            default_episode_input = ", ".join(
+                str(x) for x in default_episode_numbers
+            )
 
             while True:
                 ep_input = self.gui.ask_input(
                     "Episode Numbers",
                     f"Enter {len(main_indices)} episode number(s), "
-                    f"comma separated:"
+                    f"comma separated:",
+                    default_value=default_episode_input
                 )
                 if not ep_input:
                     self.log("Cancelled.")
@@ -4159,10 +4739,22 @@ class RipperController:
             name_input = self.gui.ask_input(
                 "Episode Names",
                 "Paste episode names comma separated "
-                "(or leave blank for defaults):"
+                "(or leave blank for defaults):",
+                default_value=", ".join(
+                    session_meta.get("episode_names", [])
+                ) if session_meta else ""
             )
             real_names  = parse_episode_names(name_input)
             keep_extras = self.gui.ask_yesno("Keep extras?")
+
+            if session_rip_path:
+                self.engine.update_temp_metadata(
+                    session_rip_path,
+                    season=season,
+                    episode_names=list(real_names),
+                    episode_numbers=list(episode_numbers),
+                    phase="moving",
+                )
 
             preview_lines = [
                 f"  {os.path.basename(titles_list[i][0])}  ->  "
@@ -4181,19 +4773,31 @@ class RipperController:
                     return False
 
         else:
-            selected = self.gui.show_file_list(
-                "Select Main Movie",
-                "Select the MAIN MOVIE file:",
-                options
-            )
-            if not selected:
-                self.log("Cancelled.")
-                return False
+            if restored_main_indices:
+                main_indices = [restored_main_indices[0]]
+                self.log(
+                    "Restored main movie selection from session metadata."
+                )
+            else:
+                selected = self.gui.show_file_list(
+                    "Select Main Movie",
+                    "Select the MAIN MOVIE file:",
+                    options
+                )
+                if not selected:
+                    self.log("Cancelled.")
+                    return False
 
-            main_indices    = [int(selected[0].split(":")[0]) - 1]
+                main_indices = [int(selected[0].split(":")[0]) - 1]
             keep_extras     = self.gui.ask_yesno("Keep extras?")
             episode_numbers = []
             real_names      = []
+
+            if session_rip_path:
+                self.engine.update_temp_metadata(
+                    session_rip_path,
+                    phase="moving",
+                )
 
             self.log(
                 f"Main movie: "
@@ -4240,6 +4844,15 @@ class RipperController:
             reason = self.engine.last_move_error.strip()
             if reason:
                 self.gui.show_error("Move Failed", reason)
+        elif session_rip_path:
+            self.engine.update_temp_metadata(
+                session_rip_path,
+                status="organized",
+                phase="complete",
+                completed_titles=list(selected_title_ids or []),
+                episode_names=list(real_names),
+                episode_numbers=list(episode_numbers),
+            )
         return success
 
 
@@ -4520,15 +5133,17 @@ class JellyRipperGUI(tk.Tk):
         except Exception as e:
             self.controller.log(f"Could not copy log: {e}")
 
-    def _show_input_bar(self, label, show_browse=False):
+    def _show_input_bar(self, label, show_browse=False, initial_value=""):
         self.input_label_var.set(label)
-        self.input_var.set("")
+        self.input_var.set(initial_value or "")
         self._input_active = True
         if show_browse:
             self.input_browse_btn.pack(side="left", padx=4, pady=8)
         else:
             self.input_browse_btn.pack_forget()
         self.input_bar.pack(fill="x", padx=20, pady=4)
+        if initial_value:
+            self.input_field.selection_range(0, "end")
         self.input_field.focus_set()
 
     def _hide_input_bar(self):
@@ -4554,7 +5169,8 @@ class JellyRipperGUI(tk.Tk):
         if path:
             self.input_var.set(os.path.normpath(path))
 
-    def ask_input(self, label, prompt, show_browse=False):
+    def ask_input(self, label, prompt, show_browse=False,
+                  default_value=""):
         """Show non-modal input bar and wait from caller thread for user input."""
         result = [None]
         done   = threading.Event()
@@ -4562,7 +5178,9 @@ class JellyRipperGUI(tk.Tk):
         def _show():
             self._input_event.clear()
             self._input_result = None
-            self._show_input_bar(f"{label}: {prompt}", show_browse)
+            self._show_input_bar(
+                f"{label}: {prompt}", show_browse, default_value
+            )
 
             def _wait():
                 while not self._input_event.wait(timeout=0.1):
@@ -4889,7 +5507,7 @@ class JellyRipperGUI(tk.Tk):
                 return False
         return result[0]
 
-    def show_disc_tree(self, disc_titles, is_tv):
+    def show_disc_tree(self, disc_titles, is_tv, preview_callback=None):
         result = [None]
         done   = threading.Event()
 
@@ -4936,7 +5554,7 @@ class JellyRipperGUI(tk.Tk):
 
             tree = ttk.Treeview(
                 tree_frame, style="Disc.Treeview",
-                columns=("duration", "size", "chapters", "audio"),
+                columns=("duration", "size", "chapters", "audio", "preview"),
                 show="tree headings"
             )
             tree.heading("#0",       text="Title / Track")
@@ -4944,11 +5562,13 @@ class JellyRipperGUI(tk.Tk):
             tree.heading("size",     text="Size")
             tree.heading("chapters", text="Chapters")
             tree.heading("audio",    text="Audio")
+            tree.heading("preview",  text="Preview")
             tree.column("#0",       width=220)
             tree.column("duration", width=80,  anchor="center")
             tree.column("size",     width=80,  anchor="center")
             tree.column("chapters", width=70,  anchor="center")
-            tree.column("audio",    width=380, anchor="w")
+            tree.column("audio",    width=320, anchor="w")
+            tree.column("preview",  width=90,  anchor="center")
 
             vsb = ttk.Scrollbar(
                 tree_frame, orient="vertical", command=tree.yview
@@ -4987,6 +5607,7 @@ class JellyRipperGUI(tk.Tk):
                         t.get("size", ""),
                         t.get("chapters", ""),
                         audio_summary,
+                        "Preview",
                     ),
                     tags=tuple(tags)
                 )
@@ -4997,7 +5618,7 @@ class JellyRipperGUI(tk.Tk):
                     tree.insert(
                         iid, "end",
                         text=f"    💬 Subtitle: {lang}",
-                        values=("", "", "", ""),
+                        values=("", "", "", "", ""),
                         tags=("track",)
                     )
 
@@ -5008,6 +5629,14 @@ class JellyRipperGUI(tk.Tk):
             def toggle(event):
                 item = tree.identify_row(event.y)
                 if not item or not item.startswith("title_"):
+                    return
+                col = tree.identify_column(event.x)
+                if col == "#5" and preview_callback:
+                    try:
+                        tid = int(item.split("_")[1])
+                        preview_callback(tid)
+                    except Exception:
+                        pass
                     return
                 check_vars[item] = not check_vars[item]
                 prefix = "☑" if check_vars[item] else "☐"
@@ -5385,42 +6014,78 @@ class JellyRipperGUI(tk.Tk):
             win.geometry("700x800")
             win.resizable(False, True)
 
-            canvas = tk.Canvas(
-                win, bg="#0d1117", highlightthickness=0
+            style = ttk.Style(win)
+            style.configure("JellyRip.TNotebook", background="#0d1117")
+            style.configure(
+                "JellyRip.TNotebook.Tab",
+                padding=(12, 8),
+                background="#21262d",
+                foreground="#c9d1d9"
             )
-            scrollbar = ttk.Scrollbar(
-                win, orient="vertical", command=canvas.yview
+            style.map(
+                "JellyRip.TNotebook.Tab",
+                background=[("selected", "#161b22")],
+                foreground=[("selected", "#58a6ff")]
             )
-            scroll_frame = tk.Frame(canvas, bg="#0d1117")
 
-            scroll_frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(
-                    scrollregion=canvas.bbox("all")
+            notebook = ttk.Notebook(win, style="JellyRip.TNotebook")
+            notebook.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+
+            def make_scroll_tab(title):
+                tab = tk.Frame(notebook, bg="#0d1117")
+                canvas = tk.Canvas(
+                    tab, bg="#0d1117", highlightthickness=0
                 )
-            )
-            canvas.create_window(
-                (0, 0), window=scroll_frame, anchor="nw"
-            )
-            canvas.configure(yscrollcommand=scrollbar.set)
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
+                scrollbar = ttk.Scrollbar(
+                    tab, orient="vertical", command=canvas.yview
+                )
+                scroll_frame = tk.Frame(canvas, bg="#0d1117")
+
+                scroll_frame.bind(
+                    "<Configure>",
+                    lambda e, c=canvas: c.configure(
+                        scrollregion=c.bbox("all")
+                    )
+                )
+                canvas.create_window(
+                    (0, 0), window=scroll_frame, anchor="nw"
+                )
+                canvas.configure(yscrollcommand=scrollbar.set)
+                canvas.pack(side="left", fill="both", expand=True)
+                scrollbar.pack(side="right", fill="y")
+                notebook.add(tab, text=title)
+                return scroll_frame
+
+            paths_tab = make_scroll_tab("Paths")
+            everyday_tab = make_scroll_tab("Everyday")
+            validation_tab = make_scroll_tab("Validation")
+            advanced_tab = make_scroll_tab("Advanced")
+            logs_tab = make_scroll_tab("Logs & Debug")
 
             cfg      = self.cfg
             vars_map = {}
+            naming_mode_label_to_value = {
+                "Timestamp (default)": "timestamp",
+                "Auto title": "auto-title",
+                "Auto title + timestamp (safe)": "auto-title+timestamp",
+            }
+            naming_mode_value_to_label = {
+                value: label
+                for label, value in naming_mode_label_to_value.items()
+            }
 
-            def section(text):
+            def section(parent, text):
                 tk.Label(
-                    scroll_frame, text=text,
+                    parent, text=text,
                     bg="#0d1117", fg="#58a6ff",
                     font=("Segoe UI", 11, "bold"), anchor="w"
                 ).pack(fill="x", padx=16, pady=(14, 2))
                 tk.Frame(
-                    scroll_frame, bg="#21262d", height=1
+                    parent, bg="#21262d", height=1
                 ).pack(fill="x", padx=16, pady=(0, 6))
 
-            def path_row(key, label):
-                row = tk.Frame(scroll_frame, bg="#0d1117")
+            def path_row(parent, key, label):
+                row = tk.Frame(parent, bg="#0d1117")
                 row.pack(fill="x", padx=16, pady=3)
                 tk.Label(
                     row, text=label, bg="#0d1117", fg="#c9d1d9",
@@ -5487,10 +6152,10 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left", padx=4)
                 vars_map[key] = ("str", var)
 
-            def toggle_row(key, label):
+            def toggle_row(parent, key, label):
                 """Create a toggle row without dependent number field.
                 Number fields are now created separately for full independence."""
-                row = tk.Frame(scroll_frame, bg="#0d1117")
+                row = tk.Frame(parent, bg="#0d1117")
                 row.pack(fill="x", padx=16, pady=2)
                 bool_var = tk.BooleanVar(value=cfg.get(key, True))
                 tk.Checkbutton(
@@ -5502,8 +6167,8 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left")
                 vars_map[key] = ("bool", bool_var)
 
-            def number_row(key, label, default=0):
-                row = tk.Frame(scroll_frame, bg="#0d1117")
+            def number_row(parent, key, label, default=0):
+                row = tk.Frame(parent, bg="#0d1117")
                 row.pack(fill="x", padx=16, pady=2)
                 tk.Label(
                     row, text=label,
@@ -5521,8 +6186,27 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left")
                 vars_map[key] = ("int", num_var)
 
-            def text_row(key, label, width=38):
-                row = tk.Frame(scroll_frame, bg="#0d1117")
+            def float_row(parent, key, label, default=0.0):
+                row = tk.Frame(parent, bg="#0d1117")
+                row.pack(fill="x", padx=16, pady=2)
+                tk.Label(
+                    row, text=label,
+                    bg="#0d1117", fg="#c9d1d9",
+                    font=("Segoe UI", 10), anchor="w", width=36
+                ).pack(side="left")
+                num_var = tk.StringVar(
+                    value=str(cfg.get(key, default))
+                )
+                tk.Entry(
+                    row, textvariable=num_var,
+                    bg="#161b22", fg="#c9d1d9",
+                    font=("Segoe UI", 10),
+                    relief="flat", bd=3, width=10
+                ).pack(side="left")
+                vars_map[key] = ("float", num_var)
+
+            def text_row(parent, key, label, width=38):
+                row = tk.Frame(parent, bg="#0d1117")
                 row.pack(fill="x", padx=16, pady=2)
                 tk.Label(
                     row, text=label,
@@ -5540,94 +6224,161 @@ class JellyRipperGUI(tk.Tk):
                 ).pack(side="left")
                 vars_map[key] = ("text", txt_var)
 
-            section("Paths")
-            path_row("makemkvcon_path", "MakeMKV app")
-            path_row("ffprobe_path",    "ffprobe app")
-            path_row("temp_folder",     "Temp folder")
-            path_row("tv_folder",       "TV shows library folder")
-            path_row("movies_folder",   "Movies folder")
-            path_row("log_file",        "Log file")
+            def choice_row(parent, key, label, choices):
+                row = tk.Frame(parent, bg="#0d1117")
+                row.pack(fill="x", padx=16, pady=2)
+                tk.Label(
+                    row, text=label,
+                    bg="#0d1117", fg="#c9d1d9",
+                    font=("Segoe UI", 10), anchor="w", width=36
+                ).pack(side="left")
+                selected = tk.StringVar(
+                    value=cfg.get(key, DEFAULTS.get(key, choices[0]))
+                )
+                combo = ttk.Combobox(
+                    row, textvariable=selected,
+                    values=choices, state="readonly", width=24
+                )
+                combo.pack(side="left")
+                vars_map[key] = ("choice", selected)
 
-            section("Safe To Change")
-            toggle_row("opt_safe_mode",
+            section(paths_tab, "Apps")
+            path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
+            path_row(paths_tab, "ffprobe_path",    "ffprobe app")
+            section(paths_tab, "Folders")
+            path_row(paths_tab, "temp_folder",     "Temp folder")
+            path_row(paths_tab, "tv_folder",       "TV shows library folder")
+            path_row(paths_tab, "movies_folder",   "Movies folder")
+            path_row(paths_tab, "log_file",        "Log file")
+
+            section(everyday_tab, "Common Options")
+            toggle_row(everyday_tab, "opt_safe_mode",
                        "Safe Mode (recommended)")
-            toggle_row("opt_scan_disc_size",
-                       "Check disc size before ripping")
-            toggle_row("opt_confirm_before_rip",
+            toggle_row(everyday_tab, "opt_confirm_before_rip",
                        "Ask before ripping")
-            toggle_row("opt_smart_rip_mode",
-                       "Smart Rip (auto-pick best title)")
-            number_row("opt_smart_min_minutes",
-                       "Shortest movie length for Smart Rip (minutes):", 20)
-            toggle_row("opt_file_stabilization",
-                       "Wait for files to finish writing")
-            toggle_row("opt_check_dest_space",
-                       "Check free space before moving files")
-            toggle_row("opt_confirm_before_move",
+            toggle_row(everyday_tab, "opt_confirm_before_move",
                        "Ask before moving files")
-            toggle_row("opt_show_temp_manager",
+            toggle_row(everyday_tab, "opt_smart_rip_mode",
+                       "Smart Rip (auto-pick best title)")
+            number_row(everyday_tab, "opt_smart_min_minutes",
+                       "Shortest movie length for Smart Rip (minutes):", 20)
+            float_row(everyday_tab, "opt_smart_low_confidence_threshold",
+                      "Smart Rip low-confidence warning threshold:", 0.45)
+            row = tk.Frame(everyday_tab, bg="#0d1117")
+            row.pack(fill="x", padx=16, pady=2)
+            tk.Label(
+                row, text="Fallback title naming mode:",
+                bg="#0d1117", fg="#c9d1d9",
+                font=("Segoe UI", 10), anchor="w", width=36
+            ).pack(side="left")
+
+            mode_value = str(
+                cfg.get(
+                    "opt_fallback_title_mode",
+                    DEFAULTS.get("opt_fallback_title_mode", "timestamp")
+                )
+            ).strip().lower()
+            if mode_value == "disc-title":
+                mode_value = "auto-title"
+            elif mode_value == "disc-title+timestamp":
+                mode_value = "auto-title+timestamp"
+
+            naming_mode_var = tk.StringVar(
+                value=naming_mode_value_to_label.get(
+                    mode_value, "Timestamp (default)"
+                )
+            )
+            naming_dropdown = ttk.Combobox(
+                row,
+                textvariable=naming_mode_var,
+                state="readonly",
+                values=list(naming_mode_label_to_value.keys()),
+                width=30,
+            )
+            naming_dropdown.pack(side="left")
+            vars_map["opt_fallback_title_mode"] = ("naming_mode", naming_mode_var)
+            toggle_row(everyday_tab, "opt_show_temp_manager",
                        "Show temp folders at startup")
-            toggle_row("opt_auto_delete_temp",
+            toggle_row(everyday_tab, "opt_auto_delete_temp",
                        "Delete temp files after successful organize")
-            toggle_row("opt_clean_partials_startup",
+            toggle_row(everyday_tab, "opt_clean_partials_startup",
                        "Remove unfinished files at startup")
-            toggle_row("opt_warn_low_space",
-                       "Warn when free space is low")
-            toggle_row("opt_warn_out_of_order_episodes",
+            toggle_row(everyday_tab, "opt_warn_out_of_order_episodes",
                        "Warn if episode numbers look out of order")
-            toggle_row("opt_session_failure_report",
+            toggle_row(everyday_tab, "opt_session_failure_report",
                        "Show a failure report at the end")
 
-            section("Unsafe / Advanced")
-            number_row("opt_drive_index",
-                       "Drive number for MakeMKV:", 0)
-            toggle_row("opt_stall_detection",
-                       "Detect stalled rip processes")
-            number_row("opt_stall_timeout_seconds",
-                       "Stall timeout in seconds:", 120)
-            number_row("opt_stabilize_timeout_seconds",
-                       "File-write wait timeout in seconds:", 60)
-            number_row("opt_stabilize_required_polls",
-                       "How many stable checks are required:", 4)
-            number_row("opt_min_rip_size_gb",
+            section(validation_tab, "Rip Validation")
+            toggle_row(validation_tab, "opt_scan_disc_size",
+                       "Check disc size before ripping")
+            toggle_row(validation_tab, "opt_file_stabilization",
+                       "Wait for files to finish writing")
+            toggle_row(validation_tab, "opt_check_dest_space",
+                       "Check free space before moving files")
+            toggle_row(validation_tab, "opt_warn_low_space",
+                       "Warn when free space is low")
+            number_row(validation_tab, "opt_min_rip_size_gb",
                        "Minimum accepted file size (GB):", 1)
-            number_row("opt_expected_size_ratio_pct",
-                       "Minimum size match vs expected (%):", 70)
-            number_row("opt_move_verify_retries",
+            number_row(validation_tab, "opt_expected_size_ratio_pct",
+                       "Preferred size match vs expected (%):", 70)
+            number_row(validation_tab, "opt_hard_fail_ratio_pct",
+                       "Hard fail below expected size (%):", 40)
+            number_row(validation_tab, "opt_stabilize_timeout_seconds",
+                       "File-write wait timeout in seconds:", 60)
+            number_row(validation_tab, "opt_stabilize_required_polls",
+                       "How many stable checks are required:", 4)
+            number_row(validation_tab, "opt_move_verify_retries",
                        "Move size check retries:", 5)
-            toggle_row("opt_auto_retry",
+
+            section(advanced_tab, "MakeMKV")
+            number_row(advanced_tab, "opt_drive_index",
+                       "Drive number for MakeMKV:", 0)
+            toggle_row(advanced_tab, "opt_stall_detection",
+                       "Warn when MakeMKV goes quiet")
+            number_row(advanced_tab, "opt_stall_timeout_seconds",
+                       "Quiet-time warning in seconds:", 120)
+            toggle_row(advanced_tab, "opt_auto_retry",
                        "Retry failed titles automatically")
-            number_row("opt_retry_attempts",
+            number_row(advanced_tab, "opt_retry_attempts",
                        "Retry attempts per title:", 3)
-            toggle_row("opt_clean_mkv_before_retry",
+            toggle_row(advanced_tab, "opt_clean_mkv_before_retry",
                        "Delete new MKV files before retry")
-            toggle_row("opt_atomic_move",
+            section(advanced_tab, "Moving")
+            toggle_row(advanced_tab, "opt_atomic_move",
                        "Use safer move method (slower)")
-            toggle_row("opt_fsync",
+            toggle_row(advanced_tab, "opt_fsync",
                        "Force file sync to disk during copy")
-            number_row("opt_hard_block_gb",
+            number_row(advanced_tab, "opt_hard_block_gb",
                        "Stop when free space is below (GB):", 20)
+            section(advanced_tab, "Extra MakeMKV Arguments")
             text_row(
+                advanced_tab,
                 "opt_makemkv_global_args",
                 "Extra MakeMKV args (all commands):"
             )
             text_row(
+                advanced_tab,
                 "opt_makemkv_info_args",
                 "Extra MakeMKV args (scan commands):"
             )
             text_row(
+                advanced_tab,
                 "opt_makemkv_rip_args",
                 "Extra MakeMKV args (rip commands):"
             )
+            section(logs_tab, "Log Storage")
             number_row(
+                logs_tab,
                 "opt_log_cap_lines", "Max log lines kept in memory:", 300000
             )
             number_row(
+                logs_tab,
                 "opt_log_trim_lines", "Trim log down to this many lines:", 200000
             )
-            toggle_row("opt_debug_safe_int",
+            section(logs_tab, "Debugging")
+            toggle_row(logs_tab, "opt_debug_safe_int",
                        "Debug: log bad integer values")
-            toggle_row("opt_debug_duration",
+            toggle_row(logs_tab, "opt_debug_duration",
                        "Debug: log bad duration values")
 
             btn_row = tk.Frame(win, bg="#0d1117")
@@ -5650,6 +6401,18 @@ class JellyRipperGUI(tk.Tk):
                                 cfg[key] = int(var.get())
                             except ValueError:
                                 pass
+                        elif vtype == "float":
+                            try:
+                                cfg[key] = float(var.get())
+                            except ValueError:
+                                pass
+                        elif vtype == "choice":
+                            cfg[key] = var.get().strip()
+                        elif vtype == "naming_mode":
+                            selected = var.get().strip()
+                            cfg[key] = naming_mode_label_to_value.get(
+                                selected, "timestamp"
+                            )
                     self.engine.cfg = cfg
                     configure_safe_int_debug(
                         cfg.get("opt_debug_safe_int", False),

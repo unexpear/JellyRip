@@ -1,13 +1,20 @@
-﻿## Critical Bug Fixes
+﻿## JellyRip v1.0.6 Highlights
 
-### 🔴 Movie and Unattended Mode - Now Working!
-- **FIXED: Deadlock on Movie/Unattended button clicks** - These buttons previously froze the UI. The mode picker dialog is now safely dispatched on the background thread, preventing tkinter main-thread deadlock.
+### Preview and selection
+- Added per-title Preview support directly in the title picker.
+- Preview runs as a short disposable sample rip and can auto-open in VLC.
 
-### 🔧 Log File Handling  
-- **FIXED: Permission denied errors** - Log paths without .txt extension are now automatically suffixed with .txt to prevent Windows file creation errors.
+### Real workflow resume
+- Resume now restores metadata context (title, year, season, selected titles, episode fields).
+- Input prompts can prefill saved values from interrupted sessions.
 
-### 📊 Enhanced Diagnostics
-- Better error messages when file analysis fails
-- Retry prompts instead of silent skips
+### Reliability policy enforcement
+- Rip outcomes are normalized to all-or-nothing success.
+- Invalid, missing, aborted, or failed-title outputs are treated as session failure.
+- Failed sessions now wipe output media while preserving metadata for resume.
+
+### Settings and naming
+- Added fallback naming mode options: timestamp, auto title, and auto title + timestamp.
+- Settings UI reorganized into clearer tabs for everyday and advanced controls.
 
 Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
