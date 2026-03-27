@@ -1,6 +1,9 @@
 """Session result normalization helpers."""
 
 
+# CRITICAL:
+# This function defines ALL success criteria for rip sessions.
+# Do not replicate this logic elsewhere.
 def normalize_session_result(abort, failed_titles, files, valid_files):
     """Return deterministic all-or-nothing session success state."""
     if abort:
