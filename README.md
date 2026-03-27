@@ -7,11 +7,19 @@ MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
-Quick links: [App code](JellyRip.py) | [Build script](build.bat) | [Requirements](requirements.txt) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.md) | [Tester sheet](TESTERS.md) | [Tests](tests)
+Latest exe (direct): [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
+Latest release page: [latest release](https://github.com/unexpear/JellyRip/releases/latest)
+
+Quick links: [Main entry](main.py) | [Legacy entry](JellyRip.py) | [Engine](engine) | [Controller](controller) | [GUI](gui) | [Utils](utils) | [Build script](build.bat) | [Requirements](requirements.txt) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.md) | [Tester sheet](TESTERS.md) | [Tests](tests)
 
 ## Quick Navigation
 
-- App code: [JellyRip.py](JellyRip.py)
+- Main entry: [main.py](main.py)
+- Legacy entry (kept for compatibility): [JellyRip.py](JellyRip.py)
+- Engine package: [engine](engine)
+- Controller package: [controller](controller)
+- GUI package: [gui](gui)
+- Utils package: [utils](utils)
 - Build script: [build.bat](build.bat)
 - Requirements: [requirements.txt](requirements.txt)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
@@ -35,6 +43,8 @@ Quick links: [App code](JellyRip.py) | [Build script](build.bat) | [Requirements
 
 1. Download `JellyRip.exe` from [releases](https://github.com/unexpear/JellyRip/releases)
 2. Run it directly — no installation required
+
+Direct latest exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
 
 **Windows Defender False Positive?**
 
@@ -69,7 +79,7 @@ Requires Python 3.13+:
 
 ```bash
 pip install -r requirements.txt
-python JellyRip.py
+python main.py
 ```
 
 ## Usage

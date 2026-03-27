@@ -22,7 +22,7 @@ python -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name JellyRip ^
-    JellyRip.py
+    main.py
 
 if errorlevel 1 (
     echo Build failed!
