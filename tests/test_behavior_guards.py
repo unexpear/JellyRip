@@ -452,3 +452,9 @@ class TestComputeFileMinSize:
         _7_GB = 7 * 1024 ** 3
         result = self._min(_7_GB)
         assert result == _7_GB // 2
+
+    def test_inflated_expected_never_exceeds_expected(self):
+        # Inflated playlist size: threshold must not exceed expected itself.
+        _20_GB = 20 * 1024 ** 3
+        result = self._min(_20_GB)
+        assert result <= _20_GB
