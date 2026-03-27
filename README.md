@@ -6,35 +6,19 @@ MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
 Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
-Git navigation: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
 
-Quick links: [Code](#code) | [Docs](#docs) | [Downloads](#downloads) | [Reports and Tests](#reports-and-tests) | [Latest exe](dist/JellyRip.exe)
+Quick links: [App code](JellyRip.py) | [Build script](build.bat) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.txt) | [Tester sheet](TESTERS.md) | [Tests](tests)
 
 ## Quick Navigation
 
-### Code
-
-- Main app: [JellyRip.py](JellyRip.py)
-- Build helper: [build.bat](build.bat)
-
-### Docs
-
-- Overview and setup: [README.md](README.md)
-- Git/history guide: [docs/GIT_NAVIGATION.md](docs/GIT_NAVIGATION.md)
-- Release history: [CHANGELOG.md](CHANGELOG.md)
-- Release summary text: [release_notes.txt](release_notes.txt)
-
-### Downloads
-
-- Stable and tagged releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
-- Latest unstable build: [unstable-latest](https://github.com/unexpear/JellyRip/releases/tag/unstable-latest)
-- Direct unstable exe: [JellyRip.exe (unstable-latest)](https://github.com/unexpear/JellyRip/releases/download/unstable-latest/JellyRip.exe)
-
-### Reports and Tests
-
+- App code: [JellyRip.py](JellyRip.py)
+- Build script: [build.bat](build.bat)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Release post text: [release_notes.txt](release_notes.txt)
 - Tester worksheet: [TESTERS.md](TESTERS.md)
 - Automated tests: [tests](tests)
-- Issue reporting: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
+- Issues: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
+- Downloads: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
 ## Project Status
 
