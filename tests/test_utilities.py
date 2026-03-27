@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from JellyRip import clean_name, make_temp_title
+from JellyRip import clean_name, make_temp_title # pyright: ignore[reportMissingImports]
 
 
 class TestCleanName:

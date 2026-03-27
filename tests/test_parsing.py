@@ -9,7 +9,7 @@ sys.path.insert(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 )
 
-from JellyRip import parse_duration_to_seconds, safe_int
+from JellyRip import parse_duration_to_seconds, safe_int # pyright: ignore[reportMissingImports]
 
 
 class TestSafeInt:
