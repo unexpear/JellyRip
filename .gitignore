@@ -31,3 +31,7 @@ Thumbs.db
 config.json
 *.log
 rip_log.txt
+
+# Local snapshot helpers
+.git_head_now.txt
+.git_status_now.txt
