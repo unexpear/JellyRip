@@ -541,6 +541,9 @@ class RipperController:
         )
         return False, True
 
+    # CRITICAL:
+    # All size threshold decisions for ripped files MUST go through this
+    # function. Do not duplicate or inline this logic elsewhere.
     @staticmethod
     def _compute_file_min_size(expected_bytes, floor_bytes):
         """Return the minimum acceptable size for a ripped file.
@@ -549,12 +552,16 @@ class RipperController:
         (> 100 MB), trust it: accept down to 50% of that figure.
         This lets 0.47 GB extras pass while still catching truncated rips.
 
+        The result is capped at expected_bytes itself to guard against
+        inflated playlist sizes (e.g. fake 20 GB title) producing a
+        threshold higher than the real file could ever satisfy.
+
         If expected is zero, missing, or suspiciously small (bad parse /
         corrupt metadata), fall back to the global floor from settings.
         """
         _100_MB = 100 * 1024 * 1024
         if expected_bytes > _100_MB:
-            return int(expected_bytes * 0.5)
+            return min(int(expected_bytes * 0.5), expected_bytes)
         return floor_bytes
 
     def _stabilize_ripped_files(self, mkv_files, expected_size_by_title=None):
