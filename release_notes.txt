@@ -1,9 +1,12 @@
 ﻿## JellyRip v1.0.6 Update Notes
 
 ### Download
-- Direct download (v1.0.6): https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.6
-- Latest releases list: https://github.com/unexpear/JellyRip/releases
+- Direct download (v1.0.6): [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe)
+	https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe
+- Release page: [v1.0.6 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.6)
+	https://github.com/unexpear/JellyRip/releases/tag/v1.0.6
+- Latest releases list: [all releases](https://github.com/unexpear/JellyRip/releases)
+	https://github.com/unexpear/JellyRip/releases
 
 ### What's New
 - Added per-title Preview support directly in the title picker.
@@ -20,4 +23,5 @@
 - Added naming mode options: timestamp, auto title, and auto title + timestamp.
 - Reorganized Settings layout into clearer grouped sections.
 
-Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
+Full changelog: [CHANGELOG.md](https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md)
+https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
