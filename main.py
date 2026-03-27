@@ -1,6 +1,7 @@
 """Main entrypoint for the split package layout."""
 
-from JellyRip import JellyRipperGUI, load_config  # pyright: ignore[reportMissingImports]
+from config import load_config
+from gui.main_window import JellyRipperGUI
 
 
 def main():
