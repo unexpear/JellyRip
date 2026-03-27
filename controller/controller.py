@@ -472,9 +472,13 @@ class RipperController:
         status, _reason = self._verify_expected_sizes(mkv_files, expected_size_by_title)
         return status == "pass"
 
-    def _stabilize_file(self, path, timeout_seconds, min_stable_polls,
-                        min_size_bytes):
-        """Wait for file to be stable: N equal reads AND 3+ seconds of no growth."""
+    def _stabilize_file(self, path, timeout_seconds, min_stable_polls):
+        """Wait for file to be stable: N equal reads AND 3+ seconds of no growth.
+
+        Stability = file size stopped changing. Size alone is NOT a stability
+        signal — extras and short titles are legitimately small. Size validation
+        is a separate post-stabilization concern.
+        """
         start = time.time()
         try:
             prev = os.path.getsize(path)
@@ -495,15 +499,7 @@ class RipperController:
 
             prev_mb = prev / (1024**2)
             cur_mb = cur / (1024**2)
-            if cur < min_size_bytes:
-                stable_polls = 0
-                stable_start_time = None
-                self.log(
-                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — "
-                    f"below minimum size floor "
-                    f"({min_size_bytes / (1024**3):.2f} GB)"
-                )
-            elif cur == prev:
+            if cur == prev:
                 if stable_start_time is None:
                     stable_start_time = time.time()
                 stable_polls += 1
@@ -546,7 +542,12 @@ class RipperController:
         return False, True
 
     def _stabilize_ripped_files(self, mkv_files, expected_size_by_title=None):
-        """Optionally wait for ripped files to stabilize before analysis/move."""
+        """Optionally wait for ripped files to stabilize before analysis/move.
+
+        Stabilization = file stopped changing size. The minimum-size floor is
+        NOT checked here; a small file (extra, short feature) is stable the
+        moment it stops writing. Size validation lives in _verify_expected_sizes.
+        """
         cfg = self.engine.cfg
         if not cfg.get("opt_file_stabilization", True):
             return True, False
@@ -564,29 +565,40 @@ class RipperController:
         for f in sorted(mkv_files):
             if self.engine.abort_event.is_set():
                 return False, False
+
+            current_size = os.path.getsize(f)
             expected = 0
             if expected_size_by_title:
                 tid = self._title_id_from_filename(f)
                 if tid is not None:
                     expected = int(expected_size_by_title.get(tid, 0) or 0)
-
-            size_for_timeout = max(expected, os.path.getsize(f))
+            # Use expected size (from disc scan) for timeout budget when
+            # available; otherwise use current on-disk size. Both are capped.
+            size_for_timeout = max(expected, current_size)
             size_gb = size_for_timeout / (1024**3)
             # Cap timeout: don't scale unboundedly with size.
             timeout = max(base_timeout, min(300, int(size_gb * 5)))
             polls = default_polls if size_gb >= 5 else max(3, default_polls - 1)
-            # When we have expected size from the disc scan, use 50% of that
-            # as the floor — do NOT apply the global floor because extras are
-            # legitimately small and the floor would lock them out forever.
-            # When expected is unknown, fall back to the configured floor.
-            if expected > 0:
-                min_size = int(expected * 0.5)
-            else:
-                min_size = min_size_floor
 
-            ok, timed_out = self._stabilize_file(f, timeout, polls, min_size)
+            ok, timed_out = self._stabilize_file(f, timeout, polls)
             if not ok:
                 return False, timed_out
+
+            # Post-stabilization size advisory: log a warning for files below
+            # the configured floor but do NOT fail — extras are legitimately
+            # small. Strict size validation uses ratio checks in
+            # _verify_expected_sizes after all files are stable.
+            try:
+                final_size = os.path.getsize(f)
+            except Exception:
+                final_size = 0
+            if min_size_floor > 0 and final_size < min_size_floor:
+                self.log(
+                    f"INFO: {os.path.basename(f)} is "
+                    f"{final_size / (1024**2):.0f} MB "
+                    f"(below {min_size_floor / (1024**3):.2f} GB floor — "
+                    f"normal for extras/short titles)"
+                )
 
         return True, False
 
