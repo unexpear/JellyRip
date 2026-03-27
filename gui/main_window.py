@@ -1,5 +1,9 @@
 """GUI layer implementation."""
 
+import tempfile
+import urllib.error
+import webbrowser
+
 from shared.runtime import *
 
 from config import DEFAULTS, load_config, save_config
@@ -7,6 +11,7 @@ from controller.controller import RipperController
 from engine.ripper_engine import RipperEngine
 from utils.helpers import get_available_drives, is_network_path
 from utils.scoring import choose_best_title, format_audio_summary
+from utils.updater import download_asset, fetch_latest_release, is_newer_version
 
 
 class JellyRipperGUI(tk.Tk):
@@ -141,6 +146,13 @@ class JellyRipperGUI(tk.Tk):
             bg="#21262d", fg="#8b949e",
             font=("Segoe UI", 10), relief="flat"
         ).pack(side="right", padx=4)
+        self.update_btn = tk.Button(
+            util_frame, text="⬆  Check Updates",
+            command=self.check_for_updates,
+            bg="#21262d", fg="#8b949e",
+            font=("Segoe UI", 10), relief="flat"
+        )
+        self.update_btn.pack(side="right", padx=4)
         tk.Button(
             util_frame, text="⚙  Settings",
             command=self.open_settings,
@@ -281,6 +293,157 @@ class JellyRipperGUI(tk.Tk):
             self.controller.log("Log copied to clipboard.")
         except Exception as e:
             self.controller.log(f"Could not copy log: {e}")
+
+    def _launch_downloaded_update(self, downloaded_path):
+        """Launch downloaded update package and close app for file replacement."""
+        try:
+            subprocess.Popen([downloaded_path])
+        except Exception as e:
+            self.controller.log(f"Could not launch update package: {e}")
+            self.show_error(
+                "Update Downloaded",
+                "Downloaded update package but could not launch it.\n\n"
+                f"Run this file manually:\n{downloaded_path}"
+            )
+            return
+
+        self.show_info(
+            "Update Ready",
+            "The update package was started.\n\n"
+            "JellyRip will now close so files can be replaced."
+        )
+        self.engine.abort()
+        self.destroy()
+
+    def check_for_updates(self):
+        """Check GitHub releases for a newer version and offer download."""
+        self.set_status("Checking for updates...")
+        self.controller.log("Checking GitHub Releases for updates...")
+        if hasattr(self, "update_btn"):
+            self.update_btn.config(state="disabled")
+
+        def _finish_ready():
+            self.set_status("Ready")
+            if hasattr(self, "update_btn"):
+                self.update_btn.config(state="normal")
+
+        def worker():
+            try:
+                release = fetch_latest_release("unexpear/JellyRip")
+            except urllib.error.URLError as e:
+                self.controller.log(f"Update check failed: {e}")
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Check Failed",
+                        "Could not reach GitHub Releases right now."
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+            except Exception as e:
+                self.controller.log(f"Update check failed: {e}")
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Check Failed",
+                        f"Unexpected error while checking updates:\n{e}"
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+
+            latest = release.get("version") or ""
+            if not latest:
+                self.controller.log("Latest release has no usable version tag.")
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Check Failed",
+                        "Latest release metadata did not include a version."
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+
+            if not is_newer_version(__version__, latest):
+                self.controller.log(
+                    f"Already up to date (current: {__version__}, latest: {latest})."
+                )
+                self.after(
+                    0,
+                    lambda: self.show_info(
+                        "No Update Available",
+                        f"You are already on v{__version__}."
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+
+            self.controller.log(
+                f"Update available: v{latest} (current: v{__version__})"
+            )
+            wants_update = self.ask_yesno(
+                f"Update available: v{latest} (current: v{__version__}).\n"
+                "Download and install now?"
+            )
+            if not wants_update:
+                self.controller.log("Update deferred by user.")
+                self.after(0, _finish_ready)
+                return
+
+            asset_url = release.get("asset_url") or ""
+            asset_name = release.get("asset_name") or "JellyRip.exe"
+            page_url = release.get("html_url") or ""
+
+            if not asset_url:
+                self.controller.log("No downloadable asset found in latest release.")
+                if page_url:
+                    webbrowser.open(page_url)
+                self.after(0, _finish_ready)
+                return
+
+            update_dir = os.path.join(tempfile.gettempdir(), "JellyRipUpdate")
+            os.makedirs(update_dir, exist_ok=True)
+            destination = os.path.join(update_dir, asset_name)
+
+            self.set_status("Downloading update...")
+            self.controller.log(f"Downloading update asset: {asset_name}")
+
+            last_logged_mb = {"mb": -1}
+
+            def on_progress(written, total):
+                mb = written // (1024 * 1024)
+                if mb == last_logged_mb["mb"]:
+                    return
+                last_logged_mb["mb"] = mb
+                if total > 0:
+                    pct = int((written / total) * 100)
+                    self.controller.log(
+                        f"Update download: {pct}% ({mb} MB)"
+                    )
+                else:
+                    self.controller.log(f"Update download: {mb} MB")
+
+            try:
+                download_asset(asset_url, destination, on_progress)
+            except Exception as e:
+                self.controller.log(f"Update download failed: {e}")
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Download Failed",
+                        f"Could not download update package:\n{e}"
+                    )
+                )
+                self.after(0, _finish_ready)
+                return
+
+            self.controller.log(f"Update downloaded to: {destination}")
+            self.after(0, _finish_ready)
+            self.after(0, lambda: self._launch_downloaded_update(destination))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _show_input_bar(self, label, show_browse=False, initial_value=""):
         self.input_label_var.set(label)

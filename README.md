@@ -46,6 +46,14 @@ Quick links: [Main entry](main.py) | [Legacy entry](JellyRip.py) | [Engine](engi
 
 Direct latest exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
 
+Installer (recommended for auto-updates): [JellyRipInstaller.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRipInstaller.exe)
+
+Auto-update flow:
+
+1. In JellyRip, click **Check Updates**.
+2. If a newer GitHub Release exists, JellyRip downloads the installer/exe package.
+3. JellyRip launches the update package and closes so Windows can replace files.
+
 **Windows Defender False Positive?**
 
 The exe is 100% safe (70+ antivirus vendors verified). If Windows Defender blocks it:
@@ -135,6 +143,17 @@ pyinstaller --onefile --windowed --name JellyRip JellyRip.py
 ```
 
 Output: `dist/JellyRip.exe`
+
+To build installer too (requires Inno Setup 6):
+
+```bash
+build_installer.bat
+```
+
+Outputs:
+
+- `dist/JellyRip.exe`
+- `dist/JellyRipInstaller.exe`
 
 ## License
 
