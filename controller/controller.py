@@ -541,6 +541,22 @@ class RipperController:
         )
         return False, True
 
+    @staticmethod
+    def _compute_file_min_size(expected_bytes, floor_bytes):
+        """Return the minimum acceptable size for a ripped file.
+
+        If expected_bytes comes from disc metadata and is credibly large
+        (> 100 MB), trust it: accept down to 50% of that figure.
+        This lets 0.47 GB extras pass while still catching truncated rips.
+
+        If expected is zero, missing, or suspiciously small (bad parse /
+        corrupt metadata), fall back to the global floor from settings.
+        """
+        _100_MB = 100 * 1024 * 1024
+        if expected_bytes > _100_MB:
+            return int(expected_bytes * 0.5)
+        return floor_bytes
+
     def _stabilize_ripped_files(self, mkv_files, expected_size_by_title=None):
         """Optionally wait for ripped files to stabilize before analysis/move.
 
@@ -584,20 +600,27 @@ class RipperController:
             if not ok:
                 return False, timed_out
 
-            # Post-stabilization size advisory: log a warning for files below
-            # the configured floor but do NOT fail — extras are legitimately
+            # Post-stabilization size advisory: log when file is below the
+            # effective threshold but do NOT fail — extras are legitimately
             # small. Strict size validation uses ratio checks in
             # _verify_expected_sizes after all files are stable.
             try:
                 final_size = os.path.getsize(f)
             except Exception:
                 final_size = 0
-            if min_size_floor > 0 and final_size < min_size_floor:
+            effective_floor = self._compute_file_min_size(expected, min_size_floor)
+            if effective_floor > 0 and final_size < effective_floor:
                 self.log(
                     f"INFO: {os.path.basename(f)} is "
                     f"{final_size / (1024**2):.0f} MB "
-                    f"(below {min_size_floor / (1024**3):.2f} GB floor — "
-                    f"normal for extras/short titles)"
+                    f"(below {effective_floor / (1024**2):.0f} MB advisory floor"
+                    + (
+                        f" — expected {expected / (1024**3):.2f} GB from disc scan,"
+                        f" min threshold {effective_floor / (1024**3):.2f} GB"
+                        if expected > 0 else
+                        f" — normal for extras/short titles"
+                    )
+                    + ")"
                 )
 
         return True, False

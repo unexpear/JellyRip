@@ -412,3 +412,43 @@ def test_session_failure_triggers_wipe_and_metadata(tmp_path):
     assert meta is not None
     assert meta.get("status") == "failed"
     assert meta.get("phase") == "failed"
+
+
+class TestComputeFileMinSize:
+    """_compute_file_min_size: trusted expected vs. fallback floor."""
+
+    _1_GB = 1 * 1024 ** 3
+    _100_MB = 100 * 1024 * 1024
+    _500_MB = 500 * 1024 * 1024
+
+    def _min(self, expected, floor=_1_GB):
+        return RipperController._compute_file_min_size(expected, floor)
+
+    def test_credible_expected_overrides_1gb_floor(self):
+        # 500 MB extra must NOT be forced to pass a 1 GB floor.
+        result = self._min(self._500_MB)
+        assert result < self._1_GB
+
+    def test_credible_expected_is_half_of_expected(self):
+        result = self._min(self._500_MB)
+        assert result == self._500_MB // 2
+
+    def test_zero_expected_falls_back_to_floor(self):
+        assert self._min(0) == self._1_GB
+
+    def test_garbage_small_expected_falls_back_to_floor(self):
+        # 5 MB "expected" is a bad parse — must not be trusted.
+        assert self._min(5 * 1024 * 1024) == self._1_GB
+
+    def test_exactly_100mb_boundary_uses_floor(self):
+        # Boundary value: exactly 100 MB is NOT > 100 MB, so falls back.
+        assert self._min(self._100_MB) == self._1_GB
+
+    def test_just_above_100mb_boundary_trusts_expected(self):
+        just_above = self._100_MB + 1
+        assert self._min(just_above) == just_above // 2
+
+    def test_large_main_feature_trusts_expected(self):
+        _7_GB = 7 * 1024 ** 3
+        result = self._min(_7_GB)
+        assert result == _7_GB // 2
