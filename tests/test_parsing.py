@@ -95,6 +95,23 @@ class TestOrderedTitleParsing:
             "toony", "herb", "jeckel"
         ]
 
+    def test_extra_spaces_around_hyphen_delimiter(self):
+        # Double spaces around the dash must still split correctly.
+        assert parse_ordered_titles("pitch perfect 2  -  pitch perfect") == [
+            "pitch perfect 2", "pitch perfect"
+        ]
+
+    def test_internal_whitespace_is_collapsed(self):
+        # Multiple internal spaces are collapsed to one in each part.
+        assert parse_ordered_titles("pitch  perfect  2 - pitch  perfect") == [
+            "pitch perfect 2", "pitch perfect"
+        ]
+
+    def test_tab_around_hyphen_delimiter(self):
+        assert parse_ordered_titles("Title A\t-\tTitle B") == [
+            "Title A", "Title B"
+        ]
+
     def test_quoted_csv_like_titles(self):
         assert parse_ordered_titles('"Episode One", "Episode Two"') == [
             "Episode One", "Episode Two"

@@ -19,11 +19,22 @@ def parse_episode_names(name_input):
     return [x.strip() for x in name_input.split(",")]
 
 
+def _normalize_title_part(s):
+    """Collapse internal whitespace and strip surrounding whitespace/quotes."""
+    s = s.strip().strip('"')
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
 def parse_ordered_titles(name_input):
     """Parse ordered title lists for multi-disc dump naming.
 
     Accepts comma-separated values by default, and also accepts a
     spaced-hyphen separator like "Title A - Title B - Title C".
+
+    Case is preserved but whitespace is normalized: leading/trailing spaces
+    are stripped, internal runs of spaces are collapsed to one, and any
+    number of spaces around the ' - ' separator are accepted.
     """
     if not name_input:
         return []
@@ -34,21 +45,25 @@ def parse_ordered_titles(name_input):
 
     if '","' in text or text.count('"') >= 2:
         parts = [
-            x.strip().strip('"')
+            _normalize_title_part(x)
             for x in re.split(r'",\s*', text)
         ]
         return [p for p in parts if p]
 
     # Prefer comma lists. If no comma is present, allow spaced hyphen
     # delimiters so users can enter: "Toony - Herb - Jeckel".
+    # Accept any amount of whitespace around the dash (\s*-\s* guarded by
+    # requiring at least one whitespace on at least one side), so that
+    # "Title 1  -  Title 2" and "Title 1 - Title 2" both split correctly
+    # while "Spider-Man" (no surrounding whitespace) is kept intact.
     if "," in text:
         raw_parts = text.split(",")
-    elif re.search(r"\s-\s", text):
-        raw_parts = re.split(r"\s-\s", text)
+    elif re.search(r"\s+-\s*|\s*-\s+", text):
+        raw_parts = re.split(r"\s+-\s*|\s*-\s+", text)
     else:
         raw_parts = [text]
 
-    parts = [x.strip().strip('"') for x in raw_parts]
+    parts = [_normalize_title_part(x) for x in raw_parts]
     return [p for p in parts if p]
 
 
