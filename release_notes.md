@@ -3,6 +3,7 @@
 ## Download
 
 - Direct download (v1.0.6): [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe)
+- Direct download (latest): [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
 - Direct URL copy: [https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe)
 - Release page: [v1.0.6 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.6)
 - Release page URL copy: [https://github.com/unexpear/JellyRip/releases/tag/v1.0.6](https://github.com/unexpear/JellyRip/releases/tag/v1.0.6)
