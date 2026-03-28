@@ -756,6 +756,29 @@ class RipperController:
 
         return bool(success), mkv_files
 
+    def _scan_highest_episode(self, dest_folder: str, season: int) -> int:
+        """Return the highest episode number already present in dest_folder for
+        the given season, or 0 if none are found.
+
+        Scans filenames matching ``SxxEyy`` (case-insensitive) so it works
+        regardless of whether the files were named by JellyRip or another tool.
+        Only reads the directory listing — no ffprobe, no I/O on the files.
+        """
+        if not dest_folder or not os.path.isdir(dest_folder):
+            return 0
+        pattern = re.compile(rf"S{season:02d}E(\d+)", re.IGNORECASE)
+        highest = 0
+        try:
+            for fname in os.listdir(dest_folder):
+                m = pattern.search(fname)
+                if m:
+                    ep = int(m.group(1))
+                    if ep > highest:
+                        highest = ep
+        except OSError:
+            pass
+        return highest
+
     def _mark_session_failed(self, rip_path, **metadata):
         """Wipe session outputs and persist a single failed session state."""
         self.log("Session failed — wiping outputs.")
@@ -3299,6 +3322,28 @@ class RipperController:
                 default_episode_numbers = session_meta.get(
                     "episode_numbers", []
                 ) or []
+
+            # Auto-detect episode offset from existing files in the
+            # destination season folder so the user doesn't have to
+            # remember where they left off when appending more discs
+            # to a show that was partially ripped in a prior session.
+            if (
+                not default_episode_numbers
+                and dest_folder
+                and season is not None
+            ):
+                highest = self._scan_highest_episode(dest_folder, season)
+                if highest > 0:
+                    suggested = list(
+                        range(highest + 1, highest + 1 + len(main_indices))
+                    )
+                    default_episode_numbers = suggested
+                    self.log(
+                        f"Detected {highest} existing episode(s) in "
+                        f"Season {season:02d} — suggesting "
+                        f"episode(s) {suggested[0]}–{suggested[-1]}."
+                    )
+
             default_episode_input = ", ".join(
                 str(x) for x in default_episode_numbers
             )

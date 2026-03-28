@@ -1149,3 +1149,56 @@ def test_integrity_multi_file_dedup_only_one_warning(tmp_path):
     # Only one warning entry for the title group, not two.
     warn_lines = [l for l in controller.session_report if "Severe" in l or "severe" in l]
     assert len(warn_lines) == 1
+
+
+# ---------------------------------------------------------------------------
+# _scan_highest_episode — append-to-existing-show feature
+# ---------------------------------------------------------------------------
+
+def test_scan_highest_episode_returns_zero_for_empty_folder(tmp_path):
+    """No episode files → returns 0 (first disc starts at episode 1)."""
+    controller, _ = _controller_with_engine()
+    result = controller._scan_highest_episode(str(tmp_path), 1)
+    assert result == 0
+
+
+def test_scan_highest_episode_detects_existing_episodes(tmp_path):
+    """Three S01Exx files present → returns highest episode number."""
+    controller, _ = _controller_with_engine()
+    (tmp_path / "Show - S01E01 - Pilot.mkv").write_text("")
+    (tmp_path / "Show - S01E02 - Second.mkv").write_text("")
+    (tmp_path / "Show - S01E08 - Eight.mkv").write_text("")
+    result = controller._scan_highest_episode(str(tmp_path), 1)
+    assert result == 8
+
+
+def test_scan_highest_episode_ignores_other_seasons(tmp_path):
+    """Files from a different season are not counted."""
+    controller, _ = _controller_with_engine()
+    (tmp_path / "Show - S01E05 - One.mkv").write_text("")
+    (tmp_path / "Show - S02E10 - Two.mkv").write_text("")
+    # Asking for Season 1 → should only see E05
+    result = controller._scan_highest_episode(str(tmp_path), 1)
+    assert result == 5
+
+
+def test_scan_highest_episode_case_insensitive(tmp_path):
+    """Filenames with mixed-case S/E markers are still detected."""
+    controller, _ = _controller_with_engine()
+    (tmp_path / "show - s01e03 - lower.mkv").write_text("")
+    result = controller._scan_highest_episode(str(tmp_path), 1)
+    assert result == 3
+
+
+def test_scan_highest_episode_nonexistent_folder():
+    """Non-existent folder returns 0 safely (no exception)."""
+    controller, _ = _controller_with_engine()
+    result = controller._scan_highest_episode("/path/that/does/not/exist", 1)
+    assert result == 0
+
+
+def test_scan_highest_episode_returns_zero_when_dest_none():
+    """None dest_folder returns 0 (TV path not yet created)."""
+    controller, _ = _controller_with_engine()
+    result = controller._scan_highest_episode(None, 1)
+    assert result == 0
