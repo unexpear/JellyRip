@@ -39,6 +39,7 @@ class RipperController:
         self.session_report       = []
         self._preview_lock        = threading.Lock()
         self._wiped_session_paths = set()
+        self.session_paths = None
         self.sm = SessionStateMachine(
             debug=bool(self.engine.cfg.get("opt_debug_state", False)),
             logger=self.log,
@@ -218,6 +219,68 @@ class RipperController:
         except Exception:
             return default
 
+    def _init_session_paths(self, overrides=None):
+        """Initialize per-run path state from defaults plus optional overrides."""
+        cfg = self.engine.cfg
+        self.session_paths = {
+            "temp": os.path.normpath(cfg.get("temp_folder", "")),
+            "movies": os.path.normpath(cfg.get("movies_folder", "")),
+            "tv": os.path.normpath(cfg.get("tv_folder", "")),
+        }
+        if overrides:
+            key_map = {
+                "temp_folder": "temp",
+                "movies_folder": "movies",
+                "tv_folder": "tv",
+            }
+            for k, v in overrides.items():
+                session_key = key_map.get(k)
+                if session_key and v:
+                    self.session_paths[session_key] = os.path.normpath(v)
+
+    def get_path(self, key):
+        if not self.session_paths:
+            raise RuntimeError("session_paths not initialized")
+        return self.session_paths[key]
+
+    def _log_session_paths(self):
+        if not self.session_paths:
+            return
+        self.log("=== RUN PATHS ===")
+        self.log(f"Temp:   {self.session_paths.get('temp')}")
+        self.log(f"Movies: {self.session_paths.get('movies')}")
+        self.log(f"TV:     {self.session_paths.get('tv')}")
+        self.log("=================")
+
+    def _validate_paths(self, temp, movies=None, tv=None):
+        def _norm(p):
+            return os.path.normcase(os.path.abspath(os.path.normpath(str(p))))
+
+        temp_n = _norm(temp) if temp else None
+        movies_n = _norm(movies) if movies else None
+        tv_n = _norm(tv) if tv else None
+
+        if temp_n and movies_n and temp_n == movies_n:
+            return "Temp and Movies folder cannot be the same"
+        if temp_n and tv_n and temp_n == tv_n:
+            return "Temp and TV folder cannot be the same"
+
+        blocked = [
+            _norm(r"C:\Windows"),
+            _norm(r"C:\Program Files"),
+            _norm(r"C:\Program Files (x86)"),
+        ]
+
+        for p in [x for x in [temp_n, movies_n, tv_n] if x]:
+            for b in blocked:
+                if p == b or p.startswith(b + os.sep):
+                    return f"Blocked system path: {p}"
+
+            if os.path.exists(p) and (not os.access(p, os.W_OK)):
+                return f"Path not writable: {p}"
+
+        return None
+
     def _prompt_run_path_overrides(self, path_fields):
         """Optionally override folder paths for this run only.
 
@@ -277,6 +340,16 @@ class RipperController:
                     self.log(
                         f"Re-enter {label} or click Skip to keep default."
                     )
+
+        error = self._validate_paths(
+            resolved.get("temp_folder"),
+            movies=resolved.get("movies_folder"),
+            tv=resolved.get("tv_folder"),
+        )
+        if error:
+            self.log(f"ERROR: {error}")
+            self.gui.show_error("Invalid Run Paths", error)
+            return None
 
         return resolved
 
@@ -509,8 +582,13 @@ class RipperController:
 
     def preview_title(self, title_id):
         """Rip a short preview clip for one title and open it in VLC."""
+        temp_root = (
+            self.get_path("temp")
+            if self.session_paths and "temp" in self.session_paths
+            else self.engine.cfg["temp_folder"]
+        )
         preview_dir = os.path.join(
-            self.engine.cfg["temp_folder"], "preview"
+            temp_root, "preview"
         )
 
         try:
@@ -813,8 +891,10 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before rip (path override step).")
             return
-        movie_root = path_overrides["movies_folder"]
-        temp_root  = path_overrides["temp_folder"]
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
+        movie_root = self.get_path("movies")
+        temp_root = self.get_path("temp")
 
         self._reset_state_machine()
         self.engine.reset_abort()
@@ -1264,7 +1344,9 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before dump (path override step).")
             return
-        temp_root = path_overrides["temp_folder"]
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
+        temp_root = self.get_path("temp")
 
         multi_disc = self.gui.ask_yesno(
             "Dump multiple discs in one unattended session?\n\n"
@@ -1816,7 +1898,9 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before unattended single (path override step).")
             return
-        temp_root = path_overrides["temp_folder"]
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
+        temp_root = self.get_path("temp")
 
         if not self._prepare_unattended_session(
             temp_root, "Unattended single-disc mode"
@@ -1927,7 +2011,9 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before unattended series (path override step).")
             return
-        temp_root = path_overrides["temp_folder"]
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
+        temp_root = self.get_path("temp")
 
         if not self._prepare_unattended_session(
             temp_root, "Unattended series mode"
@@ -2236,11 +2322,13 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before organize (path override step).")
             return
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
         if "tv_folder" in path_overrides:
-            tv_root = os.path.normpath(path_overrides["tv_folder"])
+            tv_root = self.get_path("tv")
         if "movies_folder" in path_overrides:
-            movie_root = os.path.normpath(path_overrides["movies_folder"])
-        temp_root = os.path.normpath(path_overrides["temp_folder"])
+            movie_root = self.get_path("movies")
+        temp_root = self.get_path("temp")
 
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
@@ -2344,9 +2432,11 @@ class RipperController:
         if path_overrides is None:
             self.log("Cancelled before disc rip (path override step).")
             return
-        tv_root = os.path.normpath(path_overrides.get("tv_folder", cfg["tv_folder"]))
-        movie_root = os.path.normpath(path_overrides.get("movies_folder", cfg["movies_folder"]))
-        temp_root = os.path.normpath(path_overrides["temp_folder"])
+        self._init_session_paths(path_overrides)
+        self._log_session_paths()
+        tv_root = self.get_path("tv")
+        movie_root = self.get_path("movies")
+        temp_root = self.get_path("temp")
 
         self.engine.reset_abort()
         self._wiped_session_paths.clear()
