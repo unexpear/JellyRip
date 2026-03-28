@@ -84,30 +84,26 @@ def test_unattended_setup_allows_editing_accidental_values():
     assert batch_title == "batch-b"
 
 
-def test_nonzero_exit_with_output_forces_failure_gate(tmp_path, monkeypatch):
+def test_nonzero_exit_with_output_is_degraded_success(tmp_path, monkeypatch):
+    """rip_selected_titles: non-zero exit + files produced = degraded success, not failure."""
     controller, engine = _controller_with_engine(
         _engine_cfg(opt_auto_retry=False, opt_retry_attempts=1)
     )
 
     def fake_run(_cmd, _on_progress, _on_log):
-        Path(tmp_path, "bad.mkv").write_text("bad")
-        return False
+        Path(tmp_path, "title_t00.mkv").write_text("data")
+        return False  # non-zero exit
 
     monkeypatch.setattr(engine, "_run_rip_process", fake_run)
-    monkeypatch.setattr(engine, "_quick_ffprobe_ok", lambda _f, _l: True)
 
     success, failed = engine.rip_selected_titles(
         str(tmp_path), [0], on_progress=lambda _p: None, on_log=controller.log
     )
-    normalized_success, _files = controller._normalize_rip_result(
-        str(tmp_path), success, failed
-    )
 
-    assert normalized_success is False
-    assert any(
-        "forcing failure regardless of output" in line
-        for line in controller.gui.messages
-    )
+    assert success is True
+    assert failed == []
+    assert engine.last_degraded_titles == [1]
+    assert any("degraded success" in m for m in controller.gui.messages)
 
 
 def test_partial_title_failure_forces_session_failure(tmp_path, monkeypatch):
@@ -884,3 +880,94 @@ def test_size_advisory_log_uses_arrow_format(tmp_path, monkeypatch):
     assert "→" in advisory_lines[0]
     assert "expected" in advisory_lines[0]
     assert "threshold" in advisory_lines[0]
+
+
+# ── Degraded rip classification ──────────────────────────────────────────────
+
+def test_nonzero_exit_no_files_is_real_failure(tmp_path, monkeypatch):
+    """rip_selected_titles: non-zero exit + no files = real failure."""
+    controller, engine = _controller_with_engine(
+        _engine_cfg(opt_auto_retry=False, opt_retry_attempts=1)
+    )
+
+    def fake_run(_cmd, _on_progress, _on_log):
+        return False  # exit error, no files written
+
+    monkeypatch.setattr(engine, "_run_rip_process", fake_run)
+
+    success, failed = engine.rip_selected_titles(
+        str(tmp_path), [0], on_progress=lambda _p: None, on_log=controller.log
+    )
+
+    assert success is False or 1 in failed
+    assert engine.last_degraded_titles == []
+
+
+def test_degraded_rip_added_to_session_report(tmp_path, monkeypatch):
+    """_warn_degraded_rips() must append a warning to session_report."""
+    controller, engine = _controller_with_engine(
+        _engine_cfg(opt_auto_retry=False, opt_retry_attempts=1)
+    )
+
+    def fake_run(_cmd, _on_progress, _on_log):
+        Path(tmp_path, "title_t00.mkv").write_text("data")
+        return False
+
+    monkeypatch.setattr(engine, "_run_rip_process", fake_run)
+
+    engine.rip_selected_titles(
+        str(tmp_path), [0], on_progress=lambda _p: None, on_log=controller.log
+    )
+    controller._warn_degraded_rips()
+
+    assert any("degraded rip" in line for line in controller.session_report)
+
+
+def test_session_summary_shows_warnings_on_degraded_rip(tmp_path, monkeypatch):
+    """write_session_summary: COMPLETED state + session_report → 'Completed with warnings'."""
+    controller, engine = _controller_with_engine()
+
+    controller._reset_state_machine()
+    # Manually drive state to COMPLETED with a warning in session_report.
+    for state in (
+        SessionState.SCANNED,
+        SessionState.RIPPED,
+        SessionState.STABILIZED,
+        SessionState.VALIDATED,
+        SessionState.MOVED,
+        SessionState.COMPLETED,
+    ):
+        controller.sm.transition(state)
+
+    controller.session_report.append("Title 1: MakeMKV read errors (degraded rip)")
+
+    controller.write_session_summary()
+
+    assert any(
+        "Completed with warnings" in m for m in controller.gui.messages
+    )
+    assert not any(
+        "All discs completed successfully" in m for m in controller.gui.messages
+    )
+
+
+def test_session_summary_clean_when_no_warnings():
+    """write_session_summary: COMPLETED state + empty session_report → clean success message."""
+    controller, _engine = _controller_with_engine()
+
+    controller._reset_state_machine()
+    for state in (
+        SessionState.SCANNED,
+        SessionState.RIPPED,
+        SessionState.STABILIZED,
+        SessionState.VALIDATED,
+        SessionState.MOVED,
+        SessionState.COMPLETED,
+    ):
+        controller.sm.transition(state)
+
+    controller.write_session_summary()
+
+    assert any(
+        "All discs completed successfully" in m for m in controller.gui.messages
+    )
