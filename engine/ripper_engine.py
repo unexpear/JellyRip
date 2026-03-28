@@ -39,6 +39,7 @@ class RipperEngine:
         self.current_process = None
         self._abort_lock     = threading.Lock()
         self.last_move_error = ""
+        self.last_title_file_map = {}
 
     @property
     def abort_flag(self):
@@ -971,6 +972,7 @@ class RipperEngine:
         )
         attempts      = self._get_rip_attempts()
         failed_titles = []
+        self.last_title_file_map = {}
 
         for idx, tid in enumerate(title_ids):
             if self.abort_event.is_set():
@@ -1015,6 +1017,10 @@ class RipperEngine:
                 if self.abort_event.is_set():
                     return False, failed_titles
                 if success:
+                    after = self._snapshot_mkv_files(rip_path)
+                    new_files = sorted(after - before)
+                    if new_files:
+                        self.last_title_file_map[int(tid)] = list(new_files)
                     title_success = True
                     break
                 self._log_forced_failure_with_outputs(

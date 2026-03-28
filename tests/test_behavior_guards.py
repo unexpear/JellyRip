@@ -501,3 +501,24 @@ class TestComputeFileMinSize:
         _20_GB = 20 * 1024 ** 3
         result = self._min(_20_GB)
         assert result <= _20_GB
+
+
+def test_map_title_ids_prefers_engine_tracked_file_map(tmp_path):
+    controller, engine = _controller_with_engine()
+
+    f_main = Path(tmp_path, "A.mkv")
+    f_extra = Path(tmp_path, "B.mkv")
+    f_main.write_text("m")
+    f_extra.write_text("e")
+
+    engine.last_title_file_map = {
+        2: [str(f_main)],
+        3: [str(f_extra)],
+    }
+
+    titles_list = [
+        (str(f_extra), 0, 0),
+        (str(f_main), 0, 0),
+    ]
+    mapped = controller._map_title_ids_to_analyzed_indices(titles_list, [2])
+    assert mapped == [1]

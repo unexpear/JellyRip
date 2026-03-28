@@ -166,13 +166,27 @@ class RipperController:
         return restored or None
 
     def _map_title_ids_to_analyzed_indices(self, titles_list, title_ids):
-        """Map MakeMKV title ids to analyze_files indices using filename tags."""
+        """Map MakeMKV title ids to analyze_files indices.
+
+        Primary: explicit engine tracking from rip_selected_titles.
+        Fallback: filename parsing tags for legacy compatibility.
+        """
         wanted = {int(tid) for tid in (title_ids or [])}
         if not wanted:
             return []
+        tracked = getattr(self.engine, "last_title_file_map", {}) or {}
+        tracked_lookup = {}
+        for tid, files in tracked.items():
+            if int(tid) not in wanted:
+                continue
+            for p in files or []:
+                tracked_lookup[os.path.normcase(os.path.abspath(p))] = int(tid)
         mapped = []
         for idx, (path, _dur, _mb) in enumerate(titles_list):
-            title_id = self._title_id_from_filename(path)
+            norm = os.path.normcase(os.path.abspath(path))
+            title_id = tracked_lookup.get(norm)
+            if title_id is None:
+                title_id = self._title_id_from_filename(path)
             if title_id in wanted:
                 mapped.append(idx)
         return mapped
@@ -941,16 +955,15 @@ class RipperController:
             return
 
         # Map analyzed files back to MakeMKV title ids when possible.
+        # Primary path uses explicit tracking captured during rip.
         # This avoids assuming analyze_files sort order matches smart score.
         main_indices = [0]
         if keep_extras:
-            wanted_tid = best.get("id")
-            for idx, (file_path, _dur, _mb) in enumerate(titles_list):
-                name = os.path.basename(file_path)
-                m = re.search(r'title_t(\d+)', name, re.IGNORECASE)
-                if m and int(m.group(1)) == wanted_tid:
-                    main_indices = [idx]
-                    break
+            mapped = self._map_title_ids_to_analyzed_indices(
+                titles_list, [best.get("id")]
+            )
+            if mapped:
+                main_indices = [mapped[0]]
             else:
                 target_size = best.get("size_bytes", 0)
                 if target_size > 0 and titles_list:
@@ -1017,15 +1030,25 @@ class RipperController:
             if os.path.exists(rip_path):
                 self.log(f"Warning: could not delete {rip_path}")
         else:
+            self.report(
+                f"Smart Rip move failed for {title} ({year})"
+            )
             self.log(f"Temp preserved at: {rip_path}")
 
         self.write_session_summary()
         self.flush_log()
         self.gui.set_progress(0)
-        self.gui.show_info(
-            "Smart Rip Complete",
-            f"Files moved to:\n{movie_folder}"
-        )
+        if ok:
+            self.gui.show_info(
+                "Smart Rip Complete",
+                f"Files moved to:\n{movie_folder}"
+            )
+        else:
+            self.gui.show_error(
+                "Smart Rip Failed",
+                "Move did not complete successfully.\n\n"
+                f"Temp preserved at:\n{rip_path}"
+            )
 
     def run_dump_all(self):
         """Rip all titles to temp storage for later organization."""
@@ -2800,6 +2823,7 @@ class RipperController:
             success = False
         if not success:
             reason = self.engine.last_move_error.strip()
+            self.report("Move failed")
             if reason:
                 self.gui.show_error("Move Failed", reason)
         elif session_rip_path:
