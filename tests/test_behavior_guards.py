@@ -659,3 +659,44 @@ def test_select_largest_file_prefers_biggest(tmp_path):
     selected = select_largest_file([str(a), str(b)])
 
     assert selected == str(b)
+
+
+def test_prompt_run_path_overrides_uses_defaults_when_declined():
+    controller, engine = _controller_with_engine()
+    engine.cfg["temp_folder"] = r"C:\TempDefault"
+    engine.cfg["movies_folder"] = r"C:\MoviesDefault"
+
+    controller.gui.ask_yesno = lambda _prompt: False
+
+    resolved = controller._prompt_run_path_overrides([
+        ("temp_folder", "Temp Folder"),
+        ("movies_folder", "Movies Folder"),
+    ])
+
+    assert resolved["temp_folder"] == os.path.normpath(r"C:\TempDefault")
+    assert resolved["movies_folder"] == os.path.normpath(r"C:\MoviesDefault")
+
+
+def test_prompt_run_path_overrides_accepts_custom_existing_path(tmp_path):
+    controller, engine = _controller_with_engine()
+    default_temp = str(tmp_path / "default-temp")
+    custom_temp = str(tmp_path / "custom-temp")
+    os.makedirs(default_temp, exist_ok=True)
+    os.makedirs(custom_temp, exist_ok=True)
+    engine.cfg["temp_folder"] = default_temp
+
+    controller.gui.ask_yesno = lambda _prompt: True
+
+    responses = iter([custom_temp])
+
+    def ask_input(_label, _prompt, show_browse=False, default_value=""):
+        _ = (show_browse, default_value)
+        return next(responses)
+
+    controller.gui.ask_input = ask_input
+
+    resolved = controller._prompt_run_path_overrides([
+        ("temp_folder", "Temp Folder"),
+    ])
+
+    assert resolved["temp_folder"] == os.path.normpath(custom_temp)
