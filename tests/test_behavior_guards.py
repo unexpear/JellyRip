@@ -522,3 +522,58 @@ def test_map_title_ids_prefers_engine_tracked_file_map(tmp_path):
     ]
     mapped = controller._map_title_ids_to_analyzed_indices(titles_list, [2])
     assert mapped == [1]
+
+
+def test_build_disc_fingerprint_uses_titles_beyond_top12(monkeypatch):
+    controller, _engine = _controller_with_engine()
+
+    base = [
+        {
+            "id": i,
+            "duration_seconds": 10000 - i,
+            "size_bytes": (10000 - i) * 1024,
+            "chapters": 1,
+            "audio_tracks": [1],
+            "subtitle_tracks": [1],
+        }
+        for i in range(13)
+    ]
+    changed = [dict(t) for t in base]
+    # Change only the 13th title signature; old top-12-only logic would collide.
+    changed[12]["size_bytes"] += 123456
+
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: base)
+    fp1 = controller._build_disc_fingerprint()
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: changed)
+    fp2 = controller._build_disc_fingerprint()
+
+    assert fp1 != fp2
+
+
+def test_duplicate_resolution_prefers_custom_title_override_yes(monkeypatch):
+    controller, _engine = _controller_with_engine()
+
+    monkeypatch.setattr(
+        controller.gui, "ask_yesno", lambda _p: True, raising=False
+    )
+    called = {"value": False}
+
+    def _should_not_call(*_args, **_kwargs):
+        called["value"] = True
+        return "stop"
+
+    monkeypatch.setattr(
+        controller.gui,
+        "ask_duplicate_resolution",
+        _should_not_call,
+        raising=False,
+    )
+
+    action = controller._resolve_duplicate_dump_disc(
+        disc_number=2,
+        total=2,
+        per_disc_titles=["pitch perfect 2", "pitch perfect"],
+    )
+
+    assert action == "bypass"
+    assert called["value"] is False
