@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.8] - 2026-03-28
+
+### Correctness hardening
+
+- `_fallback_title_from_mode` now emits a `session_report` warning every time an auto-generated title is used, so silent fallback naming is always visible in the session log and end-of-session summary.
+- `_verify_container_integrity` accepts an optional `expected_durations` map (filepath → seconds from disc scan). Any file whose actual ffprobe duration is below 60% of expected is flagged as a possible truncation (warning in session report, not a hard failure). Wired into the Smart Rip path where disc-scan duration data is available.
+
+### Tests
+
+- Added 3 regression tests: fallback title logging, duration truncation warning, and no-warning when duration is within bounds.
+
 ## [1.0.7] - 2026-03-28
 
 ### Correctness hardening

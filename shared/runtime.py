@@ -24,7 +24,7 @@ from controller.naming import (
     resolve_naming_mode,
 )
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 
 
 def get_config_dir():
