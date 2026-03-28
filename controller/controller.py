@@ -540,7 +540,8 @@ class RipperController:
 
     def _verify_container_integrity(
         self, mkv_files, analyzed=None,
-        expected_durations=None, expected_sizes=None
+        expected_durations=None, expected_sizes=None,
+        title_file_map=None,
     ):
         """Require ffprobe-readable container with duration > 0 for each file.
 
@@ -548,16 +549,29 @@ class RipperController:
         to avoid running ffprobe twice in the same pipeline step.
 
         When expected_durations (filepath → seconds) and/or expected_sizes
-        (filepath → bytes) are provided, performs tiered duration sanity checks:
+        (filepath → bytes) are provided, performs tiered duration sanity checks.
+        Comparison is done at the title-group level (sum of all files per title)
+        when title_file_map (title_id → [paths]) is supplied, preventing false
+        per-file warnings on seamless/multi-part titles.
 
-          < 50%  → severe warning (error when BOTH duration AND size agree)
+        Tiers:
+          < 50%  → severe warning (TRUNCATION ERROR when BOTH dur AND size agree)
           50–75% → likely truncation warning
           75–90% → minor mismatch warning
           ≥ 90%  → normal variance, no warning
 
-        In strict mode (opt_strict_mode), any "likely" or worse escalates to
-        a hard failure.
+        Expected size values below 200 MB are treated as unreliable disc scan
+        metadata and excluded from size-based escalation.
+
+        Short titles (expected < 600 s) use widened tiers to avoid false
+        positives from disc timing inaccuracies.
+
+        In strict mode (opt_strict_mode), any tier below "minor" (< 75%)
+        escalates to a hard failure.
         """
+        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB — below this, size is noise
+        _SHORT_TITLE = 600                  # < 600 s — widen tiers
+
         if not mkv_files:
             return False
         self.log("Container integrity check (ffprobe)...")
@@ -583,47 +597,83 @@ class RipperController:
         strict = bool(self.engine.cfg.get("opt_strict_mode", False))
         strict_fail = False
 
-        for f, dur, size_mb in analyzed:
-            fname = os.path.basename(f)
+        # Build a lookup: filepath → (dur, size_bytes) from analyzed results.
+        analyzed_lookup = {
+            f: (dur, int(mb * 1024 * 1024))
+            for f, dur, mb in analyzed
+        }
 
-            exp_dur = None
-            if expected_durations:
-                exp_dur = (
-                    expected_durations.get(f)
-                    or expected_durations.get(fname)
-                )
-            exp_size = None
-            if expected_sizes:
-                exp_size = (
-                    expected_sizes.get(f)
-                    or expected_sizes.get(fname)
-                )
+        # Build groups: each group is a list of file paths belonging to one
+        # logical title. When title_file_map is absent, treat each file as
+        # its own group.
+        if title_file_map:
+            groups = [
+                (tid, [fp for fp in files if fp in analyzed_lookup])
+                for tid, files in title_file_map.items()
+            ]
+            # Files not covered by any title group get individual treatment.
+            covered = {fp for _, files in groups for fp in files}
+            for fp in analyzed_lookup:
+                if fp not in covered:
+                    groups.append((None, [fp]))
+        else:
+            groups = [(None, [fp]) for fp in mkv_files]
 
-            dur_ratio = (
-                dur / exp_dur
-                if (exp_dur and exp_dur > 0 and dur > 0)
-                else None
-            )
-            actual_bytes = int(size_mb * 1024 * 1024)
-            size_ratio = (
-                actual_bytes / exp_size
-                if (exp_size and exp_size > 0)
-                else None
-            )
+        warned_tids: set = set()
 
-            if dur_ratio is None:
+        for tid, files in groups:
+            if not files:
+                continue
+            if tid is not None and tid in warned_tids:
                 continue
 
-            # Determine severity from duration ratio.
-            if dur_ratio < 0.5:
-                # Escalate to error when size also confirms truncation.
-                if size_ratio is not None and size_ratio < 0.5:
+            # Aggregate duration and size across the group.
+            total_dur = sum(analyzed_lookup[fp][0] for fp in files if fp in analyzed_lookup)
+            total_bytes = sum(analyzed_lookup[fp][1] for fp in files if fp in analyzed_lookup)
+            label = (
+                os.path.basename(files[0])
+                if len(files) == 1
+                else f"Title {tid} ({len(files)} files)"
+                if tid is not None
+                else os.path.basename(files[0])
+            )
+
+            # Aggregate expectations across group files.
+            exp_dur = sum(
+                (expected_durations or {}).get(fp, 0) for fp in files
+            ) or None
+            raw_exp_size = sum(
+                (expected_sizes or {}).get(fp, 0) for fp in files
+            )
+            # Clamp unreliable disc-scan size metadata.
+            exp_size = raw_exp_size if raw_exp_size >= _SIZE_FLOOR else None
+
+            if not exp_dur or exp_dur <= 0:
+                continue
+
+            dur_ratio = total_dur / exp_dur if total_dur > 0 else 0.0
+            size_ratio = total_bytes / exp_size if exp_size else None
+
+            # Widen tiers for short titles.
+            is_short = exp_dur < _SHORT_TITLE
+            t_severe  = 0.4 if is_short else 0.5
+            t_likely  = 0.6 if is_short else 0.75
+            t_minor   = 0.85 if is_short else 0.9
+
+            if dur_ratio >= t_minor:
+                continue  # normal variance
+
+            if tid is not None:
+                warned_tids.add(tid)
+
+            if dur_ratio < t_severe:
+                if size_ratio is not None and size_ratio < t_severe:
                     self.report(
-                        f"TRUNCATION ERROR: {fname} — "
-                        f"duration {dur / 60:.1f} min "
+                        f"TRUNCATION ERROR: {label} — "
+                        f"duration {total_dur / 60:.1f} min "
                         f"(expected ~{exp_dur / 60:.1f} min, "
                         f"{dur_ratio * 100:.0f}%) AND "
-                        f"size {actual_bytes // (1024**2)} MB "
+                        f"size {total_bytes // (1024**2)} MB "
                         f"(expected ~{int(exp_size) // (1024**2)} MB, "
                         f"{size_ratio * 100:.0f}%) — "
                         f"both signals indicate corrupt/incomplete rip"
@@ -632,33 +682,31 @@ class RipperController:
                         strict_fail = True
                 else:
                     self.report(
-                        f"WARNING: Severe duration mismatch — {fname}: "
-                        f"actual {dur / 60:.1f} min, "
+                        f"WARNING: Severe duration mismatch — {label}: "
+                        f"actual {total_dur / 60:.1f} min, "
                         f"expected ~{exp_dur / 60:.1f} min "
                         f"({dur_ratio * 100:.0f}%) — possible truncation"
                     )
                     if strict:
                         strict_fail = True
-            elif dur_ratio < 0.75:
-                severity = "error" if (
-                    size_ratio is not None and size_ratio < 0.75
-                ) else "warning"
+            elif dur_ratio < t_likely:
                 self.report(
-                    f"WARNING: Likely truncation — {fname}: "
-                    f"actual {dur / 60:.1f} min, "
+                    f"WARNING: Likely truncation — {label}: "
+                    f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
                     + (
                         f"; size also low ({size_ratio * 100:.0f}%)"
-                        if severity == "error" else ""
+                        if (size_ratio is not None and size_ratio < t_likely)
+                        else ""
                     )
                 )
                 if strict:
                     strict_fail = True
-            elif dur_ratio < 0.9:
+            else:
                 self.report(
-                    f"WARNING: Minor duration mismatch — {fname}: "
-                    f"actual {dur / 60:.1f} min, "
+                    f"WARNING: Minor duration mismatch — {label}: "
+                    f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
                 )
@@ -1356,6 +1404,7 @@ class RipperController:
             analyzed=titles_list,
             expected_durations=_expected_durations or None,
             expected_sizes=_expected_sizes or None,
+            title_file_map=self.engine.last_title_file_map or None,
         ):
             self._state_fail("pre_move_integrity_failed")
             self.report(
@@ -3148,6 +3197,7 @@ class RipperController:
                 analyzed=titles_list,
                 expected_durations=_exp_dur_d or None,
                 expected_sizes=_exp_size_d or None,
+                title_file_map=self.engine.last_title_file_map or None,
             ):
                 self.report(
                     f"Disc {disc_number}: ffprobe integrity check failed"

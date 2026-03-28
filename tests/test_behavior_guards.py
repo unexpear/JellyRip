@@ -990,7 +990,7 @@ def test_fallback_title_from_mode_logs_to_session_report(monkeypatch):
     assert any("Auto-Title-2026" in line for line in controller.session_report)
 
 
-# ── Duration sanity check (tiered) ───────────────────────────────────────────
+# ── Duration sanity check (tiered + aggregation + clamping) ──────────────────
 
 def test_integrity_severe_duration_warns_only_no_size(tmp_path):
     """< 50% duration alone → severe warning but still returns True."""
@@ -998,7 +998,7 @@ def test_integrity_severe_duration_warns_only_no_size(tmp_path):
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s actual, 3600 s expected → 16.7% — severe tier.
+    # 600 s actual, 3600 s expected → 16.7% — severe tier (long title).
     preanalyzed = [(str(f), 600.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1011,22 +1011,43 @@ def test_integrity_severe_duration_warns_only_no_size(tmp_path):
 
 
 def test_integrity_severe_duration_and_size_logs_error(tmp_path):
-    """< 50% duration AND < 50% size → TRUNCATION ERROR in session report."""
+    """< 50% duration AND < 50% size (above 200MB floor) → TRUNCATION ERROR."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s actual (16.7%), 100 MB actual vs 1000 MB expected (10%) — both severe.
-    preanalyzed = [(str(f), 600.0, 100)]  # size_mb = 100
+    # 600 s (16.7%), 400 MB actual vs 4000 MB expected (10%) — both severe.
+    preanalyzed = [(str(f), 600.0, 400)]  # size_mb = 400 (above 200MB floor)
     result = controller._verify_container_integrity(
         [str(f)],
         analyzed=preanalyzed,
         expected_durations={str(f): 3600.0},
-        expected_sizes={str(f): 1000 * 1024 * 1024},
+        expected_sizes={str(f): 4000 * 1024 * 1024},
     )
 
     assert result is True  # error in report, still not hard fail (no strict)
     assert any("TRUNCATION ERROR" in line for line in controller.session_report)
+
+
+def test_integrity_small_expected_size_disables_escalation(tmp_path):
+    """expected_size < 200 MB floor → size signal ignored, no escalation."""
+    controller, _engine = _controller_with_engine()
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 600 s (16.7%) duration — would be severe. But expected_size only 50 MB
+    # — below 200 MB floor so size signal must be ignored.
+    preanalyzed = [(str(f), 600.0, 10)]  # actual 10 MB
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+        expected_sizes={str(f): 50 * 1024 * 1024},  # 50 MB — below floor
+    )
+
+    assert result is True
+    assert not any("TRUNCATION ERROR" in line for line in controller.session_report)
+    assert any("Severe" in line for line in controller.session_report)  # dur warning still fires
 
 
 def test_integrity_strict_mode_fails_on_likely_truncation(tmp_path):
@@ -1082,3 +1103,49 @@ def test_integrity_normal_variance_no_warning(tmp_path):
 
     assert result is True
     assert controller.session_report == []
+
+
+def test_integrity_multi_file_title_aggregates_before_comparing(tmp_path):
+    """Two files from one title: aggregate duration before comparing — no false warning."""
+    controller, _engine = _controller_with_engine()
+    f1 = tmp_path / "part1.mkv"
+    f2 = tmp_path / "part2.mkv"
+    f1.write_text("p1")
+    f2.write_text("p2")
+
+    # Each file is 1800 s (30 min). Expected total 3600 s.
+    # Per-file: 1800/3600 = 50% → would trigger "likely" warning.
+    # Aggregated: 3600/3600 = 100% → no warning.
+    preanalyzed = [(str(f1), 1800.0, 200), (str(f2), 1800.0, 200)]
+    result = controller._verify_container_integrity(
+        [str(f1), str(f2)],
+        analyzed=preanalyzed,
+        expected_durations={str(f1): 3600.0, str(f2): 0},  # expect only on group
+        title_file_map={0: [str(f1), str(f2)]},
+    )
+
+    assert result is True
+    assert controller.session_report == []
+
+
+def test_integrity_multi_file_dedup_only_one_warning(tmp_path):
+    """Two files from one title both below threshold → only ONE warning emitted."""
+    controller, _engine = _controller_with_engine()
+    f1 = tmp_path / "part1.mkv"
+    f2 = tmp_path / "part2.mkv"
+    f1.write_text("p1")
+    f2.write_text("p2")
+
+    # Total 600 s, expected 3600 s → 16.7% — severe, one warning for the group.
+    preanalyzed = [(str(f1), 300.0, 100), (str(f2), 300.0, 100)]
+    result = controller._verify_container_integrity(
+        [str(f1), str(f2)],
+        analyzed=preanalyzed,
+        expected_durations={str(f1): 1800.0, str(f2): 1800.0},
+        title_file_map={0: [str(f1), str(f2)]},
+    )
+
+    assert result is True
+    # Only one warning entry for the title group, not two.
+    warn_lines = [l for l in controller.session_report if "Severe" in l or "severe" in l]
+    assert len(warn_lines) == 1
