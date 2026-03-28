@@ -1232,7 +1232,15 @@ class RipperController:
             ),
             reverse=True,
         )
-        for t in sorted_titles[:12]:
+        total_size = sum(
+            int(t.get("size_bytes", 0) or 0) for t in sorted_titles
+        )
+        total_duration = sum(
+            int(t.get("duration_seconds", 0) or 0) for t in sorted_titles
+        )
+        parts.append(f"sum:{total_duration}:{total_size}")
+        # Use up to 50 entries to reduce collisions on large-but-similar discs.
+        for t in sorted_titles[:50]:
             parts.append(
                 f"{t.get('duration_seconds', 0)}:"
                 f"{t.get('size_bytes', 0)}:"
@@ -1241,6 +1249,35 @@ class RipperController:
                 f"{len(t.get('subtitle_tracks', []))}"
             )
         return "|".join(parts)
+
+    def _resolve_duplicate_dump_disc(self, disc_number, total,
+                                     per_disc_titles):
+        """Resolve duplicate-disc detection with an easy custom-title override."""
+        disc_label = (
+            per_disc_titles[disc_number - 1]
+            if disc_number - 1 < len(per_disc_titles)
+            else ""
+        )
+        if disc_label:
+            if self.gui.ask_yesno(
+                "This disc looks like a duplicate from earlier in this "
+                f"session, but slot {disc_number}/{total} has custom title:\n"
+                f"\"{disc_label}\"\n\n"
+                "Continue anyway with this disc?"
+            ):
+                self.log(
+                    "Duplicate check override accepted for labeled disc: "
+                    f"{disc_label}"
+                )
+                return "bypass"
+
+        return self.gui.ask_duplicate_resolution(
+            "This disc looks like a duplicate from earlier in this "
+            "session.",
+            "Swap and Retry",
+            "Not a Dup",
+            "Stop"
+        )
 
     def _wait_for_new_unique_disc(self, seen_fingerprints,
                                   disc_number, total):
@@ -1400,12 +1437,10 @@ class RipperController:
                 break
 
             if fingerprint == "duplicate":
-                duplicate_action = self.gui.ask_duplicate_resolution(
-                    "This disc looks like a duplicate from earlier in this "
-                    "session.",
-                    "Swap and Retry",
-                    "Not a Dup",
-                    "Stop"
+                duplicate_action = self._resolve_duplicate_dump_disc(
+                    disc_number,
+                    total,
+                    per_disc_titles,
                 )
                 if duplicate_action == "retry":
                     continue
