@@ -407,13 +407,26 @@ class RipperController:
                     f"Previewing Title {title_id + 1}... (40s sample)"
                 )
                 self.engine.reset_abort()
-                self.engine.rip_preview_title(
+                preview_ok = self.engine.rip_preview_title(
                     preview_dir, title_id, 40, self.log
                 )
 
-                files = glob.glob(os.path.join(preview_dir, "*.mkv"))
+                # MakeMKV may create output in nested paths and can finish
+                # metadata flush shortly after process stop. Poll briefly.
+                files = []
+                for _ in range(8):
+                    files = glob.glob(
+                        os.path.join(preview_dir, "**", "*.mkv"),
+                        recursive=True,
+                    )
+                    if files:
+                        break
+                    time.sleep(0.25)
                 if not files:
-                    self.log("Preview failed: no preview file found.")
+                    if not preview_ok:
+                        self.log("Preview failed: rip process did not complete.")
+                    else:
+                        self.log("Preview failed: no preview file found.")
                     return
 
                 latest = max(files, key=os.path.getctime)
