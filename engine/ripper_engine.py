@@ -3,6 +3,7 @@
 from shared.runtime import *
 
 from config import resolve_ffprobe
+from utils.helpers import clean_name
 from utils.parsing import (
     parse_cli_args,
     parse_duration_to_seconds,

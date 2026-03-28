@@ -414,6 +414,49 @@ def test_session_failure_triggers_wipe_and_metadata(tmp_path):
     assert meta.get("phase") == "failed"
 
 
+def test_move_files_movie_with_extras_uses_clean_name_without_name_error(
+    tmp_path, monkeypatch
+):
+    engine = RipperEngine(_engine_cfg(opt_check_dest_space=False))
+    monkeypatch.setattr(engine, "_quick_ffprobe_ok", lambda _f, _l: True)
+
+    src_main = Path(tmp_path, "01_sn11-D1.mkv")
+    src_extra = Path(tmp_path, "02_sn13-F1.mkv")
+    src_main.write_text("main")
+    src_extra.write_text("extra")
+
+    dest_folder = Path(tmp_path, "Movies", "Pitch Perfect 2 (2015)")
+    extras_folder = dest_folder / "Extras"
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    extras_folder.mkdir(parents=True, exist_ok=True)
+
+    ok, next_extra_counter, moved_paths = engine.move_files(
+        titles_list=[
+            (str(src_main), 0, 0),
+            (str(src_extra), 0, 0),
+        ],
+        main_indices=[0],
+        episode_numbers=[],
+        real_names=[],
+        keep_extras=True,
+        is_tv=False,
+        title="Pitch Perfect 2",
+        dest_folder=str(dest_folder),
+        extras_folder=str(extras_folder),
+        season=1,
+        year="2015",
+        extra_counter=1,
+        on_progress=lambda _p: None,
+        on_log=lambda _m: None,
+    )
+
+    assert ok is True
+    assert next_extra_counter == 2
+    assert len(moved_paths) == 2
+    assert src_main.exists() is False
+    assert src_extra.exists() is False
+
+
 class TestComputeFileMinSize:
     """_compute_file_min_size: trusted expected vs. fallback floor."""
 
