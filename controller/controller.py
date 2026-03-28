@@ -539,15 +539,24 @@ class RipperController:
             )
 
     def _verify_container_integrity(
-        self, mkv_files, analyzed=None, expected_durations=None
+        self, mkv_files, analyzed=None,
+        expected_durations=None, expected_sizes=None
     ):
         """Require ffprobe-readable container with duration > 0 for each file.
 
         Accepts an optional pre-analyzed list (from a prior analyze_files call)
         to avoid running ffprobe twice in the same pipeline step.
 
-        When expected_durations is provided (dict mapping filepath → seconds),
-        warns if any file's actual duration is less than 60% of expected.
+        When expected_durations (filepath → seconds) and/or expected_sizes
+        (filepath → bytes) are provided, performs tiered duration sanity checks:
+
+          < 50%  → severe warning (error when BOTH duration AND size agree)
+          50–75% → likely truncation warning
+          75–90% → minor mismatch warning
+          ≥ 90%  → normal variance, no warning
+
+        In strict mode (opt_strict_mode), any "likely" or worse escalates to
+        a hard failure.
         """
         if not mkv_files:
             return False
@@ -567,23 +576,99 @@ class RipperController:
                 + ", ".join(bad)
             )
             return False
-        if expected_durations:
-            for f, dur, _mb in analyzed:
-                expected = expected_durations.get(f) or expected_durations.get(
-                    os.path.basename(f)
+
+        if not (expected_durations or expected_sizes):
+            return True
+
+        strict = bool(self.engine.cfg.get("opt_strict_mode", False))
+        strict_fail = False
+
+        for f, dur, size_mb in analyzed:
+            fname = os.path.basename(f)
+
+            exp_dur = None
+            if expected_durations:
+                exp_dur = (
+                    expected_durations.get(f)
+                    or expected_durations.get(fname)
                 )
-                if not expected or expected <= 0:
-                    continue
-                ratio = dur / expected
-                if ratio < 0.6:
+            exp_size = None
+            if expected_sizes:
+                exp_size = (
+                    expected_sizes.get(f)
+                    or expected_sizes.get(fname)
+                )
+
+            dur_ratio = (
+                dur / exp_dur
+                if (exp_dur and exp_dur > 0 and dur > 0)
+                else None
+            )
+            actual_bytes = int(size_mb * 1024 * 1024)
+            size_ratio = (
+                actual_bytes / exp_size
+                if (exp_size and exp_size > 0)
+                else None
+            )
+
+            if dur_ratio is None:
+                continue
+
+            # Determine severity from duration ratio.
+            if dur_ratio < 0.5:
+                # Escalate to error when size also confirms truncation.
+                if size_ratio is not None and size_ratio < 0.5:
                     self.report(
-                        f"Duration mismatch warning: "
-                        f"{os.path.basename(f)} is "
-                        f"{dur / 60:.1f} min but expected "
-                        f"~{expected / 60:.1f} min "
-                        f"({ratio * 100:.0f}% of expected) — "
-                        f"possible truncation"
+                        f"TRUNCATION ERROR: {fname} — "
+                        f"duration {dur / 60:.1f} min "
+                        f"(expected ~{exp_dur / 60:.1f} min, "
+                        f"{dur_ratio * 100:.0f}%) AND "
+                        f"size {actual_bytes // (1024**2)} MB "
+                        f"(expected ~{int(exp_size) // (1024**2)} MB, "
+                        f"{size_ratio * 100:.0f}%) — "
+                        f"both signals indicate corrupt/incomplete rip"
                     )
+                    if strict:
+                        strict_fail = True
+                else:
+                    self.report(
+                        f"WARNING: Severe duration mismatch — {fname}: "
+                        f"actual {dur / 60:.1f} min, "
+                        f"expected ~{exp_dur / 60:.1f} min "
+                        f"({dur_ratio * 100:.0f}%) — possible truncation"
+                    )
+                    if strict:
+                        strict_fail = True
+            elif dur_ratio < 0.75:
+                severity = "error" if (
+                    size_ratio is not None and size_ratio < 0.75
+                ) else "warning"
+                self.report(
+                    f"WARNING: Likely truncation — {fname}: "
+                    f"actual {dur / 60:.1f} min, "
+                    f"expected ~{exp_dur / 60:.1f} min "
+                    f"({dur_ratio * 100:.0f}%)"
+                    + (
+                        f"; size also low ({size_ratio * 100:.0f}%)"
+                        if severity == "error" else ""
+                    )
+                )
+                if strict:
+                    strict_fail = True
+            elif dur_ratio < 0.9:
+                self.report(
+                    f"WARNING: Minor duration mismatch — {fname}: "
+                    f"actual {dur / 60:.1f} min, "
+                    f"expected ~{exp_dur / 60:.1f} min "
+                    f"({dur_ratio * 100:.0f}%)"
+                )
+
+        if strict_fail:
+            self.log(
+                "ERROR: Strict mode — truncation warning escalated to failure."
+            )
+            return False
+
         return True
 
     def _normalize_rip_result(self, rip_path, success, failed_titles):
@@ -1244,24 +1329,33 @@ class RipperController:
             self._state_fail("analysis_failed")
             return
 
-        # Build expected-duration map for duration sanity warnings.
-        # Maps filepath → expected duration (seconds) using disc scan data.
+        # Build expected-duration and expected-size maps for integrity warnings.
+        # Maps filepath → expected value using disc scan data + rip tracking.
         _dur_by_id = {
             int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
             for t in disc_titles
         }
+        _size_by_id = {
+            int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+            for t in disc_titles
+        }
         _expected_durations: dict = {}
+        _expected_sizes: dict = {}
         for tid, files in (self.engine.last_title_file_map or {}).items():
-            exp = _dur_by_id.get(int(tid), 0)
-            if exp > 0:
-                for fp in files:
-                    _expected_durations[fp] = exp
+            exp_dur = _dur_by_id.get(int(tid), 0)
+            exp_size = _size_by_id.get(int(tid), 0)
+            for fp in files:
+                if exp_dur > 0:
+                    _expected_durations[fp] = exp_dur
+                if exp_size > 0:
+                    _expected_sizes[fp] = exp_size
 
         # Container integrity uses the already-analyzed data — no extra ffprobe.
         if not self._verify_container_integrity(
             mkv_files,
             analyzed=titles_list,
             expected_durations=_expected_durations or None,
+            expected_sizes=_expected_sizes or None,
         ):
             self._state_fail("pre_move_integrity_failed")
             self.report(
@@ -3029,8 +3123,31 @@ class RipperController:
                 continue
 
             # Integrity check uses pre-analyzed data — no extra ffprobe pass.
+            # Build expected-duration/size maps from disc scan + rip tracking.
+            _dur_by_id_d = {
+                int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
+                for t in disc_titles
+            }
+            _size_by_id_d = {
+                int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+                for t in disc_titles
+            }
+            _exp_dur_d: dict = {}
+            _exp_size_d: dict = {}
+            for _tid, _files in (self.engine.last_title_file_map or {}).items():
+                _ed = _dur_by_id_d.get(int(_tid), 0)
+                _es = _size_by_id_d.get(int(_tid), 0)
+                for _fp in _files:
+                    if _ed > 0:
+                        _exp_dur_d[_fp] = _ed
+                    if _es > 0:
+                        _exp_size_d[_fp] = _es
+
             if not self._verify_container_integrity(
-                mkv_files, analyzed=titles_list
+                mkv_files,
+                analyzed=titles_list,
+                expected_durations=_exp_dur_d or None,
+                expected_sizes=_exp_size_d or None,
             ):
                 self.report(
                     f"Disc {disc_number}: ffprobe integrity check failed"

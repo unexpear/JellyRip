@@ -990,16 +990,15 @@ def test_fallback_title_from_mode_logs_to_session_report(monkeypatch):
     assert any("Auto-Title-2026" in line for line in controller.session_report)
 
 
-# ── Duration sanity check ─────────────────────────────────────────────────────
+# ── Duration sanity check (tiered) ───────────────────────────────────────────
 
-def test_verify_container_integrity_warns_on_truncated_duration(tmp_path):
-    """expected_durations: actual < 60% of expected → warning in session_report."""
-    controller, engine = _controller_with_engine()
-
+def test_integrity_severe_duration_warns_only_no_size(tmp_path):
+    """< 50% duration alone → severe warning but still returns True."""
+    controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s actual, 3600 s expected → 16.7% — well below 60% threshold.
+    # 600 s actual, 3600 s expected → 16.7% — severe tier.
     preanalyzed = [(str(f), 600.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1007,19 +1006,56 @@ def test_verify_container_integrity_warns_on_truncated_duration(tmp_path):
         expected_durations={str(f): 3600.0},
     )
 
-    assert result is True  # warning only, not failure
-    assert any("truncation" in line for line in controller.session_report)
+    assert result is True  # warning only when size not confirmed
+    assert any("Severe" in line or "severe" in line for line in controller.session_report)
 
 
-def test_verify_container_integrity_no_warning_when_close_enough(tmp_path):
-    """expected_durations: actual >= 60% of expected → no truncation warning."""
+def test_integrity_severe_duration_and_size_logs_error(tmp_path):
+    """< 50% duration AND < 50% size → TRUNCATION ERROR in session report."""
     controller, _engine = _controller_with_engine()
-
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 2400 s actual, 3600 s expected → 66.7% — above 60% threshold.
-    preanalyzed = [(str(f), 2400.0, 100)]
+    # 600 s actual (16.7%), 100 MB actual vs 1000 MB expected (10%) — both severe.
+    preanalyzed = [(str(f), 600.0, 100)]  # size_mb = 100
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+        expected_sizes={str(f): 1000 * 1024 * 1024},
+    )
+
+    assert result is True  # error in report, still not hard fail (no strict)
+    assert any("TRUNCATION ERROR" in line for line in controller.session_report)
+
+
+def test_integrity_strict_mode_fails_on_likely_truncation(tmp_path):
+    """Strict mode: likely truncation (50-75% duration) → returns False."""
+    controller, engine = _controller_with_engine()
+    engine.cfg["opt_strict_mode"] = True
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 2000 s actual, 3600 s expected → 55.6% — likely truncation tier.
+    preanalyzed = [(str(f), 2000.0, 100)]
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+    )
+
+    assert result is False
+    assert any("Strict mode" in line for line in controller.gui.messages)
+
+
+def test_integrity_minor_mismatch_warns_but_passes(tmp_path):
+    """75–90% duration → minor warning, still returns True."""
+    controller, _engine = _controller_with_engine()
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 2880 s actual, 3600 s expected → 80% — minor tier.
+    preanalyzed = [(str(f), 2880.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
         analyzed=preanalyzed,
@@ -1027,4 +1063,22 @@ def test_verify_container_integrity_no_warning_when_close_enough(tmp_path):
     )
 
     assert result is True
-    assert not any("truncation" in line for line in controller.session_report)
+    assert any("Minor" in line or "minor" in line for line in controller.session_report)
+
+
+def test_integrity_normal_variance_no_warning(tmp_path):
+    """>= 90% duration → no warning at all."""
+    controller, _engine = _controller_with_engine()
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 3300 s actual, 3600 s expected → 91.7% — normal variance.
+    preanalyzed = [(str(f), 3300.0, 100)]
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+    )
+
+    assert result is True
+    assert controller.session_report == []
