@@ -218,6 +218,68 @@ class RipperController:
         except Exception:
             return default
 
+    def _prompt_run_path_overrides(self, path_fields):
+        """Optionally override folder paths for this run only.
+
+        path_fields: list of tuples (config_key, human_label).
+        Returns dict of resolved paths, or None if aborted.
+        """
+        resolved = {
+            key: os.path.normpath(self.engine.cfg.get(key, ""))
+            for key, _label in path_fields
+        }
+
+        if not path_fields:
+            return resolved
+
+        if not self.gui.ask_yesno(
+            "Use custom folders for this run?\n\n"
+            "Yes = browse/select per-mode paths\n"
+            "No = use saved defaults"
+        ):
+            return resolved
+
+        for key, label in path_fields:
+            default_path = resolved[key]
+            while True:
+                entered = self.gui.ask_input(
+                    f"{label} (Run Override)",
+                    "Select folder path (Skip = keep default):",
+                    show_browse=True,
+                    default_value=default_path,
+                )
+                if entered is None:
+                    return None
+
+                chosen = default_path if entered == "" else str(entered).strip()
+                if not chosen:
+                    chosen = default_path
+                chosen = os.path.normpath(chosen)
+
+                if os.path.isdir(chosen):
+                    resolved[key] = chosen
+                    self.log(f"Run override — {label}: {chosen}")
+                    break
+
+                if self.gui.ask_yesno(
+                    f"Folder does not exist:\n{chosen}\n\nCreate it?"
+                ):
+                    try:
+                        os.makedirs(chosen, exist_ok=True)
+                        resolved[key] = chosen
+                        self.log(f"Run override — {label}: {chosen}")
+                        break
+                    except Exception as e:
+                        self.log(
+                            f"Could not create folder '{chosen}': {e}"
+                        )
+                else:
+                    self.log(
+                        f"Re-enter {label} or click Skip to keep default."
+                    )
+
+        return resolved
+
     def _restore_selected_titles(self, disc_titles, resume_meta):
         """Return saved selected title ids if they still exist on this disc."""
         saved = resume_meta.get("selected_titles") or []
@@ -744,8 +806,15 @@ class RipperController:
     def run_smart_rip(self):
         """Auto-select and rip the highest-scoring main movie title."""
         cfg        = self.engine.cfg
-        movie_root = os.path.normpath(cfg["movies_folder"])
-        temp_root  = os.path.normpath(cfg["temp_folder"])
+        path_overrides = self._prompt_run_path_overrides([
+            ("movies_folder", "Movies Folder"),
+            ("temp_folder", "Temp Folder"),
+        ])
+        if path_overrides is None:
+            self.log("Cancelled before rip (path override step).")
+            return
+        movie_root = path_overrides["movies_folder"]
+        temp_root  = path_overrides["temp_folder"]
 
         self._reset_state_machine()
         self.engine.reset_abort()
@@ -1189,7 +1258,13 @@ class RipperController:
     def run_dump_all(self):
         """Rip all titles to temp storage for later organization."""
         cfg       = self.engine.cfg
-        temp_root = os.path.normpath(cfg["temp_folder"])
+        path_overrides = self._prompt_run_path_overrides([
+            ("temp_folder", "Temp Folder"),
+        ])
+        if path_overrides is None:
+            self.log("Cancelled before dump (path override step).")
+            return
+        temp_root = path_overrides["temp_folder"]
 
         multi_disc = self.gui.ask_yesno(
             "Dump multiple discs in one unattended session?\n\n"
@@ -1735,7 +1810,13 @@ class RipperController:
 
     def run_unattended_single(self):
         cfg       = self.engine.cfg
-        temp_root = os.path.normpath(cfg["temp_folder"])
+        path_overrides = self._prompt_run_path_overrides([
+            ("temp_folder", "Temp Folder"),
+        ])
+        if path_overrides is None:
+            self.log("Cancelled before unattended single (path override step).")
+            return
+        temp_root = path_overrides["temp_folder"]
 
         if not self._prepare_unattended_session(
             temp_root, "Unattended single-disc mode"
@@ -1840,7 +1921,13 @@ class RipperController:
 
     def run_unattended_series(self):
         cfg       = self.engine.cfg
-        temp_root = os.path.normpath(cfg["temp_folder"])
+        path_overrides = self._prompt_run_path_overrides([
+            ("temp_folder", "Temp Folder"),
+        ])
+        if path_overrides is None:
+            self.log("Cancelled before unattended series (path override step).")
+            return
+        temp_root = path_overrides["temp_folder"]
 
         if not self._prepare_unattended_session(
             temp_root, "Unattended series mode"
@@ -2104,6 +2191,7 @@ class RipperController:
         cfg        = self.engine.cfg
         tv_root    = os.path.normpath(cfg["tv_folder"])
         movie_root = os.path.normpath(cfg["movies_folder"])
+        temp_root  = os.path.normpath(cfg["temp_folder"])
 
         folder_path = self.gui.ask_folder(
             "Select folder with raw .mkv files"
@@ -2136,6 +2224,23 @@ class RipperController:
             self.log("Cancelled.")
             return
         is_tv = media_type.strip().lower() == "t"
+
+        path_fields = [
+            ("tv_folder", "TV Folder"),
+            ("temp_folder", "Temp Folder"),
+        ] if is_tv else [
+            ("movies_folder", "Movies Folder"),
+            ("temp_folder", "Temp Folder"),
+        ]
+        path_overrides = self._prompt_run_path_overrides(path_fields)
+        if path_overrides is None:
+            self.log("Cancelled before organize (path override step).")
+            return
+        if "tv_folder" in path_overrides:
+            tv_root = os.path.normpath(path_overrides["tv_folder"])
+        if "movies_folder" in path_overrides:
+            movie_root = os.path.normpath(path_overrides["movies_folder"])
+        temp_root = os.path.normpath(path_overrides["temp_folder"])
 
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
@@ -2195,7 +2300,6 @@ class RipperController:
         )
 
         if move_ok:
-            temp_root   = os.path.normpath(cfg["temp_folder"])
             norm_folder = os.path.normpath(folder_path)
             if (cfg.get("opt_auto_delete_temp", True) and
                     norm_folder.startswith(temp_root)):
@@ -2229,9 +2333,20 @@ class RipperController:
 
     def _run_disc(self, is_tv):
         cfg        = self.engine.cfg
-        tv_root    = os.path.normpath(cfg["tv_folder"])
-        movie_root = os.path.normpath(cfg["movies_folder"])
-        temp_root  = os.path.normpath(cfg["temp_folder"])
+        path_fields = [
+            ("tv_folder", "TV Folder"),
+            ("temp_folder", "Temp Folder"),
+        ] if is_tv else [
+            ("movies_folder", "Movies Folder"),
+            ("temp_folder", "Temp Folder"),
+        ]
+        path_overrides = self._prompt_run_path_overrides(path_fields)
+        if path_overrides is None:
+            self.log("Cancelled before disc rip (path override step).")
+            return
+        tv_root = os.path.normpath(path_overrides.get("tv_folder", cfg["tv_folder"]))
+        movie_root = os.path.normpath(path_overrides.get("movies_folder", cfg["movies_folder"]))
+        temp_root = os.path.normpath(path_overrides["temp_folder"])
 
         self.engine.reset_abort()
         self._wiped_session_paths.clear()
