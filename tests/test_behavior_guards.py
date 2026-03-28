@@ -21,6 +21,9 @@ class DummyGUI:
     def append_log(self, msg):
         self.messages.append(msg)
 
+    def set_status(self, _status):
+        pass
+
 
 class ScriptedSetupGUI(DummyGUI):
     def __init__(self, scripted_inputs, scripted_confirms):
@@ -577,3 +580,43 @@ def test_duplicate_resolution_prefers_custom_title_override_yes(monkeypatch):
 
     assert action == "bypass"
     assert called["value"] is False
+
+
+def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine(_engine_cfg(
+        temp_folder=str(tmp_path)
+    ))
+
+    def fake_rip_preview(rip_path, title_id, preview_seconds, on_log):
+        _ = (rip_path, title_id, preview_seconds, on_log)
+        nested = Path(rip_path) / "subdir"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "sample.mkv").write_text("ok")
+        return True
+
+    monkeypatch.setattr(engine, "rip_preview_title", fake_rip_preview)
+    monkeypatch.setattr("controller.controller.shutil.which", lambda _x: None)
+    monkeypatch.setattr("controller.controller.time.sleep", lambda _x: None)
+
+    # Run thread target inline for deterministic test behavior.
+    class _ImmediateThread:
+        def __init__(self, target, daemon=True):
+            self._target = target
+            self._daemon = daemon
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr("controller.controller.threading.Thread", _ImmediateThread)
+
+    controller.preview_title(0)
+
+    assert not any(
+        "Preview failed: no preview file found." in m
+        for m in controller.gui.messages
+    )
+    assert any(
+        ("Preview ready, but VLC was not found in PATH." in m) or
+        ("Preview opened in VLC:" in m)
+        for m in controller.gui.messages
+    )
