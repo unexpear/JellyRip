@@ -971,3 +971,60 @@ def test_session_summary_clean_when_no_warnings():
     assert any(
         "All discs completed successfully" in m for m in controller.gui.messages
     )
+
+
+# ── Fallback logging ──────────────────────────────────────────────────────────
+
+def test_fallback_title_from_mode_logs_to_session_report(monkeypatch):
+    """_fallback_title_from_mode must emit a session report entry."""
+    controller, _engine = _controller_with_engine()
+
+    monkeypatch.setattr(
+        "controller.controller.build_fallback_title",
+        lambda *_a, **_kw: "Auto-Title-2026",
+    )
+
+    result = controller._fallback_title_from_mode()
+
+    assert result == "Auto-Title-2026"
+    assert any("Auto-Title-2026" in line for line in controller.session_report)
+
+
+# ── Duration sanity check ─────────────────────────────────────────────────────
+
+def test_verify_container_integrity_warns_on_truncated_duration(tmp_path):
+    """expected_durations: actual < 60% of expected → warning in session_report."""
+    controller, engine = _controller_with_engine()
+
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 600 s actual, 3600 s expected → 16.7% — well below 60% threshold.
+    preanalyzed = [(str(f), 600.0, 100)]
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+    )
+
+    assert result is True  # warning only, not failure
+    assert any("truncation" in line for line in controller.session_report)
+
+
+def test_verify_container_integrity_no_warning_when_close_enough(tmp_path):
+    """expected_durations: actual >= 60% of expected → no truncation warning."""
+    controller, _engine = _controller_with_engine()
+
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    # 2400 s actual, 3600 s expected → 66.7% — above 60% threshold.
+    preanalyzed = [(str(f), 2400.0, 100)]
+    result = controller._verify_container_integrity(
+        [str(f)],
+        analyzed=preanalyzed,
+        expected_durations={str(f): 3600.0},
+    )
+
+    assert result is True
+    assert not any("truncation" in line for line in controller.session_report)

@@ -409,13 +409,15 @@ class RipperController:
 
     def _fallback_title_from_mode(self, disc_titles=None):
         """Build fallback title string based on configured naming mode."""
-        return build_fallback_title(
+        title = build_fallback_title(
             self.engine.cfg,
             make_temp_title,
             clean_name,
             choose_best_title,
             disc_titles=disc_titles,
         )
+        self.report(f"Auto-title fallback used: '{title}'")
+        return title
 
     def _log_ripped_file_sizes(self, mkv_files):
         """Log final sizes for newly ripped files so anomalies stand out."""
@@ -536,11 +538,16 @@ class RipperController:
                 "call _init_session_paths() first"
             )
 
-    def _verify_container_integrity(self, mkv_files, analyzed=None):
+    def _verify_container_integrity(
+        self, mkv_files, analyzed=None, expected_durations=None
+    ):
         """Require ffprobe-readable container with duration > 0 for each file.
 
         Accepts an optional pre-analyzed list (from a prior analyze_files call)
         to avoid running ffprobe twice in the same pipeline step.
+
+        When expected_durations is provided (dict mapping filepath → seconds),
+        warns if any file's actual duration is less than 60% of expected.
         """
         if not mkv_files:
             return False
@@ -560,6 +567,23 @@ class RipperController:
                 + ", ".join(bad)
             )
             return False
+        if expected_durations:
+            for f, dur, _mb in analyzed:
+                expected = expected_durations.get(f) or expected_durations.get(
+                    os.path.basename(f)
+                )
+                if not expected or expected <= 0:
+                    continue
+                ratio = dur / expected
+                if ratio < 0.6:
+                    self.report(
+                        f"Duration mismatch warning: "
+                        f"{os.path.basename(f)} is "
+                        f"{dur / 60:.1f} min but expected "
+                        f"~{expected / 60:.1f} min "
+                        f"({ratio * 100:.0f}% of expected) — "
+                        f"possible truncation"
+                    )
         return True
 
     def _normalize_rip_result(self, rip_path, success, failed_titles):
@@ -1220,8 +1244,25 @@ class RipperController:
             self._state_fail("analysis_failed")
             return
 
+        # Build expected-duration map for duration sanity warnings.
+        # Maps filepath → expected duration (seconds) using disc scan data.
+        _dur_by_id = {
+            int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
+            for t in disc_titles
+        }
+        _expected_durations: dict = {}
+        for tid, files in (self.engine.last_title_file_map or {}).items():
+            exp = _dur_by_id.get(int(tid), 0)
+            if exp > 0:
+                for fp in files:
+                    _expected_durations[fp] = exp
+
         # Container integrity uses the already-analyzed data — no extra ffprobe.
-        if not self._verify_container_integrity(mkv_files, analyzed=titles_list):
+        if not self._verify_container_integrity(
+            mkv_files,
+            analyzed=titles_list,
+            expected_durations=_expected_durations or None,
+        ):
             self._state_fail("pre_move_integrity_failed")
             self.report(
                 f"Smart Rip ffprobe integrity check failed for {title} ({year})"
