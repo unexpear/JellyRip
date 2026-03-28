@@ -9,10 +9,12 @@
 - Fixed `run_organize()` path drift: removed early `cfg["tv_folder"]` / `cfg["movies_folder"]` / `cfg["temp_folder"]` reads that silently bypassed run-time path overrides. All three folder roots now derive exclusively from `get_path()` after `_init_session_paths()`.
 - Added `_ensure_session_paths()` guard: raises `RuntimeError` immediately if `session_paths` has not been initialized, making misconfigured calls fail loudly rather than silently writing to the wrong folder.
 - Cleaned up post-stabilization size advisory log to use the format: `X MB (below threshold — expected Y GB → threshold Z GB)`.
+- Replaced exit-code-based rip failure forcing with validation-based degraded success classification. MakeMKV frequently exits non-zero on real discs even when output is usable; the engine now checks whether files were actually produced. Non-zero exit + files present → degraded success (warning added to session report, downstream stabilization and ffprobe still validate the file). Non-zero exit + no files → real failure, unchanged. Session summary now distinguishes "All discs completed successfully" from "Completed with warnings" when degraded titles were detected.
 
 ### Tests
 
 - Added 7 regression tests covering `_ensure_session_paths`, `_verify_container_integrity` with and without pre-analyzed data, integrity failure cases (zero duration, count mismatch), and advisory log format.
+- Added 4 regression tests for degraded rip classification: degraded success path, real failure path (no files), session report population, and session summary warnings vs. clean success branching.
 
 ## 1.0.6 - 2026-03-27
 
