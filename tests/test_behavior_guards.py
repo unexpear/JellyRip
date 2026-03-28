@@ -700,3 +700,46 @@ def test_prompt_run_path_overrides_accepts_custom_existing_path(tmp_path):
     ])
 
     assert resolved["temp_folder"] == os.path.normpath(custom_temp)
+
+
+def test_validate_paths_blocks_temp_equals_movies(tmp_path):
+    controller, _engine = _controller_with_engine()
+    same = str(tmp_path / "same")
+
+    err = controller._validate_paths(same, movies=same, tv=None)
+
+    assert err is not None
+    assert "cannot be the same" in err.lower()
+
+
+def test_validate_paths_blocks_non_writable(monkeypatch, tmp_path):
+    controller, _engine = _controller_with_engine()
+    target = str(tmp_path / "no-write")
+    os.makedirs(target, exist_ok=True)
+
+    monkeypatch.setattr("controller.controller.os.path.exists", lambda p: True)
+    monkeypatch.setattr("controller.controller.os.access", lambda p, mode: False)
+
+    err = controller._validate_paths(target, movies=None, tv=None)
+
+    assert err is not None
+    assert "not writable" in err.lower()
+
+
+def test_get_path_requires_initialized_session_paths():
+    controller, _engine = _controller_with_engine()
+    controller.session_paths = None
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        controller.get_path("temp")
+
+
+def test_session_paths_initialized_and_accessible(tmp_path):
+    controller, _engine = _controller_with_engine()
+    custom_temp = str(tmp_path / "temp")
+    os.makedirs(custom_temp, exist_ok=True)
+
+    controller._init_session_paths({"temp_folder": custom_temp})
+
+    assert controller.get_path("temp") == os.path.normpath(custom_temp)
