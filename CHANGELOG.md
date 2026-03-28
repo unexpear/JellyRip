@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Correctness hardening
+
+- Eliminated duplicate ffprobe analysis passes in TV/Movie disc (`_run_disc`) and Smart Rip (`run_smart_rip`) pipelines. `analyze_files()` result is now shared with `_verify_container_integrity()` via a new `analyzed=` parameter — each file is probed exactly once per pipeline step.
+- Fixed `run_smart_rip` state machine: `STABILIZED` transition was missing on the normal (non-retry) path; `VALIDATED` transition was dead code (placed after an unconditional `return`). Both are now correctly placed on the success path.
+- Fixed `run_organize()` path drift: removed early `cfg["tv_folder"]` / `cfg["movies_folder"]` / `cfg["temp_folder"]` reads that silently bypassed run-time path overrides. All three folder roots now derive exclusively from `get_path()` after `_init_session_paths()`.
+- Added `_ensure_session_paths()` guard: raises `RuntimeError` immediately if `session_paths` has not been initialized, making misconfigured calls fail loudly rather than silently writing to the wrong folder.
+- Cleaned up post-stabilization size advisory log to use the format: `X MB (below threshold — expected Y GB → threshold Z GB)`.
+
+### Tests
+
+- Added 7 regression tests covering `_ensure_session_paths`, `_verify_container_integrity` with and without pre-analyzed data, integrity failure cases (zero duration, count mismatch), and advisory log format.
+
 ## 1.0.6 - 2026-03-27
 
 ### New features
