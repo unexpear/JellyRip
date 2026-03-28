@@ -509,12 +509,25 @@ class RipperController:
             f"({pct:.1f}%)"
         )
 
-    def _verify_container_integrity(self, mkv_files):
-        """Require ffprobe-readable container with duration > 0 for each file."""
+    def _ensure_session_paths(self):
+        """Hard guard: raises if session_paths has not been initialized."""
+        if not self.session_paths:
+            raise RuntimeError(
+                "session_paths not initialized — "
+                "call _init_session_paths() first"
+            )
+
+    def _verify_container_integrity(self, mkv_files, analyzed=None):
+        """Require ffprobe-readable container with duration > 0 for each file.
+
+        Accepts an optional pre-analyzed list (from a prior analyze_files call)
+        to avoid running ffprobe twice in the same pipeline step.
+        """
         if not mkv_files:
             return False
         self.log("Container integrity check (ffprobe)...")
-        analyzed = self.engine.analyze_files(mkv_files, self.log)
+        if analyzed is None:
+            analyzed = self.engine.analyze_files(mkv_files, self.log)
         if len(analyzed) != len(mkv_files):
             self.log(
                 "ERROR: Container integrity check incomplete "
@@ -858,17 +871,17 @@ class RipperController:
                 final_size = 0
             effective_floor = self._compute_file_min_size(expected, min_size_floor)
             if effective_floor > 0 and final_size < effective_floor:
+                detail = (
+                    f"expected {expected / (1024**3):.2f} GB"
+                    f" → threshold {effective_floor / (1024**3):.2f} GB"
+                    if expected > 0 else
+                    f"advisory floor {effective_floor / (1024**2):.0f} MB"
+                    f" — normal for extras/short titles"
+                )
                 self.log(
-                    f"INFO: {os.path.basename(f)} is "
+                    f"INFO: {os.path.basename(f)}: "
                     f"{final_size / (1024**2):.0f} MB "
-                    f"(below {effective_floor / (1024**2):.0f} MB advisory floor"
-                    + (
-                        f" — expected {expected / (1024**3):.2f} GB from disc scan,"
-                        f" min threshold {effective_floor / (1024**3):.2f} GB"
-                        if expected > 0 else
-                        f" — normal for extras/short titles"
-                    )
-                    + ")"
+                    f"(below threshold — {detail})"
                 )
 
         return True, False
@@ -1125,6 +1138,7 @@ class RipperController:
                 "Move is blocked to prevent partial file corruption."
             )
             return
+        self._state_transition(SessionState.STABILIZED)
         self._log_expected_vs_actual_summary(
             mkv_files, expected_size_by_title
         )
@@ -1156,7 +1170,6 @@ class RipperController:
                     "Automatic retry was attempted once and still failed."
                 )
                 return
-            self._state_transition(SessionState.STABILIZED)
         elif size_status == "warn":
             if not self.gui.ask_yesno(
                 "Rip size is below preferred threshold.\n\n"
@@ -1170,9 +1183,28 @@ class RipperController:
                 f"USER OVERRIDE — Smart Rip size warning for {title} ({year})"
             )
 
-        if not self._verify_container_integrity(mkv_files):
+        # Analyze files once; reuse the result for both integrity check and
+        # the title-picker/move step. This avoids running ffprobe twice.
+        self.gui.set_status("Analyzing...")
+        self.gui.start_indeterminate()
+        try:
+            titles_list = self.engine.analyze_files(
+                mkv_files, self.log
+            )
+        finally:
+            self.gui.stop_indeterminate()
+            self.gui.set_progress(0)
+
+        if not titles_list:
+            self._state_fail("analysis_failed")
+            return
+
+        # Container integrity uses the already-analyzed data — no extra ffprobe.
+        if not self._verify_container_integrity(mkv_files, analyzed=titles_list):
             self._state_fail("pre_move_integrity_failed")
-            self.report(f"Smart Rip ffprobe integrity check failed for {title} ({year})")
+            self.report(
+                f"Smart Rip ffprobe integrity check failed for {title} ({year})"
+            )
             self._mark_session_failed(
                 rip_path,
                 title=title,
@@ -1187,20 +1219,7 @@ class RipperController:
                 "Move is blocked to prevent corrupt files in library."
             )
             return
-            self._state_transition(SessionState.VALIDATED)
-
-        self.gui.set_status("Analyzing...")
-        self.gui.start_indeterminate()
-        try:
-            titles_list = self.engine.analyze_files(
-                mkv_files, self.log
-            )
-        finally:
-            self.gui.stop_indeterminate()
-            self.gui.set_progress(0)
-
-        if not titles_list:
-            return
+        self._state_transition(SessionState.VALIDATED)
 
         # Map analyzed files back to MakeMKV title ids when possible.
         # Primary path uses explicit tracking captured during rip.
@@ -2274,10 +2293,7 @@ class RipperController:
         )
 
     def run_organize(self):
-        cfg        = self.engine.cfg
-        tv_root    = os.path.normpath(cfg["tv_folder"])
-        movie_root = os.path.normpath(cfg["movies_folder"])
-        temp_root  = os.path.normpath(cfg["temp_folder"])
+        cfg = self.engine.cfg
 
         folder_path = self.gui.ask_folder(
             "Select folder with raw .mkv files"
@@ -2323,12 +2339,13 @@ class RipperController:
             self.log("Cancelled before organize (path override step).")
             return
         self._init_session_paths(path_overrides)
+        self._ensure_session_paths()
         self._log_session_paths()
-        if "tv_folder" in path_overrides:
-            tv_root = self.get_path("tv")
-        if "movies_folder" in path_overrides:
-            movie_root = self.get_path("movies")
-        temp_root = self.get_path("temp")
+        # Always derive all folder roots from session_paths — never from cfg
+        # directly — so run-time path overrides are always honored.
+        tv_root    = self.get_path("tv")
+        movie_root = self.get_path("movies")
+        temp_root  = self.get_path("temp")
 
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
@@ -2927,7 +2944,31 @@ class RipperController:
                     f"USER OVERRIDE — Disc {disc_number} size warning"
                 )
 
-            if not self._verify_container_integrity(mkv_files):
+            # Analyze files once; reuse for both integrity check and move step.
+            self.gui.set_status("Analyzing files...")
+            self.gui.start_indeterminate()
+            try:
+                titles_list = self.engine.analyze_files(
+                    mkv_files, self.log
+                )
+                self.log(f"Analysis completed: {len(titles_list)} title(s) found.")
+            except Exception as e:
+                self.log(f"ERROR during analysis: {e}")
+                titles_list = None
+            finally:
+                self.gui.stop_indeterminate()
+                self.gui.set_progress(0)
+
+            if not titles_list:
+                self.log("Analysis aborted or no files returned.")
+                if not self.gui.ask_yesno("Try another disc?"):
+                    break
+                continue
+
+            # Integrity check uses pre-analyzed data — no extra ffprobe pass.
+            if not self._verify_container_integrity(
+                mkv_files, analyzed=titles_list
+            ):
                 self.report(
                     f"Disc {disc_number}: ffprobe integrity check failed"
                 )
@@ -2945,25 +2986,6 @@ class RipperController:
                     "Container integrity check failed (ffprobe).\n\n"
                     "Try another disc."
                 )
-                if not self.gui.ask_yesno("Try another disc?"):
-                    break
-                continue
-            self.gui.set_status("Analyzing files...")
-            self.gui.start_indeterminate()
-            try:
-                titles_list = self.engine.analyze_files(
-                    mkv_files, self.log
-                )
-                self.log(f"Analysis completed: {len(titles_list)} title(s) found.")
-            except Exception as e:
-                self.log(f"ERROR during analysis: {e}")
-                titles_list = None
-            finally:
-                self.gui.stop_indeterminate()
-                self.gui.set_progress(0)
-
-            if not titles_list:
-                self.log("Analysis aborted or no files returned.")
                 if not self.gui.ask_yesno("Try another disc?"):
                     break
                 continue
