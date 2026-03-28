@@ -3,9 +3,12 @@
 from shared.runtime import *
 
 from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
+from utils.fallback import handle_fallback
+from utils.media import select_largest_file
 from utils.parsing import parse_episode_names, parse_ordered_titles, safe_int
 from utils.scoring import choose_best_title
 from utils.session_result import normalize_session_result
+from utils.state_machine import SessionState, SessionStateMachine
 
 
 class RipperController:
@@ -36,6 +39,10 @@ class RipperController:
         self.session_report       = []
         self._preview_lock        = threading.Lock()
         self._wiped_session_paths = set()
+        self.sm = SessionStateMachine(
+            debug=bool(self.engine.cfg.get("opt_debug_state", False)),
+            logger=self.log,
+        )
 
     def log(self, msg):
         """Record a timestamped log line and forward it to the GUI queue."""
@@ -52,6 +59,54 @@ class RipperController:
         """Track a warning/failure event and emit it to the live log."""
         self.session_report.append(msg)
         self.log(msg)
+
+    def _reset_state_machine(self):
+        self.sm = SessionStateMachine(
+            debug=bool(self.engine.cfg.get("opt_debug_state", False)),
+            logger=self.log,
+        )
+
+    def _state_transition(self, new_state):
+        self.sm.transition(new_state)
+        if self.engine.cfg.get("opt_debug_state_json", False):
+            self.log(
+                "STATE_JSON: " + json.dumps(
+                    {
+                        "event": "transition",
+                        "state": self.sm.state.name,
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+            )
+
+    def _state_fail(self, reason):
+        self.sm.fail(reason)
+        if self.engine.cfg.get("opt_debug_state_json", False):
+            self.log(
+                "STATE_JSON: " + json.dumps(
+                    {
+                        "event": "fail",
+                        "reason": reason,
+                        "state": self.sm.state.name,
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+            )
+
+    def _record_fallback_event(self, reason, accepted, strict):
+        if not self.engine.cfg.get("opt_debug_state_json", False):
+            return
+        self.log(
+            "STATE_JSON: " + json.dumps(
+                {
+                    "event": "fallback",
+                    "reason": reason,
+                    "accepted": bool(accepted),
+                    "strict": bool(strict),
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+        )
 
     def flush_log(self):
         """Persist current session log buffer to configured log file."""
@@ -70,6 +125,13 @@ class RipperController:
             "opt_session_failure_report", True
         ):
             return
+        if getattr(self, "sm", None) is not None:
+            if self.sm.state == SessionState.COMPLETED:
+                self.log("Session summary: All discs completed successfully.")
+                return
+            if self.sm.state == SessionState.FAILED and not self.session_report:
+                self.log("Session summary: Session failed.")
+                return
         if not self.session_report:
             self.log(
                 "Session summary: All discs completed successfully."
@@ -429,7 +491,19 @@ class RipperController:
                         self.log("Preview failed: no preview file found.")
                     return
 
-                latest = max(files, key=os.path.getctime)
+                latest = select_largest_file(files)
+                try:
+                    size_mb = os.path.getsize(latest) / (1024**2)
+                except Exception:
+                    size_mb = 0.0
+                analyzed = self.engine.analyze_files([latest], self.log)
+                duration = int(analyzed[0][1]) if analyzed else 0
+                mm = duration // 60
+                ss = duration % 60
+                self.log(
+                    f"Preview candidate: {os.path.basename(latest)} | "
+                    f"{size_mb:.0f} MB | {mm:02d}:{ss:02d}"
+                )
                 vlc = shutil.which("vlc")
                 if vlc:
                     subprocess.Popen([vlc, latest])
@@ -673,6 +747,7 @@ class RipperController:
         movie_root = os.path.normpath(cfg["movies_folder"])
         temp_root  = os.path.normpath(cfg["temp_folder"])
 
+        self._reset_state_machine()
         self.engine.reset_abort()
         self._wiped_session_paths.clear()
         self.session_report = []
@@ -708,6 +783,7 @@ class RipperController:
             return
 
         if disc_titles is None:
+            self._state_fail("scan_failed")
             self.log("Could not read disc.")
             self.gui.show_error(
                 "Scan Failed",
@@ -717,12 +793,14 @@ class RipperController:
             return
         if disc_titles == []:
             self.log("Scan completed but no titles were found on this disc.")
+            self._state_fail("scan_no_titles")
             self.gui.show_error(
                 "No Titles Found",
                 "Disc was readable, but no rip-able titles were found.\n\n"
                 "This can happen with unsupported or empty media."
             )
             return
+        self._state_transition(SessionState.SCANNED)
 
         if auto_title_pending:
             title = self._fallback_title_from_mode(disc_titles)
@@ -853,6 +931,7 @@ class RipperController:
         )
 
         if not success:
+            self._state_fail("rip_failed")
             self.report(f"Smart Rip failed for {title} ({year})")
             self._mark_session_failed(
                 rip_path,
@@ -865,6 +944,7 @@ class RipperController:
             )
             self.flush_log()
             return
+        self._state_transition(SessionState.RIPPED)
 
         self.engine.update_temp_metadata(rip_path, status="ripped")
 
@@ -873,6 +953,7 @@ class RipperController:
             mkv_files, expected_size_by_title
         )
         if not stabilized:
+            self._state_fail("stabilization_failed")
             self.log("File stabilization check failed after rip.")
             self.report(
                 f"Smart Rip stabilization failed for {title} ({year})"
@@ -907,6 +988,7 @@ class RipperController:
                 rip_path, selected_ids, expected_size_by_title
             )
             if not retried_ok:
+                self._state_fail("size_validation_failed")
                 self.report(
                     f"Smart Rip failed size sanity check for {title} ({year})"
                 )
@@ -925,12 +1007,14 @@ class RipperController:
                     "Automatic retry was attempted once and still failed."
                 )
                 return
+            self._state_transition(SessionState.STABILIZED)
         elif size_status == "warn":
             if not self.gui.ask_yesno(
                 "Rip size is below preferred threshold.\n\n"
                 f"{size_reason}\n\n"
                 "Continue anyway?"
             ):
+                self._state_fail("size_warning_declined")
                 self.log("Cancelled due to size warning threshold.")
                 return
             self.report(
@@ -938,6 +1022,7 @@ class RipperController:
             )
 
         if not self._verify_container_integrity(mkv_files):
+            self._state_fail("pre_move_integrity_failed")
             self.report(f"Smart Rip ffprobe integrity check failed for {title} ({year})")
             self._mark_session_failed(
                 rip_path,
@@ -953,6 +1038,7 @@ class RipperController:
                 "Move is blocked to prevent corrupt files in library."
             )
             return
+            self._state_transition(SessionState.VALIDATED)
 
         self.gui.set_status("Analyzing...")
         self.gui.start_indeterminate()
@@ -976,28 +1062,56 @@ class RipperController:
                 titles_list, [best.get("id")]
             )
             if mapped:
-                main_indices = [mapped[0]]
+                # Multi-file title safe: pick the largest mapped file.
+                chosen_idx = max(
+                    mapped,
+                    key=lambda i: int(titles_list[i][2] * (1024**2)),
+                )
+                main_indices = [chosen_idx]
             else:
-                target_size = best.get("size_bytes", 0)
-                if target_size > 0 and titles_list:
-                    main_indices = [
-                        min(
+                def _closest_size_fallback():
+                    target_size = int(best.get("size_bytes", 0) or 0)
+                    if target_size > 0 and titles_list:
+                        idx = min(
                             range(len(titles_list)),
                             key=lambda i: abs(
-                                int(titles_list[i][2] * (1024**2)) -
-                                int(target_size)
+                                int(titles_list[i][2] * (1024**2)) - target_size
                             )
                         )
-                    ]
-                    self.log(
-                        "Warning: smart title id mapping failed; using "
-                        "closest-size analyzed file as main."
+                        self.log(
+                            "Warning: smart title id mapping failed; using "
+                            "closest-size analyzed file as main."
+                        )
+                        return [idx]
+                    idx = max(
+                        range(len(titles_list)),
+                        key=lambda i: int(titles_list[i][2] * (1024**2)),
                     )
-                else:
                     self.log(
                         "Warning: could not map smart-selected title id to "
-                        "analyzed files; falling back to longest file."
+                        "analyzed files; falling back to largest file."
                     )
+                    return [idx]
+
+                resolved = handle_fallback(
+                    self,
+                    "Title mapping failed",
+                    _closest_size_fallback,
+                )
+                if resolved is None:
+                    self._state_fail("title_mapping_failed")
+                    self.report(
+                        f"Smart Rip mapping failed for {title} ({year})"
+                    )
+                    self.gui.show_error(
+                        "Mapping Failed",
+                        "Could not map ripped files back to selected title."
+                    )
+                    self.write_session_summary()
+                    self.flush_log()
+                    self.gui.set_progress(0)
+                    return
+                main_indices = resolved
         self.gui.set_status("Moving files...")
         ok, _, moved_paths = self.engine.move_files(
             titles_list, main_indices,
@@ -1016,6 +1130,7 @@ class RipperController:
                 moved_paths, expected_size_by_title
             )
             if post_status == "hard_fail":
+                self._state_fail("post_move_size_validation_failed")
                 self.report(
                     f"Smart Rip post-move validation failed for {title} ({year})"
                 )
@@ -1037,16 +1152,24 @@ class RipperController:
                     "Post-Move Validation Failed",
                     "Moved file(s) failed container integrity check (ffprobe)."
                 )
+                self._state_fail("post_move_integrity_failed")
                 ok = False
+        if ok:
+            self._state_transition(SessionState.MOVED)
         if ok:
             shutil.rmtree(rip_path, ignore_errors=True)
             if os.path.exists(rip_path):
                 self.log(f"Warning: could not delete {rip_path}")
         else:
+            if self.sm.state != SessionState.FAILED:
+                self._state_fail("move_failed")
             self.report(
                 f"Smart Rip move failed for {title} ({year})"
             )
             self.log(f"Temp preserved at: {rip_path}")
+
+        if ok:
+            self._state_transition(SessionState.COMPLETED)
 
         self.write_session_summary()
         self.flush_log()

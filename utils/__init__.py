@@ -16,7 +16,10 @@ from .parsing import (
     safe_int,
 )
 from .scoring import choose_best_title, format_audio_summary, score_title
+from .media import select_largest_file
+from .fallback import handle_fallback
 from .session_result import normalize_session_result
+from .state_machine import SessionState, SessionStateMachine
 from .updater import (
     download_asset,
     fetch_latest_release,
@@ -41,7 +44,11 @@ __all__ = [
     "choose_best_title",
     "format_audio_summary",
     "score_title",
+    "select_largest_file",
+    "handle_fallback",
     "normalize_session_result",
+    "SessionState",
+    "SessionStateMachine",
     "download_asset",
     "fetch_latest_release",
     "get_authenticode_signature",

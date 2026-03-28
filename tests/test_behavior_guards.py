@@ -10,7 +10,10 @@ from controller.controller import RipperController
 import controller.controller as controller_module
 from controller.naming import build_fallback_title
 from engine.ripper_engine import RipperEngine
+from utils.fallback import handle_fallback
+from utils.media import select_largest_file
 from utils.session_result import normalize_session_result
+from utils.state_machine import SessionState, SessionStateMachine
 from utils.scoring import choose_best_title
 
 
@@ -595,6 +598,11 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(engine, "rip_preview_title", fake_rip_preview)
+    monkeypatch.setattr(
+        engine,
+        "analyze_files",
+        lambda files, _log: [(files[0], 40, 100)] if files else [],
+    )
     monkeypatch.setattr("controller.controller.shutil.which", lambda _x: None)
     monkeypatch.setattr("controller.controller.time.sleep", lambda _x: None)
 
@@ -620,3 +628,34 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         ("Preview opened in VLC:" in m)
         for m in controller.gui.messages
     )
+    assert any("Preview candidate:" in m for m in controller.gui.messages)
+
+
+def test_state_machine_invalid_transition_raises():
+    sm = SessionStateMachine()
+    sm.transition(SessionState.SCANNED)
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        sm.transition(SessionState.MOVED)
+
+
+def test_handle_fallback_blocked_in_strict_mode():
+    controller, engine = _controller_with_engine()
+    engine.cfg["opt_strict_mode"] = True
+    controller.gui.ask_yesno = lambda _prompt: True
+
+    result = handle_fallback(controller, "mapping missing", lambda: [1])
+
+    assert result is None
+
+
+def test_select_largest_file_prefers_biggest(tmp_path):
+    a = tmp_path / "a.mkv"
+    b = tmp_path / "b.mkv"
+    a.write_bytes(b"a" * 10)
+    b.write_bytes(b"b" * 100)
+
+    selected = select_largest_file([str(a), str(b)])
+
+    assert selected == str(b)
