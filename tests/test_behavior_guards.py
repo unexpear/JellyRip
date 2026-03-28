@@ -743,3 +743,144 @@ def test_session_paths_initialized_and_accessible(tmp_path):
     controller._init_session_paths({"temp_folder": custom_temp})
 
     assert controller.get_path("temp") == os.path.normpath(custom_temp)
+
+
+def test_ensure_session_paths_raises_before_init():
+    """_ensure_session_paths() must raise RuntimeError if called before init."""
+    controller, _engine = _controller_with_engine()
+    controller.session_paths = None
+
+    import pytest
+    with pytest.raises(RuntimeError, match="session_paths not initialized"):
+        controller._ensure_session_paths()
+
+
+def test_ensure_session_paths_passes_after_init(tmp_path):
+    """_ensure_session_paths() must not raise once _init_session_paths ran."""
+    controller, engine = _controller_with_engine()
+    engine.cfg["temp_folder"] = str(tmp_path / "temp")
+    engine.cfg["movies_folder"] = str(tmp_path / "movies")
+    engine.cfg["tv_folder"] = str(tmp_path / "tv")
+
+    controller._init_session_paths({})
+    controller._ensure_session_paths()  # must not raise
+
+
+def test_verify_container_integrity_uses_preanalyzed_data(monkeypatch, tmp_path):
+    """_verify_container_integrity(analyzed=...) must not call analyze_files."""
+    controller, engine = _controller_with_engine()
+
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    analyze_called = {"times": 0}
+
+    def fake_analyze(files, log):
+        analyze_called["times"] += 1
+        return [(str(files[0]), 5400.0, 4200)]
+
+    monkeypatch.setattr(engine, "analyze_files", fake_analyze)
+
+    # Pass pre-analyzed data — analyze_files must NOT be called.
+    preanalyzed = [(str(f), 5400.0, 4200)]
+    result = controller._verify_container_integrity([str(f)], analyzed=preanalyzed)
+
+    assert result is True
+    assert analyze_called["times"] == 0
+
+
+def test_verify_container_integrity_calls_analyze_when_no_preanalyzed(
+    monkeypatch, tmp_path
+):
+    """Without analyzed=, _verify_container_integrity must call analyze_files."""
+    controller, engine = _controller_with_engine()
+
+    f = tmp_path / "title_t00.mkv"
+    f.write_text("fake")
+
+    analyze_called = {"times": 0}
+
+    def fake_analyze(files, log):
+        analyze_called["times"] += 1
+        return [(str(files[0]), 5400.0, 4200)]
+
+    monkeypatch.setattr(engine, "analyze_files", fake_analyze)
+
+    result = controller._verify_container_integrity([str(f)])
+
+    assert result is True
+    assert analyze_called["times"] == 1
+
+
+def test_verify_container_integrity_fails_on_zero_duration(tmp_path):
+    """A file with duration <= 0 in pre-analyzed data must fail integrity."""
+    controller, _engine = _controller_with_engine()
+
+    f = tmp_path / "corrupt.mkv"
+    f.write_text("bad")
+
+    preanalyzed = [(str(f), 0.0, 100)]
+    result = controller._verify_container_integrity([str(f)], analyzed=preanalyzed)
+
+    assert result is False
+    assert any("Container integrity check failed" in m for m in controller.gui.messages)
+
+
+def test_verify_container_integrity_fails_on_count_mismatch(tmp_path):
+    """If analyzed count < file count, integrity check must fail."""
+    controller, _engine = _controller_with_engine()
+
+    f1 = tmp_path / "a.mkv"
+    f2 = tmp_path / "b.mkv"
+    f1.write_text("a")
+    f2.write_text("b")
+
+    # Only one result for two files.
+    preanalyzed = [(str(f1), 5400.0, 4200)]
+    result = controller._verify_container_integrity(
+        [str(f1), str(f2)], analyzed=preanalyzed
+    )
+
+    assert result is False
+    assert any("incomplete" in m for m in controller.gui.messages)
+
+
+def test_size_advisory_log_uses_arrow_format(tmp_path, monkeypatch):
+    """Post-stabilization advisory must use 'expected X GB → threshold Y GB' format."""
+    import time as time_module
+
+    controller, engine = _controller_with_engine({
+        **_engine_cfg(),
+        "opt_file_stabilization": True,
+        "opt_stabilize_timeout_seconds": 5,
+        "opt_stabilize_required_polls": 1,
+        "opt_min_rip_size_gb": 1,
+        "opt_expected_size_ratio_pct": 70,
+        "opt_hard_fail_ratio_pct": 40,
+    })
+
+    tiny = tmp_path / "title_t02.mkv"
+    tiny.write_bytes(b"x" * (1 * 1024 * 1024))  # 1 MB
+
+    monkeypatch.setattr(
+        "controller.controller.time.sleep", lambda _s: None
+    )
+    monkeypatch.setattr(
+        controller, "_stabilize_file",
+        lambda _f, _timeout, _polls: (True, False)
+    )
+
+    # 500 MB expected → floor = 250 MB; actual is 1 MB so advisory fires.
+    expected_size_by_title = {2: 500 * 1024 * 1024}
+    controller._stabilize_ripped_files(
+        [str(tiny)], expected_size_by_title=expected_size_by_title
+    )
+
+    advisory_lines = [
+        m for m in controller.gui.messages
+        if "below threshold" in m
+    ]
+    assert advisory_lines, "Expected an advisory log line"
+    assert "→" in advisory_lines[0]
+    assert "expected" in advisory_lines[0]
+    assert "threshold" in advisory_lines[0]
