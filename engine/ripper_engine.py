@@ -40,6 +40,7 @@ class RipperEngine:
         self._abort_lock     = threading.Lock()
         self.last_move_error = ""
         self.last_title_file_map = {}
+        self.last_degraded_titles: list = []
 
     @property
     def abort_flag(self):
@@ -973,6 +974,7 @@ class RipperEngine:
         attempts      = self._get_rip_attempts()
         failed_titles = []
         self.last_title_file_map = {}
+        self.last_degraded_titles = []
 
         for idx, tid in enumerate(title_ids):
             if self.abort_event.is_set():
@@ -1016,16 +1018,26 @@ class RipperEngine:
                 )
                 if self.abort_event.is_set():
                     return False, failed_titles
+                after = self._snapshot_mkv_files(rip_path)
+                new_files = sorted(after - before)
                 if success:
-                    after = self._snapshot_mkv_files(rip_path)
-                    new_files = sorted(after - before)
                     if new_files:
                         self.last_title_file_map[int(tid)] = list(new_files)
                     title_success = True
                     break
-                self._log_forced_failure_with_outputs(
-                    rip_path, before, on_log
-                )
+                if new_files:
+                    # MakeMKV exited non-zero but produced output.
+                    # Downstream stabilization and ffprobe will validate
+                    # the actual file — classify as degraded here.
+                    on_log(
+                        f"Warning: MakeMKV reported errors for title "
+                        f"{tid+1} but produced {len(new_files)} "
+                        f"output file(s) — treating as degraded success."
+                    )
+                    self.last_title_file_map[int(tid)] = list(new_files)
+                    self.last_degraded_titles.append(int(tid) + 1)
+                    title_success = True
+                    break
                 on_log(
                     f"Attempt {attempt_num} failed "
                     f"for title {tid+1}."

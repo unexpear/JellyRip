@@ -61,6 +61,14 @@ class RipperController:
         self.session_report.append(msg)
         self.log(msg)
 
+    def _warn_degraded_rips(self):
+        """Add session warnings for any degraded titles from the last rip."""
+        for tid in self.engine.last_degraded_titles:
+            self.report(
+                f"Title {tid}: MakeMKV read errors but output produced "
+                f"(degraded rip — validated downstream by ffprobe)"
+            )
+
     def _reset_state_machine(self):
         self.sm = SessionStateMachine(
             debug=bool(self.engine.cfg.get("opt_debug_state", False)),
@@ -128,7 +136,18 @@ class RipperController:
             return
         if getattr(self, "sm", None) is not None:
             if self.sm.state == SessionState.COMPLETED:
-                self.log("Session summary: All discs completed successfully.")
+                if self.session_report:
+                    self.log("Session summary: Completed with warnings.")
+                    self.log("=" * 44)
+                    self.log("SESSION SUMMARY — WARNINGS")
+                    self.log("=" * 44)
+                    for line in self.session_report:
+                        self.log(f"  {line}")
+                    self.log("=" * 44)
+                else:
+                    self.log(
+                        "Session summary: All discs completed successfully."
+                    )
                 return
             if self.sm.state == SessionState.FAILED and not self.session_report:
                 self.log("Session summary: Session failed.")
@@ -700,6 +719,7 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        self._warn_degraded_rips()
         if failed_titles:
             self.report(
                 f"Retry: titles failed — {failed_titles}"
@@ -1088,6 +1108,7 @@ class RipperController:
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
+        self._warn_degraded_rips()
         success, mkv_files = self._normalize_rip_result(
             rip_path, success, failed_titles
         )
@@ -2831,6 +2852,7 @@ class RipperController:
                 on_progress=self.gui.set_progress,
                 on_log=self.log
             )
+            self._warn_degraded_rips()
 
             if failed_titles:
                 self.report(
