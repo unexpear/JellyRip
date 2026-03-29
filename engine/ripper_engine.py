@@ -1,6 +1,17 @@
 """Engine layer implementation."""
 
-from shared.runtime import *
+import glob
+import json
+import os
+import queue as queue_module
+import shutil
+import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+from shared.runtime import RIP_ATTEMPT_FLAGS
 
 from config import resolve_ffprobe
 from utils.helpers import clean_name
@@ -41,6 +52,10 @@ class RipperEngine:
         self.last_move_error = ""
         self.last_title_file_map = {}
         self.last_degraded_titles: list = []
+        self._ffprobe_cache = {}
+        self._last_scan_total_bytes = None
+        self._last_scan_timestamp = 0.0
+        self._last_scan_target = None
 
     @property
     def abort_flag(self):
@@ -189,12 +204,16 @@ class RipperEngine:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp, path)
-        except Exception:
+        except Exception as e:
+            print(f"Warning: failed atomic JSON write for {path}: {e}")
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
-                except Exception:
-                    pass
+                except Exception as cleanup_err:
+                    print(
+                        "Warning: failed to remove temporary JSON file "
+                        f"{tmp}: {cleanup_err}"
+                    )
 
     def write_temp_metadata(self, rip_path, title, disc_number,
                             season=None, year=None, media_type=None,
@@ -245,8 +264,8 @@ class RipperEngine:
             for key, value in updates.items():
                 meta[key] = value
             self._atomic_write_json(meta_path, meta)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: failed to update session metadata {meta_path}: {e}")
 
     def read_temp_metadata(self, rip_path):
         """Read metadata for a temp session folder, returning None on failure."""
@@ -451,11 +470,17 @@ class RipperEngine:
                         "possible ambiguity."
                     )
 
+        self._last_scan_total_bytes = sum(
+            max(0, int(t.get("size_bytes", 0) or 0)) for t in result
+        )
+        self._last_scan_timestamp = time.time()
+        self._last_scan_target = disc_target
+
         on_progress(100)
         on_log(f"Disc scan complete. Found {len(result)} title(s).")
         return result
 
-    def get_disc_size(self, on_log):
+    def get_disc_size(self, on_log, prefer_cached=False):
         """
         Lightweight disc size query used only by dump/unattended modes.
         TV/Movie disc flows use size_bytes from scan_disc() instead,
@@ -463,6 +488,15 @@ class RipperEngine:
         """
         makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
         disc_target = self.get_disc_target()
+        if prefer_cached:
+            scan_age = time.time() - float(self._last_scan_timestamp or 0.0)
+            if (
+                self._last_scan_target == disc_target
+                and self._last_scan_total_bytes
+                and scan_age < 300
+            ):
+                on_log("Using cached disc size from recent scan.")
+                return int(self._last_scan_total_bytes)
         global_args = parse_cli_args(
             self.cfg.get("opt_makemkv_global_args", ""),
             on_log,
@@ -499,7 +533,12 @@ class RipperEngine:
         except Exception as e:
             on_log(f"Warning: could not read disc size: {e}")
             return None
-        return total_bytes if total_bytes > 0 else None
+        if total_bytes > 0:
+            self._last_scan_total_bytes = int(total_bytes)
+            self._last_scan_timestamp = time.time()
+            self._last_scan_target = disc_target
+            return total_bytes
+        return None
 
     def check_disk_space(self, path, required_bytes, on_log):
         hard_floor = int(
@@ -1078,32 +1117,16 @@ class RipperEngine:
         def analyze_one(f):
             if abort.is_set():
                 return None
-            mb = os.path.getsize(f) // (1024**2)
             try:
-                proc = subprocess.Popen(
-                    [ffprobe, "-v", "error", "-show_entries",
-                     "format=duration", "-of", "json", f],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
+                dur, mb = self._probe_file_duration_and_size(
+                    f, ffprobe=ffprobe, honor_abort=True
                 )
-                while proc.poll() is None:
-                    if abort.is_set():
-                        proc.kill()
-                        try:
-                            proc.wait(timeout=2)
-                        except Exception:
-                            pass
-                        return None
-                    time.sleep(0.05)
-                out, _ = proc.communicate()
-                try:
-                    data = json.loads(out)
-                    dur  = float(data["format"]["duration"])
-                except Exception:
-                    dur = -1
                 return (f, dur, mb)
             except Exception:
+                try:
+                    mb = os.path.getsize(f) // (1024**2)
+                except Exception:
+                    mb = 0
                 return (f, -1, mb)
 
         with ThreadPoolExecutor() as executor:
@@ -1130,6 +1153,46 @@ class RipperEngine:
         known.sort(key=lambda x: x[1], reverse=True)
         return known + unknown
 
+    def _probe_file_duration_and_size(self, path, ffprobe=None, honor_abort=False):
+        """Return (duration_seconds, size_mb) with metadata cache by mtime/size."""
+        stat = os.stat(path)
+        cache_key = (os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+        cached = self._ffprobe_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        ffprobe_exe = ffprobe or resolve_ffprobe(
+            os.path.normpath(self.cfg["ffprobe_path"])
+        )
+        mb = stat.st_size // (1024**2)
+        dur = -1.0
+        proc = subprocess.Popen(
+            [ffprobe_exe, "-v", "error", "-show_entries",
+             "format=duration", "-of", "json", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        while proc.poll() is None:
+            if honor_abort and self.abort_event.is_set():
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+                return -1, mb
+            time.sleep(0.05)
+        out, _ = proc.communicate()
+        try:
+            data = json.loads(out)
+            dur = float(data.get("format", {}).get("duration", -1) or -1)
+        except Exception:
+            dur = -1.0
+
+        result = (dur, mb)
+        self._ffprobe_cache = {cache_key: result}
+        return result
+
     def copy_with_abort(self, src, dst, buf_size=8 * 1024 * 1024):
         """Stream-copy a file while honoring abort requests between chunks."""
         use_fsync = self.cfg.get("opt_fsync", True)
@@ -1146,7 +1209,8 @@ class RipperEngine:
                 if use_fsync:
                     os.fsync(fdst.fileno())
             return True
-        except Exception:
+        except Exception as e:
+            self.last_move_error = f"Copy failed: {e}"
             return False
 
     def _quick_ffprobe_ok(self, path, on_log):
@@ -1155,25 +1219,9 @@ class RipperEngine:
             ffprobe = resolve_ffprobe(
                 os.path.normpath(self.cfg["ffprobe_path"])
             )
-            proc = subprocess.run(
-                [
-                    ffprobe,
-                    "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "json",
-                    path,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
+            duration, _mb = self._probe_file_duration_and_size(
+                path, ffprobe=ffprobe, honor_abort=False
             )
-            if proc.returncode != 0:
-                on_log(
-                    f"ERROR: ffprobe failed for {os.path.basename(path)}"
-                )
-                return False
-            data = json.loads(proc.stdout or "{}")
-            duration = float(data.get("format", {}).get("duration", 0) or 0)
             if duration <= 0:
                 on_log(
                     "ERROR: ffprobe duration invalid for "

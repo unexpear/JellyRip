@@ -55,6 +55,7 @@ class JellyRipperGUI(tk.Tk):
         self._input_result = None
         self._input_event  = threading.Event()
         self._input_active = False
+        self._log_widget_lock = threading.Lock()
 
         configure_safe_int_debug(
             cfg.get("opt_debug_safe_int", False),
@@ -69,6 +70,18 @@ class JellyRipperGUI(tk.Tk):
         self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
         self.after(100, self.process_queue)
+
+    def _append_log_text_main(self, msg, tag=None):
+        """Append one line to the log widget from the Tk main thread only."""
+        with self._log_widget_lock:
+            self.log_text.config(state="normal")
+            text = msg if msg.endswith("\n") else f"{msg}\n"
+            if tag:
+                self.log_text.insert("end", text, tag)
+            else:
+                self.log_text.insert("end", text)
+            self.log_text.see("end")
+            self.log_text.config(state="disabled")
 
     def build_interface(self):
         BG = "#0d1117"
@@ -457,6 +470,24 @@ class JellyRipperGUI(tk.Tk):
             pinned_thumbprint = str(
                 self.cfg.get("opt_update_signer_thumbprint", "")
             )
+            if require_sig and not pinned_thumbprint.strip():
+                self.controller.log(
+                    "Update blocked: signature pinning is enabled but "
+                    "opt_update_signer_thumbprint is empty."
+                )
+                self.after(
+                    0,
+                    lambda: self.show_error(
+                        "Update Blocked",
+                        "Signature verification is enabled but no signer "
+                        "thumbprint is configured.\n\n"
+                        "Set opt_update_signer_thumbprint in Settings to "
+                        "your release certificate thumbprint before using "
+                        "auto-update.",
+                    ),
+                )
+                self.after(0, _finish_ready)
+                return
             ok, verify_msg = verify_downloaded_update(
                 destination,
                 require_signature=require_sig,
@@ -576,11 +607,8 @@ class JellyRipperGUI(tk.Tk):
         done   = threading.Event()
 
         def _show():
-            self.log_text.config(state="normal")
             ts = datetime.now().strftime("%H:%M:%S")
-            self.log_text.insert(
-                "end", f"[{ts}] {prompt}\n", "prompt"
-            )
+            self._append_log_text_main(f"[{ts}] {prompt}", "prompt")
 
             btn_frame = tk.Frame(self.log_text, bg="#161b22")
 
@@ -592,15 +620,10 @@ class JellyRipperGUI(tk.Tk):
                     btn_frame.destroy()
                 except Exception:
                     pass
-                self.log_text.config(state="normal")
-                self.log_text.insert(
-                    "end",
-                    f"[{datetime.now().strftime('%H:%M:%S')}]"
-                    f" → Yes\n",
-                    "answer"
+                self._append_log_text_main(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] → Yes",
+                    "answer",
                 )
-                self.log_text.see("end")
-                self.log_text.config(state="disabled")
                 done.set()
 
             def no():
@@ -611,15 +634,10 @@ class JellyRipperGUI(tk.Tk):
                     btn_frame.destroy()
                 except Exception:
                     pass
-                self.log_text.config(state="normal")
-                self.log_text.insert(
-                    "end",
-                    f"[{datetime.now().strftime('%H:%M:%S')}]"
-                    f" → No\n",
-                    "answer"
+                self._append_log_text_main(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] → No",
+                    "answer",
                 )
-                self.log_text.see("end")
-                self.log_text.config(state="disabled")
                 done.set()
 
             tk.Button(
@@ -1864,11 +1882,12 @@ class JellyRipperGUI(tk.Tk):
             except queue_module.Empty:
                 break
         if messages:
-            self.log_text.config(state="normal")
-            batch_text = "\n".join(messages) + "\n"
-            self.log_text.insert("end", batch_text)
-            self.log_text.see("end")
-            self.log_text.config(state="disabled")
+            with self._log_widget_lock:
+                self.log_text.config(state="normal")
+                batch_text = "\n".join(messages) + "\n"
+                self.log_text.insert("end", batch_text)
+                self.log_text.see("end")
+                self.log_text.config(state="disabled")
         self.after(100, self.process_queue)
 
     def disable_buttons(self):

@@ -1,7 +1,10 @@
 """Parsing utilities implementation."""
 
-from shared.runtime import os, re, shlex
-from shared.runtime import (
+import os
+import re
+import shlex
+
+from shared.runtime import (  # pyright: ignore[reportMissingImports]
     _duration_debug_warn,
     _safe_int_debug_warn,
 )
@@ -173,6 +176,8 @@ def parse_size_to_bytes(val):
                     # Example: 5,000 -> 5000
                     raw = left + right
                 elif len(right) <= 2:
+                    # Ambiguous locale case (e.g. "1,23 GB") is treated as
+                    # decimal-comma intentionally: 1.23 GB.
                     # Example: 3,7 -> 3.7
                     raw = raw.replace(",", ".")
                 else:
