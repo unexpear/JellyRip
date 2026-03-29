@@ -27,6 +27,15 @@ class DummyGUI:
     def set_status(self, _status):
         pass
 
+    def set_progress(self, _value):
+        pass
+
+    def start_indeterminate(self):
+        pass
+
+    def stop_indeterminate(self):
+        pass
+
 
 class ScriptedSetupGUI(DummyGUI):
     def __init__(self, scripted_inputs, scripted_confirms):

@@ -1,4 +1,4 @@
-# JellyRip v1.0.6
+# JellyRip v1.0.8
 
 MakeMKV companion for ripping and organizing discs into a Jellyfin library.
 
