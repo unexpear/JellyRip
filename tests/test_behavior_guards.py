@@ -1151,9 +1151,39 @@ def test_integrity_multi_file_dedup_only_one_warning(tmp_path):
     assert len(warn_lines) == 1
 
 
+
 # ---------------------------------------------------------------------------
-# _scan_highest_episode — append-to-existing-show feature
+# Library-scanning helpers — append / gap-fill / existing show support
 # ---------------------------------------------------------------------------
+
+# --- get_next_episode gap-fill logic ---
+
+def test_get_next_episode_empty_set_returns_1():
+    """No existing episodes → first episode is 1."""
+    c, _ = _controller_with_engine()
+    assert c.get_next_episode(set()) == 1
+
+
+def test_get_next_episode_appends_after_max():
+    """Contiguous set → suggest next after the last."""
+    c, _ = _controller_with_engine()
+    assert c.get_next_episode({1, 2, 3}) == 4
+
+
+def test_get_next_episode_fills_gap():
+    """Missing episode 3 → suggest 3, not 6."""
+    c, _ = _controller_with_engine()
+    assert c.get_next_episode({1, 2, 4, 5}) == 3
+
+
+def test_get_next_episode_fills_earliest_gap():
+    """Multiple gaps → always return the lowest missing."""
+    c, _ = _controller_with_engine()
+    # 2 and 4 are both missing; 2 is earlier
+    assert c.get_next_episode({1, 3, 5}) == 2
+
+
+# --- _scan_episode_files (replaces _scan_highest_episode internally) ---
 
 def test_scan_highest_episode_returns_zero_for_empty_folder(tmp_path):
     """No episode files → returns 0 (first disc starts at episode 1)."""
@@ -1177,7 +1207,6 @@ def test_scan_highest_episode_ignores_other_seasons(tmp_path):
     controller, _ = _controller_with_engine()
     (tmp_path / "Show - S01E05 - One.mkv").write_text("")
     (tmp_path / "Show - S02E10 - Two.mkv").write_text("")
-    # Asking for Season 1 → should only see E05
     result = controller._scan_highest_episode(str(tmp_path), 1)
     assert result == 5
 
@@ -1202,3 +1231,79 @@ def test_scan_highest_episode_returns_zero_when_dest_none():
     controller, _ = _controller_with_engine()
     result = controller._scan_highest_episode(None, 1)
     assert result == 0
+
+
+def test_scan_episode_files_detects_1x01_format(tmp_path):
+    """NxEE filename format (1x03) is recognised."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Show 1x01 Title.mkv").write_text("")
+    (tmp_path / "Show 1x02 Title.mkv").write_text("")
+    result = c._scan_episode_files(str(tmp_path), 1)
+    assert result == {1, 2}
+
+
+def test_scan_episode_files_detects_episode_n_format(tmp_path):
+    """'Episode N' filename format is recognised."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Episode 4.mkv").write_text("")
+    (tmp_path / "episode 7.mkv").write_text("")
+    result = c._scan_episode_files(str(tmp_path), 1)
+    assert 4 in result
+    assert 7 in result
+
+
+# --- _scan_library_folder ---
+
+def test_scan_library_folder_detects_season_dirs(tmp_path):
+    """Season subdirs with episode files are returned keyed by season number."""
+    c, _ = _controller_with_engine()
+    s1 = tmp_path / "Season 01"
+    s1.mkdir()
+    (s1 / "Show - S01E01.mkv").write_text("")
+    (s1 / "Show - S01E02.mkv").write_text("")
+    s2 = tmp_path / "Season 02"
+    s2.mkdir()
+    (s2 / "Show - S02E01.mkv").write_text("")
+
+    result = c._scan_library_folder(str(tmp_path))
+    assert 1 in result and result[1] == [1, 2]
+    assert 2 in result and result[2] == [1]
+
+
+def test_scan_library_folder_ignores_non_season_dirs(tmp_path):
+    """Non-season directories (Extras, Specials, etc.) are not counted."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Extras").mkdir()
+    (tmp_path / "Specials").mkdir()
+    s1 = tmp_path / "Season 01"
+    s1.mkdir()
+    (s1 / "Show - S01E01.mkv").write_text("")
+
+    result = c._scan_library_folder(str(tmp_path))
+    assert set(result.keys()) == {1}
+
+
+def test_scan_library_folder_empty_show_root(tmp_path):
+    """Empty show root (no season folders) returns an empty dict."""
+    c, _ = _controller_with_engine()
+    result = c._scan_library_folder(str(tmp_path))
+    assert result == {}
+
+
+def test_scan_library_folder_nonexistent_path():
+    """Non-existent path returns empty dict without raising."""
+    c, _ = _controller_with_engine()
+    result = c._scan_library_folder("/does/not/exist")
+    assert result == {}
+
+
+def test_scan_library_folder_returns_sorted_episodes(tmp_path):
+    """Episode lists in the returned dict are sorted ascending."""
+    c, _ = _controller_with_engine()
+    s1 = tmp_path / "Season 01"
+    s1.mkdir()
+    for ep in (5, 1, 3, 2, 4):
+        (s1 / f"Show - S01E{ep:02d}.mkv").write_text("")
+
+    result = c._scan_library_folder(str(tmp_path))
+    assert result[1] == [1, 2, 3, 4, 5]

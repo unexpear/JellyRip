@@ -1,6 +1,16 @@
 """Controller layer implementation."""
 
-from shared.runtime import *
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+from datetime import datetime
+
+from controller.naming import build_fallback_title
 
 from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
 from utils.fallback import handle_fallback
@@ -756,28 +766,103 @@ class RipperController:
 
         return bool(success), mkv_files
 
-    def _scan_highest_episode(self, dest_folder: str, season: int) -> int:
-        """Return the highest episode number already present in dest_folder for
-        the given season, or 0 if none are found.
+    # ------------------------------------------------------------------
+    # Library-scanning helpers (used by "attach to existing show" mode)
+    # ------------------------------------------------------------------
 
-        Scans filenames matching ``SxxEyy`` (case-insensitive) so it works
-        regardless of whether the files were named by JellyRip or another tool.
-        Only reads the directory listing — no ffprobe, no I/O on the files.
+    _EPISODE_PATTERNS = [
+        re.compile(r"S(\d{1,3})E(\d{1,3})", re.IGNORECASE),  # S01E01
+        re.compile(r"(\d{1,2})x(\d{1,2})"),                   # 1x01
+        re.compile(r"[Ee]pisode\s+(\d{1,4})"),                 # Episode 4
+    ]
+
+    @staticmethod
+    def get_next_episode(existing: set) -> int:
+        """Return the lowest episode number not yet in *existing*.
+
+        Fills gaps before appending, so a library missing E03 returns 3
+        rather than max+1.  Returns 1 when *existing* is empty.
         """
-        if not dest_folder or not os.path.isdir(dest_folder):
-            return 0
-        pattern = re.compile(rf"S{season:02d}E(\d+)", re.IGNORECASE)
-        highest = 0
+        if not existing:
+            return 1
+        for i in range(1, max(existing) + 2):
+            if i not in existing:
+                return i
+        return max(existing) + 1  # unreachable but satisfies type checkers
+
+    def _scan_episode_files(self, folder: str, season: int) -> set:
+        """Return the set of episode numbers found in *folder* for *season*.
+
+        Recognises three filename patterns: ``SxxEyy``, ``Nx01`` (1x01),
+        and ``Episode N``.  Only the directory listing is read.
+        """
+        found: set = set()
+        if not folder or not os.path.isdir(folder):
+            return found
         try:
-            for fname in os.listdir(dest_folder):
-                m = pattern.search(fname)
+            for fname in os.listdir(folder):
+                # SxxEyy — both season and episode encoded in name
+                m = self._EPISODE_PATTERNS[0].search(fname)
                 if m:
-                    ep = int(m.group(1))
-                    if ep > highest:
-                        highest = ep
+                    if int(m.group(1)) == season:
+                        found.add(int(m.group(2)))
+                    # If a season token is present but does not match,
+                    # do not fall through to looser patterns.
+                    continue
+                # Nx01 format — season is first group
+                m = self._EPISODE_PATTERNS[1].search(fname)
+                if m:
+                    if int(m.group(1)) == season:
+                        found.add(int(m.group(2)))
+                    # Same guard as SxxEyy: mismatched season must be ignored.
+                    continue
+                # "Episode N" — no season encoded; include if season folder matches
+                m = self._EPISODE_PATTERNS[2].search(fname)
+                if m:
+                    found.add(int(m.group(1)))
         except OSError:
             pass
-        return highest
+        return found
+
+    def _scan_library_folder(self, show_root: str) -> dict:
+        """Scan *show_root* for existing season folders and their episodes.
+
+        Returns a dict mapping season number (int) to a sorted list of
+        episode numbers already present on disk.  Only reads directory
+        listings — no ffprobe or file I/O.
+
+        Example::
+
+            {1: [1, 2, 3], 2: [1, 2]}   # Season 1 complete, Season 2 partial
+        """
+        result: dict = {}
+        if not show_root or not os.path.isdir(show_root):
+            return result
+        season_pat = re.compile(r"Season\s+(\d{1,3})", re.IGNORECASE)
+        try:
+            for entry in os.listdir(show_root):
+                m = season_pat.match(entry)
+                if not m:
+                    continue
+                season_num = int(m.group(1))
+                season_dir = os.path.join(show_root, entry)
+                if not os.path.isdir(season_dir):
+                    continue
+                eps = self._scan_episode_files(season_dir, season_num)
+                result[season_num] = sorted(eps)
+        except OSError:
+            pass
+        return result
+
+    def _scan_highest_episode(self, dest_folder: str, season: int) -> int:
+        """Return the highest episode number already present in *dest_folder*
+        for *season*, or 0 if none are found.
+
+        Kept for backward compatibility; internally delegates to
+        :meth:`_scan_episode_files`.
+        """
+        eps = self._scan_episode_files(dest_folder, season)
+        return max(eps) if eps else 0
 
     def _mark_session_failed(self, rip_path, **metadata):
         """Wipe session outputs and persist a single failed session state."""
@@ -936,7 +1021,11 @@ class RipperController:
         start = time.time()
         try:
             prev = os.path.getsize(path)
-        except Exception:
+        except Exception as e:
+            self.log(
+                f"WARNING: Could not read file during stabilization "
+                f"({os.path.basename(path)}): {e}"
+            )
             return False, False
 
         stable_polls = 0
@@ -948,7 +1037,11 @@ class RipperController:
             time.sleep(1.0)
             try:
                 cur = os.path.getsize(path)
-            except Exception:
+            except Exception as e:
+                self.log(
+                    f"WARNING: File disappeared or became unreadable during "
+                    f"stabilization ({os.path.basename(path)}): {e}"
+                )
                 return False, False
 
             prev_mb = prev / (1024**2)
@@ -969,7 +1062,11 @@ class RipperController:
                     time.sleep(1.0)
                     try:
                         post = os.path.getsize(path)
-                    except Exception:
+                    except Exception as e:
+                        self.log(
+                            f"WARNING: Could not re-check stabilized file "
+                            f"({os.path.basename(path)}): {e}"
+                        )
                         return False, False
                     if post == cur:
                         return True, False
@@ -1715,12 +1812,11 @@ class RipperController:
     def _disc_present(self):
         """Best-effort check: True when a readable disc appears present."""
         try:
-            first = self.engine.get_disc_size(lambda _m: None)
-            if first is None:
-                return False
-            time.sleep(0.5)
-            second = self.engine.get_disc_size(lambda _m: None)
-            return second is not None
+            size = self.engine.get_disc_size(
+                lambda _m: None,
+                prefer_cached=False,
+            )
+            return size is not None
         except Exception:
             return False
 
@@ -2712,9 +2808,55 @@ class RipperController:
             year = str(resume_meta.get("year") or year)
 
         if is_tv:
+            # -------------------------------------------------------
+            # "Attach to existing show folder" mode
+            # When the user already has season folders on disk (from
+            # a previous session or another tool), they can point
+            # JellyRip at the show root and it will infer title,
+            # detect what episodes exist, and pick up exactly where
+            # the library left off — including filling gaps.
+            # -------------------------------------------------------
+            library_root: str | None = None
+            library_state: dict = {}   # {season_num: [ep, ...]}
+
+            if not resume_meta and self.gui.ask_yesno(
+                "Continue an existing show folder?\n\n"
+                "Choose YES to point to a show folder that already has "
+                "season/episode files.  JellyRip will detect what's "
+                "already there and suggest the next episode(s).\n\n"
+                "Choose NO to start a new folder from scratch."
+            ):
+                chosen = self.gui.ask_folder(
+                    "Select existing show folder (e.g. TV/Breaking Bad)"
+                )
+                if chosen and os.path.isdir(chosen):
+                    library_root = os.path.normpath(chosen)
+                    library_state = self._scan_library_folder(library_root)
+                    if library_state:
+                        season_summary = "  ".join(
+                            f"S{s:02d}:{len(e)}ep"
+                            for s, e in sorted(library_state.items())
+                        )
+                        self.log(
+                            f"Library detected at: {library_root}\n"
+                            f"  Seasons: {season_summary}"
+                        )
+                    else:
+                        self.log(
+                            f"No season folders found in {library_root} — "
+                            f"will create them as needed."
+                        )
+                else:
+                    self.log("No folder selected — starting fresh.")
+                    library_root = None
+
             title = self.gui.ask_input(
                 "Title", "Exact TV show title:",
-                default_value=resume_meta.get("title", "")
+                default_value=(
+                    os.path.basename(library_root)
+                    if library_root
+                    else resume_meta.get("title", "")
+                )
             )
             if not title:
                 title = self._fallback_title_from_mode()
@@ -2751,9 +2893,18 @@ class RipperController:
             auto_title_pending = False
 
             if is_tv:
+                # Build the season prompt — when in library mode, show
+                # the user which seasons already exist so they can pick
+                # the right one without having to remember.
+                season_hint = ""
+                if library_state:
+                    season_hint = " (detected: " + ", ".join(
+                        f"S{s:02d}" for s in sorted(library_state.keys())
+                    ) + ")"
+
                 season_str = self.gui.ask_input(
                     "Season",
-                    f"Season number for disc {disc_number}:",
+                    f"Season number for disc {disc_number}:{season_hint}",
                     default_value=str(
                         active_resume.get("season", "")
                         if active_resume else ""
@@ -2770,10 +2921,17 @@ class RipperController:
                 )
                 os.makedirs(season_temp, exist_ok=True)
 
-                season_folder = os.path.join(
-                    tv_root, clean_name(title),
-                    f"Season {season:02d}"
-                )
+                # Destination: use existing library root when provided,
+                # otherwise build the standard path under tv_root.
+                if library_root:
+                    season_folder = os.path.join(
+                        library_root, f"Season {season:02d}"
+                    )
+                else:
+                    season_folder = os.path.join(
+                        tv_root, clean_name(title),
+                        f"Season {season:02d}"
+                    )
                 extras_folder = os.path.join(season_folder, "Extras")
                 os.makedirs(season_folder, exist_ok=True)
                 os.makedirs(extras_folder, exist_ok=True)
@@ -3324,23 +3482,26 @@ class RipperController:
                 ) or []
 
             # Auto-detect episode offset from existing files in the
-            # destination season folder so the user doesn't have to
-            # remember where they left off when appending more discs
-            # to a show that was partially ripped in a prior session.
+            # destination season folder.  Uses gap-fill logic so a
+            # missing disc (e.g. S01E03 absent) is suggested first
+            # rather than simply appending after the highest number.
             if (
                 not default_episode_numbers
                 and dest_folder
                 and season is not None
             ):
-                highest = self._scan_highest_episode(dest_folder, season)
-                if highest > 0:
+                existing_eps = self._scan_episode_files(dest_folder, season)
+                if existing_eps:
+                    next_ep = self.get_next_episode(existing_eps)
                     suggested = list(
-                        range(highest + 1, highest + 1 + len(main_indices))
+                        range(next_ep, next_ep + len(main_indices))
                     )
                     default_episode_numbers = suggested
+                    gap_fill = next_ep <= max(existing_eps)
+                    verb = "gap-filling from" if gap_fill else "continuing from"
                     self.log(
-                        f"Detected {highest} existing episode(s) in "
-                        f"Season {season:02d} — suggesting "
+                        f"Detected {len(existing_eps)} existing episode(s) in "
+                        f"Season {season:02d} — {verb} "
                         f"episode(s) {suggested[0]}–{suggested[-1]}."
                     )
 

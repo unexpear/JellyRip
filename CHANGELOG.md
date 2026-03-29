@@ -2,14 +2,33 @@
 
 ## [1.0.8] - 2026-03-28
 
-### Correctness hardening
+### Correctness hardening — tiered integrity validation
 
-- `_fallback_title_from_mode` now emits a `session_report` warning every time an auto-generated title is used, so silent fallback naming is always visible in the session log and end-of-session summary.
-- `_verify_container_integrity` accepts an optional `expected_durations` map (filepath → seconds from disc scan). Any file whose actual ffprobe duration is below 60% of expected is flagged as a possible truncation (warning in session report, not a hard failure). Wired into the Smart Rip path where disc-scan duration data is available.
+- Replaced the single 60% duration threshold in `_verify_container_integrity` with a three-tier model: severe (<50% or <40% for short titles), likely-truncation (50–75% / 40–60%), minor mismatch (75–90% / 60–85%). Normal variance (≥90%) produces no warning.
+- Added multi-signal escalation: a file only escalates to TRUNCATION ERROR when **both** duration and size are below threshold simultaneously, preventing false positives from inaccurate disc-scan metadata.
+- Expected size values below 200 MB are now excluded from size-based escalation (disc scan metadata is unreliable for small titles).
+- Multi-file titles (seamless branching) now aggregate their total duration/size before comparing against expected, preventing per-file false warnings.
+- Duplicate warnings are deduplicated by `title_id` — at most one warning per logical title regardless of how many physical files it spans.
+- Short titles (expected < 600 s) use widened tiers to account for higher relative variance in disc timing metadata.
+- Both `run_smart_rip` and `_run_disc` (TV path) now pass `expected_durations`, `expected_sizes`, and `title_file_map` to `_verify_container_integrity`, making the tiered check universal across all ripping modes.
+- In strict mode (`opt_strict_mode`), any tier below "minor" (< 75%) escalates to a hard failure.
+
+### Attach to existing library
+
+- New "Continue an existing show folder?" prompt at the start of every TV disc rip. Users can point JellyRip at a show folder that was created in a previous session (or by another tool); the app scans for existing season folders and episode files and writes new episodes directly into that folder.
+- `_scan_library_folder(show_root)` scans a show root for `Season XX` subdirectories and their episode files, returning a dict of `{season_num: [ep_nums]}`. Used to display which seasons already exist in the prompt.
+- `_scan_episode_files(folder, season)` recognises three naming formats: `SxxEyy` (standard), `Nx01` (1x01), and `Episode N`. Case-insensitive. Only reads the directory listing.
+- `get_next_episode(existing)` implements gap-fill logic: returns the lowest missing episode number rather than simply appending after the highest. If Season 1 has E01, E02, E04 (E03 missing), the next suggestion is E03.
+- Episode number prompt in `_select_and_move` now pre-fills using gap-fill logic and logs whether it is "gap-filling from" or "continuing from" the detected offset.
+- When an existing library folder is selected the season prompt shows which seasons were detected (e.g. `S01  S02`) and the destination is written directly into the selected folder rather than constructing a new path under `tv_root`.
 
 ### Tests
 
-- Added 3 regression tests: fallback title logging, duration truncation warning, and no-warning when duration is within bounds.
+- 5 regression tests for tiered integrity: severe warn-only (no size), severe + size escalation, expected-size clamping, strict-mode failure, minor mismatch passes.
+- 8 regression tests for integrity aggregation: multi-file title aggregation, dedup (one warning per title), size floor, short-title tolerance.
+- 4 tests for `get_next_episode` gap-fill.
+- 6 tests for `_scan_highest_episode` / `_scan_episode_files` (compat wrapper, case-insensitive, season isolation, missing folder, None dest_folder, `1x01` format, `Episode N` format).
+- 5 tests for `_scan_library_folder` (season dir detection, non-season dir exclusion, empty root, missing path, sorted episode lists).
 
 ## [1.0.7] - 2026-03-28
 
