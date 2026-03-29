@@ -2,6 +2,12 @@
 
 ## [1.0.9] - 2026-03-29
 
+### Docs / release metadata sync
+
+- README build instructions now use `main.py`, matching the current packaged entrypoint.
+- Release notes now include both `JellyRip.exe` and `JellyRipInstaller.exe` download links for `v1.0.9` and `latest`.
+- Documentation now states explicitly that generated `dist/` binaries are published through GitHub Releases and are not committed to the repository.
+
 ### Safety / Deadlock fixes (gui/main_window.py)
 
 - **`ask_yesno`**: the wait loop now checks `abort_event` and applies a 300-second safety timeout, matching the existing guard in `ask_input`. Previously the loop was unbounded — if the `_abort_watch` thread failed to fire `done`, the worker thread would hang forever.
@@ -62,7 +68,7 @@
 - Episode number prompt in `_select_and_move` now pre-fills using gap-fill logic and logs whether it is "gap-filling from" or "continuing from" the detected offset.
 - When an existing library folder is selected the season prompt shows which seasons were detected (e.g. `S01  S02`) and the destination is written directly into the selected folder rather than constructing a new path under `tv_root`.
 
-### Tests
+### Regression tests
 
 - 5 regression tests for tiered integrity: severe warn-only (no size), severe + size escalation, expected-size clamping, strict-mode failure, minor mismatch passes.
 - 8 regression tests for integrity aggregation: multi-file title aggregation, dedup (one warning per title), size floor, short-title tolerance.
@@ -81,7 +87,7 @@
 - Cleaned up post-stabilization size advisory log to use the format: `X MB (below threshold — expected Y GB → threshold Z GB)`.
 - Replaced exit-code-based rip failure forcing with validation-based degraded success classification. MakeMKV frequently exits non-zero on real discs even when output is usable; the engine now checks whether files were actually produced. Non-zero exit + files present → degraded success (warning added to session report, downstream stabilization and ffprobe still validate the file). Non-zero exit + no files → real failure, unchanged. Session summary now distinguishes "All discs completed successfully" from "Completed with warnings" when degraded titles were detected.
 
-### Tests
+### Test coverage
 
 - Added 7 regression tests covering `_ensure_session_paths`, `_verify_container_integrity` with and without pre-analyzed data, integrity failure cases (zero duration, count mismatch), and advisory log format.
 - Added 4 regression tests for degraded rip classification: degraded success path, real failure path (no files), session report population, and session summary warnings vs. clean success branching.
