@@ -127,6 +127,31 @@ def test_partial_title_failure_forces_session_failure(tmp_path, monkeypatch):
     assert normalized_success is False
 
 
+def test_ffprobe_cache_accumulates_entries(tmp_path, monkeypatch):
+    _controller, engine = _controller_with_engine()
+    first = tmp_path / "first.mkv"
+    second = tmp_path / "second.mkv"
+    first.write_bytes(b"a" * 10)
+    second.write_bytes(b"b" * 20)
+
+    class FakeProc:
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return ('{"format": {"duration": "60"}}', "")
+
+    monkeypatch.setattr(
+        "engine.ripper_engine.subprocess.Popen",
+        lambda *args, **kwargs: FakeProc(),
+    )
+
+    engine._probe_file_duration_and_size(str(first), ffprobe="ffprobe")
+    engine._probe_file_duration_and_size(str(second), ffprobe="ffprobe")
+
+    assert len(engine._ffprobe_cache) == 2
+
+
 def test_zero_output_is_failure(tmp_path):
     controller, _engine = _controller_with_engine()
 
@@ -1280,16 +1305,18 @@ def test_scan_library_folder_detects_season_dirs(tmp_path):
 
 
 def test_scan_library_folder_ignores_non_season_dirs(tmp_path):
-    """Non-season directories (Extras, Specials, etc.) are not counted."""
+    """Non-season directories are ignored, while Specials maps to season 0."""
     c, _ = _controller_with_engine()
     (tmp_path / "Extras").mkdir()
     (tmp_path / "Specials").mkdir()
+    (tmp_path / "Specials" / "Episode 1.mkv").write_text("")
     s1 = tmp_path / "Season 01"
     s1.mkdir()
     (s1 / "Show - S01E01.mkv").write_text("")
 
     result = c._scan_library_folder(str(tmp_path))
-    assert set(result.keys()) == {1}
+    assert set(result.keys()) == {0, 1}
+    assert result[0] == [1]
 
 
 def test_scan_library_folder_empty_show_root(tmp_path):

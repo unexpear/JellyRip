@@ -38,7 +38,11 @@ from shared.runtime import (
 from config import load_config, save_config
 from controller.controller import RipperController
 from engine.ripper_engine import RipperEngine
-from utils.helpers import get_available_drives, is_network_path
+from utils.helpers import (
+    get_available_drives,
+    is_network_path,
+    make_rip_folder_name,
+)
 from utils.scoring import choose_best_title, format_audio_summary
 from utils.updater import (
     download_asset,
@@ -642,6 +646,15 @@ class JellyRipperGUI(tk.Tk):
 
     def ask_yesno(self, prompt):
         """Render an inline Yes/No prompt in the log pane and wait for answer."""
+        if threading.current_thread() is threading.main_thread():
+            return bool(
+                messagebox.askyesno(
+                    "Confirm",
+                    prompt,
+                    parent=self,
+                )
+            )
+
         result = [None]
         done   = threading.Event()
 
@@ -738,6 +751,14 @@ class JellyRipperGUI(tk.Tk):
         Three-way decision prompt for duplicate-disc handling.
         Returns one of: 'retry', 'bypass', 'stop'.
         """
+        if threading.current_thread() is threading.main_thread():
+            return self._ask_duplicate_resolution_modal(
+                prompt,
+                retry_text=retry_text,
+                bypass_text=bypass_text,
+                stop_text=stop_text,
+            )
+
         result = ["stop"]
         done   = threading.Event()
 
@@ -823,12 +844,86 @@ class JellyRipperGUI(tk.Tk):
             ).start()
 
         self.after(0, _show)
+        start = time.time()
         while not done.wait(timeout=0.1):
-            pass
+            if self.engine.abort_event.is_set():
+                return "stop"
+            if time.time() - start > 300:
+                return "stop"
+        return result[0]
+
+    def _ask_duplicate_resolution_modal(self, prompt,
+                                        retry_text="Swap and Retry",
+                                        bypass_text="Not a Dup",
+                                        stop_text="Stop"):
+        """Main-thread-safe modal duplicate prompt using a nested Tk event loop."""
+        result = ["stop"]
+        win = tk.Toplevel(self)
+        win.title("Duplicate Disc Check")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=prompt,
+            bg="#161b22",
+            fg="#c9d1d9",
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 10),
+        ).pack(padx=18, pady=(18, 10))
+
+        btn_row = tk.Frame(win, bg="#161b22")
+        btn_row.pack(padx=18, pady=(0, 18))
+
+        def finish(value):
+            result[0] = value
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", lambda: finish("stop"))
+
+        tk.Button(
+            btn_row,
+            text=retry_text,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("retry"),
+            relief="flat",
+            width=16,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=bypass_text,
+            bg="#1f6feb",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("bypass"),
+            relief="flat",
+            width=14,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=stop_text,
+            bg="#c94b4b",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("stop"),
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+
+        win.wait_window()
         return result[0]
 
     def _run_on_main(self, fn):
         """Execute callable on tkinter main loop and return its result."""
+        if threading.current_thread() is threading.main_thread():
+            return fn()
+
         result = [None]
         done   = threading.Event()
 
@@ -855,6 +950,9 @@ class JellyRipperGUI(tk.Tk):
         )
 
     def ask_space_override(self, required_gb, free_gb):
+        if threading.current_thread() is threading.main_thread():
+            return self._ask_space_override_modal(required_gb, free_gb)
+
         result = [False]
         done   = threading.Event()
 
@@ -915,6 +1013,58 @@ class JellyRipperGUI(tk.Tk):
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
                 return False
+        return result[0]
+
+    def _ask_space_override_modal(self, required_gb, free_gb):
+        """Main-thread-safe modal version of the low-space override prompt."""
+        result = [False]
+        win = tk.Toplevel(self)
+        win.title("Not Enough Space")
+        win.configure(bg="#1a0000")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win, text="⚠  NOT ENOUGH DISK SPACE",
+            font=("Segoe UI", 16, "bold"),
+            bg="#1a0000", fg="#ff4444"
+        ).pack(pady=(20, 10), padx=20)
+        tk.Label(
+            win,
+            text=f"Required:  {required_gb:.1f} GB\n"
+                 f"Free:         {free_gb:.1f} GB\n\n"
+                 f"This may cause the rip to fail\n"
+                 f"or produce incomplete files.",
+            font=("Segoe UI", 12),
+            bg="#1a0000", fg="#ffcccc",
+            justify="center"
+        ).pack(pady=10, padx=30)
+
+        bf = tk.Frame(win, bg="#1a0000")
+        bf.pack(pady=20)
+
+        def finish(value):
+            result[0] = bool(value)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+
+        tk.Button(
+            bf, text="I understand, continue anyway",
+            bg="#c94b4b", fg="white",
+            font=("Segoe UI", 11, "bold"),
+            width=28, command=lambda: finish(True), relief="flat"
+        ).pack(side="left", padx=8)
+        tk.Button(
+            bf, text="Cancel",
+            bg="#21262d", fg="white",
+            font=("Segoe UI", 11),
+            width=12, command=lambda: finish(False), relief="flat"
+        ).pack(side="left", padx=8)
+
+        win.wait_window()
         return result[0]
 
     def show_disc_tree(self, disc_titles, is_tv, preview_callback=None):
