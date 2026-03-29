@@ -545,7 +545,9 @@ class RipperEngine:
             self.cfg.get("opt_hard_block_gb", 20)
         ) * (1024**3)
         try:
-            os.makedirs(path, exist_ok=True)
+            if not os.path.exists(path):
+                on_log(f"Warning: disk-space path does not exist: {path}")
+                return "ok", 0, required_bytes
             free = shutil.disk_usage(path).free
             on_log(
                 f"Disk space — "

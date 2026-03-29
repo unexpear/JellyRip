@@ -124,8 +124,9 @@ def choose_best_title(disc_titles, require_valid=False):
         if valid:
             candidates = valid
 
-    best = max(candidates, key=lambda t: score_title(t, disc_titles))
-    return best, score_title(best, disc_titles)
+    scored = [(t, score_title(t, disc_titles)) for t in candidates]
+    best, best_score = max(scored, key=lambda x: x[1])
+    return best, best_score
 
 
 def format_audio_summary(audio_tracks):

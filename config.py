@@ -9,7 +9,11 @@ def load_config():
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
             cfg = json.load(f)
-    except Exception:
+    except json.JSONDecodeError as exc:
+        print(f"Warning: config file is corrupt, resetting to defaults: {exc}")
+        cfg = {}
+    except Exception as exc:
+        print(f"Warning: could not read config, using defaults: {exc}")
         cfg = {}
     for key, value in DEFAULTS.items():
         if key not in cfg:

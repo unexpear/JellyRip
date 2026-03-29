@@ -4,7 +4,7 @@ from shared.runtime import datetime, os, platform, re, subprocess
 
 
 def clean_name(name):
-    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '', name)
     return name.strip().rstrip(". ")
 
 
@@ -57,19 +57,23 @@ def get_available_drives(makemkvcon_path):
             text=True,
             bufsize=1
         )
-        for line in iter(proc.stdout.readline, ""):
-            line = line.strip()
-            if line.startswith("DRV:"):
-                parts = line[4:].split(",")
-                if len(parts) >= 6:
-                    try:
-                        idx  = int(parts[0])
-                        name = parts[5].strip().strip('"')
-                        if name:
-                            drives.append((idx, name))
-                    except (ValueError, IndexError):
-                        pass
-        proc.wait()
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                line = line.strip()
+                if line.startswith("DRV:"):
+                    parts = line[4:].split(",")
+                    if len(parts) >= 6:
+                        try:
+                            idx  = int(parts[0])
+                            name = parts[5].strip().strip('"')
+                            if name:
+                                drives.append((idx, name))
+                        except (ValueError, IndexError):
+                            pass
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
     except Exception:
         pass
     if not drives:

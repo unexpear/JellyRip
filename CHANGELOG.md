@@ -2,6 +2,19 @@
 
 ## [1.0.8] - 2026-03-28
 
+### Code review fixes (10 issues closed)
+
+- **`_normalize_rip_result`**: glob pattern changed to `**/*.mkv` with `recursive=True` — previously missed MKV files when MakeMKV wrote into subdirectories, causing rips to be silently treated as failures.
+- **`get_available_drives`**: added `proc.wait(timeout=30)` with `kill()` on `TimeoutExpired` — previously the thread could hang indefinitely if `makemkvcon` stalled on startup.
+- **`check_disk_space`**: removed `os.makedirs` side-effect; now returns early with a log warning if the target path doesn't exist rather than silently creating it.
+- **`config.py` `load_config`**: split `except Exception` into `except json.JSONDecodeError` (logs "config corrupt, resetting") and a general `except Exception` (logs the actual error). Config loss is now visible to the user.
+- **`clean_name`**: regex extended to strip ASCII control characters and null bytes (`\x00–\x1f`) in addition to forbidden filename characters — disc names with embedded control chars could silently corrupt filenames.
+- **`scan_with_retry`**: removed unreachable `if result is not None` branch that followed an `if result is None: continue`.
+- **`choose_best_title`**: pre-computes `score_title` once per candidate into a list and selects the max — previously called `score_title` twice on the winning title.
+- **`_parse_int_or_default`** removed; call sites replaced with `safe_int(…)` (already imported from `utils.parsing`) with an `or 1` fallback where the default was non-zero.
+- **`DummyGUI`** in `tests/test_behavior_guards.py`: added `set_progress`, `start_indeterminate`, `stop_indeterminate` stubs — missing methods caused `AttributeError` in any test that hit `scan_with_retry`.
+- **README**: version header updated from v1.0.6 to v1.0.8.
+
 ### Correctness hardening — tiered integrity validation
 
 - Replaced the single 60% duration threshold in `_verify_container_integrity` with a three-tier model: severe (<50% or <40% for short titles), likely-truncation (50–75% / 40–60%), minor mismatch (75–90% / 60–85%). Normal variance (≥90%) produces no warning.

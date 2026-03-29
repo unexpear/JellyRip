@@ -206,10 +206,9 @@ class RipperController:
                     time.sleep(2 + attempt)
                 continue
 
-            if result is not None:
-                # Return even if empty (e.g., bad disc structure).
-                # Handle empty result at call site.
-                return result
+            # Return even if empty (e.g., bad disc structure).
+            # Handle empty result at call site.
+            return result
 
         self.log("Scan failed after 3 attempts.")
         return None
@@ -241,12 +240,6 @@ class RipperController:
                     "meta": meta,
                 }
         return None
-
-    def _parse_int_or_default(self, value, default=0):
-        try:
-            return int(value)
-        except Exception:
-            return default
 
     def _init_session_paths(self, overrides=None):
         """Initialize per-run path state from defaults plus optional overrides."""
@@ -731,7 +724,9 @@ class RipperController:
 
     def _normalize_rip_result(self, rip_path, success, failed_titles):
         """Collapse rip outcomes into one all-or-nothing success state."""
-        mkv_files = sorted(glob.glob(os.path.join(rip_path, "*.mkv")))
+        mkv_files = sorted(
+            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+        )
 
         valid_files = [
             f for f in mkv_files
@@ -2839,9 +2834,7 @@ class RipperController:
         if resume_meta:
             disc_number = max(
                 0,
-                self._parse_int_or_default(
-                    resume_meta.get("disc_number", 1), 1
-                ) - 1
+                (safe_int(resume_meta.get("disc_number", 1)) or 1) - 1
             )
             year = str(resume_meta.get("year") or year)
 
@@ -2923,8 +2916,8 @@ class RipperController:
             )
 
             active_resume = None
-            if resume_meta and self._parse_int_or_default(
-                resume_meta.get("disc_number", 0), 0
+            if resume_meta and safe_int(
+                resume_meta.get("disc_number", 0)
             ) == disc_number:
                 active_resume = resume_meta
 
