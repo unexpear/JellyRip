@@ -17,6 +17,7 @@ from JellyRip import (  # pyright: ignore[reportMissingImports]
     parse_ordered_titles,
     parse_size_to_bytes,
     safe_int,
+    select_largest_file,
 )
 
 
@@ -80,6 +81,24 @@ class TestSizeParsing:
     )
     def test_size_parsing_variants(self, raw, expected):
         assert parse_size_to_bytes(raw) == expected
+
+    def test_size_parsing_ambiguous_single_comma_treated_as_decimal(self):
+        assert parse_size_to_bytes("1,23 GB") == int(1.23 * 1000**3)
+
+
+class TestMediaSelection:
+    def test_select_largest_file_skips_deleted_entries(self, tmp_path):
+        small = tmp_path / "small.mkv"
+        gone = tmp_path / "gone.mkv"
+        big = tmp_path / "big.mkv"
+        small.write_bytes(b"1" * 10)
+        gone.write_bytes(b"1" * 100)
+        big.write_bytes(b"1" * 1000)
+
+        gone.unlink()
+
+        selected = select_largest_file([str(small), str(gone), str(big)])
+        assert selected == str(big)
 
 
 class TestOrderedTitleParsing:

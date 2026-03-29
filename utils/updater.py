@@ -133,6 +133,14 @@ def verify_downloaded_update(
     if not require_signature:
         return True, "Signature verification is disabled by configuration."
 
+    pin = (required_thumbprint or "").strip().upper().replace(" ", "")
+    if not pin:
+        return (
+            False,
+            "Signature verification requires a pinned signer thumbprint, "
+            "but none is configured.",
+        )
+
     try:
         sig = get_authenticode_signature(path)
     except Exception as e:
@@ -142,7 +150,6 @@ def verify_downloaded_update(
         msg = sig.get("status_message") or "Unsigned or invalid signature"
         return False, f"Signature validation failed: {msg}"
 
-    pin = (required_thumbprint or "").strip().upper().replace(" ", "")
     got = (sig.get("thumbprint") or "").strip().upper().replace(" ", "")
     if pin and got != pin:
         return (

@@ -22,6 +22,7 @@ from utils.scoring import (  # pyright: ignore[reportMissingImports]
     format_audio_summary,
     score_title,
 )
+from utils.media import select_largest_file  # pyright: ignore[reportMissingImports]
 from config import (  # pyright: ignore[reportMissingImports]
     load_config,
     resolve_ffprobe,
@@ -73,14 +74,5 @@ __all__ = [
     "safe_int",
     "save_config",
     "score_title",
+    "select_largest_file",
 ]
-
-
-def main():
-    cfg = load_config()
-    app = JellyRipperGUI(cfg)
-    app.mainloop()
-
-
-if __name__ == "__main__":
-    main()
