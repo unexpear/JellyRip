@@ -12,6 +12,7 @@ from datetime import datetime
 
 from controller.naming import build_fallback_title
 
+from shared.runtime import __version__
 from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
 from utils.fallback import handle_fallback
 from utils.media import select_largest_file
@@ -268,7 +269,7 @@ class RipperController:
     def _log_session_paths(self):
         if not self.session_paths:
             return
-        self.log("=== RUN PATHS ===")
+        self.log(f"=== JellyRip v{__version__} — session start ===")
         self.log(f"Temp:   {self.session_paths.get('temp')}")
         self.log(f"Movies: {self.session_paths.get('movies')}")
         self.log(f"TV:     {self.session_paths.get('tv')}")
