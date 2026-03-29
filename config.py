@@ -1,6 +1,10 @@
 """Configuration implementation for package-style imports."""
 
-from shared.runtime import CONFIG_FILE, DEFAULTS, get_config_dir, json, os, shutil
+import json
+import os
+import shutil
+
+from shared.runtime import CONFIG_FILE, DEFAULTS, get_config_dir
 
 
 def load_config():

@@ -1,6 +1,20 @@
 """Compatibility shim exposing the split JellyRip modules through the legacy import path."""
 
-from shared.runtime import *  # pyright: ignore[reportMissingImports, reportWildcardImportFromLibrary, reportUndefinedVariable]
+from shared.runtime import (
+    CONFIG_FILE,
+    DEFAULTS,
+    RIP_ATTEMPT_FLAGS,
+    __version__,
+    _duration_debug_warn,
+    _safe_int_debug_warn,
+    build_fallback_title,
+    build_naming_preview_text,
+    configure_duration_debug,
+    configure_safe_int_debug,
+    get_config_dir,
+    normalize_naming_mode,
+    resolve_naming_mode,
+)
 
 from utils.helpers import (  # pyright: ignore[reportMissingImports]
     clean_name,

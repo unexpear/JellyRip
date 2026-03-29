@@ -1,12 +1,41 @@
 """GUI layer implementation."""
 
+import glob
+import json
+import os
+import platform
+import queue as queue_module
+import shlex
+import shutil
+import subprocess
 import tempfile
+import threading
+import time
 import urllib.error
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
-from shared.runtime import *
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from config import DEFAULTS, load_config, save_config
+from shared.runtime import (
+    CONFIG_FILE,
+    DEFAULTS,
+    RIP_ATTEMPT_FLAGS,
+    __version__,
+    _duration_debug_warn,
+    _safe_int_debug_warn,
+    build_fallback_title,
+    build_naming_preview_text,
+    configure_duration_debug,
+    configure_safe_int_debug,
+    get_config_dir,
+    normalize_naming_mode,
+    resolve_naming_mode,
+)
+
+from config import load_config, save_config
 from controller.controller import RipperController
 from engine.ripper_engine import RipperEngine
 from utils.helpers import get_available_drives, is_network_path
@@ -55,6 +84,7 @@ class JellyRipperGUI(tk.Tk):
         self._input_result = None
         self._input_event  = threading.Event()
         self._input_active = False
+        self._input_lock   = threading.Lock()
         self._log_widget_lock = threading.Lock()
 
         configure_safe_int_debug(
@@ -422,8 +452,9 @@ class JellyRipperGUI(tk.Tk):
                 self.after(0, _finish_ready)
                 return
 
-            update_dir = os.path.join(tempfile.gettempdir(), "JellyRipUpdate")
-            os.makedirs(update_dir, exist_ok=True)
+            # Use a unique per-download temp directory to prevent TOCTOU
+            # attacks via the predictable JellyRipUpdate/ fixed path.
+            update_dir = tempfile.mkdtemp(prefix="JellyRipUpdate_")
             destination = os.path.join(update_dir, asset_name)
 
             self.set_status("Downloading update...")
@@ -448,6 +479,7 @@ class JellyRipperGUI(tk.Tk):
                 download_asset(asset_url, destination, on_progress)
             except Exception as e:
                 self.controller.log(f"Update download failed: {e}")
+                shutil.rmtree(update_dir, ignore_errors=True)
                 self.after(
                     0,
                     lambda: self.show_error(
@@ -475,6 +507,7 @@ class JellyRipperGUI(tk.Tk):
                     "Update blocked: signature pinning is enabled but "
                     "opt_update_signer_thumbprint is empty."
                 )
+                shutil.rmtree(update_dir, ignore_errors=True)
                 self.after(
                     0,
                     lambda: self.show_error(
@@ -495,6 +528,7 @@ class JellyRipperGUI(tk.Tk):
             )
             self.controller.log(verify_msg)
             if not ok:
+                shutil.rmtree(update_dir, ignore_errors=True)
                 self.after(
                     0,
                     lambda: self.show_error(
@@ -550,51 +584,56 @@ class JellyRipperGUI(tk.Tk):
 
     def ask_input(self, label, prompt, show_browse=False,
                   default_value=""):
-        """Show non-modal input bar and wait from caller thread for user input."""
-        result = [None]
-        done   = threading.Event()
+        """Show non-modal input bar and wait from caller thread for user input.
 
-        def _show():
-            self._input_event.clear()
-            self._input_result = None
-            self._show_input_bar(
-                f"{label}: {prompt}", show_browse, default_value
-            )
+        Serialised by _input_lock — only one prompt can be active at a time,
+        preventing concurrent calls from clobbering _input_result/_input_event.
+        """
+        with self._input_lock:
+            result = [None]
+            done   = threading.Event()
 
-            def _wait():
-                while not self._input_event.wait(timeout=0.1):
-                    if self.engine.abort_event.is_set():
-                        self.after(0, self._hide_input_bar)
-                        result[0] = None
-                        done.set()
-                        return
-                val = self._input_result
-                self.after(0, self._hide_input_bar)
-                if val:
-                    self.append_log(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] "
-                        f"{label}: {val}"
-                    )
-                elif val == "":
-                    self.append_log(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] "
-                        f"{label}: (skipped)"
-                    )
-                result[0] = val
-                done.set()
+            def _show():
+                self._input_event.clear()
+                self._input_result = None
+                self._show_input_bar(
+                    f"{label}: {prompt}", show_browse, default_value
+                )
 
-            threading.Thread(target=_wait, daemon=True).start()
+                def _wait():
+                    while not self._input_event.wait(timeout=0.1):
+                        if self.engine.abort_event.is_set():
+                            self.after(0, self._hide_input_bar)
+                            result[0] = None
+                            done.set()
+                            return
+                    val = self._input_result
+                    self.after(0, self._hide_input_bar)
+                    if val:
+                        self.append_log(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] "
+                            f"{label}: {val}"
+                        )
+                    elif val == "":
+                        self.append_log(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] "
+                            f"{label}: (skipped)"
+                        )
+                    result[0] = val
+                    done.set()
 
-        self.after(0, _show)
-        # Caller may be a worker thread; this loop must not touch tkinter.
-        start = time.time()
-        while not done.wait(timeout=0.1):
-            if self.engine.abort_event.is_set():
-                return None
-            if time.time() - start > 300:
-                # Safety timeout prevents deadlock if UI callbacks are lost.
-                return None
-        return result[0]
+                threading.Thread(target=_wait, daemon=True).start()
+
+            self.after(0, _show)
+            # Caller may be a worker thread; this loop must not touch tkinter.
+            start = time.time()
+            while not done.wait(timeout=0.1):
+                if self.engine.abort_event.is_set():
+                    return None
+                if time.time() - start > 300:
+                    # Safety timeout prevents deadlock if UI callbacks are lost.
+                    return None
+            return result[0]
 
     def ask_folder(self, title):
         return self._run_on_main(
@@ -682,8 +721,13 @@ class JellyRipperGUI(tk.Tk):
         self.after(0, _show)
         # Wait by event polling so worker threads can call this safely
         # while tkinter widgets are still managed on the main thread.
+        start = time.time()
         while not done.wait(timeout=0.1):
-            pass
+            if self.engine.abort_event.is_set():
+                return False
+            if time.time() - start > 300:
+                # Safety timeout: if UI callbacks are lost, unblock the caller.
+                return False
         return result[0] if result[0] is not None else False
 
     def ask_duplicate_resolution(self, prompt,

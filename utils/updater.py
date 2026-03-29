@@ -96,18 +96,21 @@ def sha256_file(path):
 
 def get_authenticode_signature(path):
     """Get Authenticode signature details via PowerShell on Windows."""
+    # Pass the path as a PS variable to avoid any injection via string formatting.
+    # -LiteralPath treats the value as a literal string (no wildcards, no PS expansion).
     ps = (
-        "$sig = Get-AuthenticodeSignature -FilePath '{p}'; "
-        "$out = [PSCustomObject]@{{"
+        "param([string]$p); "
+        "$sig = Get-AuthenticodeSignature -LiteralPath $p; "
+        "$out = [PSCustomObject]@{"
         "Status = [string]$sig.Status; "
         "StatusMessage = [string]$sig.StatusMessage; "
         "Thumbprint = [string]($sig.SignerCertificate.Thumbprint); "
         "Subject = [string]($sig.SignerCertificate.Subject)"
-        "}}; "
+        "}; "
         "$out | ConvertTo-Json -Compress"
-    ).format(p=path.replace("'", "''"))
+    )
     proc = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", ps],
+        ["powershell", "-NoProfile", "-Command", ps, "-p", path],
         capture_output=True,
         text=True,
         timeout=15,
