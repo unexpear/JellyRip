@@ -770,11 +770,19 @@ class RipperController:
     # Library-scanning helpers (used by "attach to existing show" mode)
     # ------------------------------------------------------------------
 
-    _EPISODE_PATTERNS = [
-        re.compile(r"S(\d{1,3})E(\d{1,3})", re.IGNORECASE),  # S01E01
-        re.compile(r"(\d{1,2})x(\d{1,2})"),                   # 1x01
-        re.compile(r"[Ee]pisode\s+(\d{1,4})"),                 # Episode 4
-    ]
+    # SxxEyy with optional chained episodes: S01E01, S01E01E02, S01E01E02E03 …
+    # Captured groups: season, first episode, then zero or more extra E-tokens.
+    _RE_SxxEyy = re.compile(
+        r"S(\d{1,3})((?:E\d{1,3})+)",
+        re.IGNORECASE,
+    )
+    # 1x01 / Nx01 — season × episode
+    _RE_NxNN = re.compile(r"(\d{1,2})x(\d{1,2})")
+    # "Episode N" — no season token; useful when file is already inside a
+    # Season folder (the folder itself encodes the season).
+    _RE_EPISODE_N = re.compile(r"[Ee]pisode\s+(\d{1,4})")
+    # Splits the E-token block into individual episode numbers.
+    _RE_E_SPLIT = re.compile(r"E(\d{1,3})", re.IGNORECASE)
 
     @staticmethod
     def get_next_episode(existing: set) -> int:
@@ -790,36 +798,56 @@ class RipperController:
                 return i
         return max(existing) + 1  # unreachable but satisfies type checkers
 
+    def _episodes_from_filename(self, fname: str, season: int) -> set:
+        """Extract every episode number encoded in *fname* for *season*.
+
+        Handles:
+          - ``S01E01``           → {1}
+          - ``S01E01E02``        → {1, 2}   (multi-episode file)
+          - ``S01E01E02E03``     → {1, 2, 3}
+          - ``1x01``             → {1}
+          - ``Episode 4``        → {4}
+
+        Returns an empty set when the filename does not match any pattern
+        or the season token does not match *season*.
+        """
+        # --- SxxEyy (with optional chained episodes) ---
+        m = self._RE_SxxEyy.search(fname)
+        if m:
+            if int(m.group(1)) != season:
+                # Season token present but wrong season — do not fall through.
+                return set()
+            return {int(n) for n in self._RE_E_SPLIT.findall(m.group(2))}
+
+        # --- Nx01 format ---
+        m = self._RE_NxNN.search(fname)
+        if m:
+            if int(m.group(1)) != season:
+                return set()
+            return {int(m.group(2))}
+
+        # --- "Episode N" (no season token) ---
+        m = self._RE_EPISODE_N.search(fname)
+        if m:
+            return {int(m.group(1))}
+
+        return set()
+
     def _scan_episode_files(self, folder: str, season: int) -> set:
         """Return the set of episode numbers found in *folder* for *season*.
 
-        Recognises three filename patterns: ``SxxEyy``, ``Nx01`` (1x01),
-        and ``Episode N``.  Only the directory listing is read.
+        Multi-episode files (e.g. ``S01E01E02.mkv``) contribute all their
+        episode numbers so gap detection is never fooled into thinking an
+        episode is missing when it is part of a combined file.
+        Season 00 is supported (Jellyfin treats it as Specials).
+        Only reads the directory listing — no ffprobe or file I/O.
         """
         found: set = set()
         if not folder or not os.path.isdir(folder):
             return found
         try:
             for fname in os.listdir(folder):
-                # SxxEyy — both season and episode encoded in name
-                m = self._EPISODE_PATTERNS[0].search(fname)
-                if m:
-                    if int(m.group(1)) == season:
-                        found.add(int(m.group(2)))
-                    # If a season token is present but does not match,
-                    # do not fall through to looser patterns.
-                    continue
-                # Nx01 format — season is first group
-                m = self._EPISODE_PATTERNS[1].search(fname)
-                if m:
-                    if int(m.group(1)) == season:
-                        found.add(int(m.group(2)))
-                    # Same guard as SxxEyy: mismatched season must be ignored.
-                    continue
-                # "Episode N" — no season encoded; include if season folder matches
-                m = self._EPISODE_PATTERNS[2].search(fname)
-                if m:
-                    found.add(int(m.group(1)))
+                found |= self._episodes_from_filename(fname, season)
         except OSError:
             pass
         return found
@@ -828,28 +856,38 @@ class RipperController:
         """Scan *show_root* for existing season folders and their episodes.
 
         Returns a dict mapping season number (int) to a sorted list of
-        episode numbers already present on disk.  Only reads directory
-        listings — no ffprobe or file I/O.
+        episode numbers already present on disk.  Season 00 ("Specials")
+        is included and logged.  Only reads directory listings — no file I/O.
 
         Example::
 
-            {1: [1, 2, 3], 2: [1, 2]}   # Season 1 complete, Season 2 partial
+            {0: [1, 2], 1: [1, 2, 3], 2: [1, 2]}
         """
         result: dict = {}
         if not show_root or not os.path.isdir(show_root):
             return result
+        # "Season 00", "Season 1", "Specials" (mapped to season 0) are all valid.
         season_pat = re.compile(r"Season\s+(\d{1,3})", re.IGNORECASE)
+        specials_pat = re.compile(r"^Specials?$", re.IGNORECASE)
         try:
             for entry in os.listdir(show_root):
-                m = season_pat.match(entry)
-                if not m:
-                    continue
-                season_num = int(m.group(1))
                 season_dir = os.path.join(show_root, entry)
                 if not os.path.isdir(season_dir):
                     continue
+                m = season_pat.match(entry)
+                if m:
+                    season_num = int(m.group(1))
+                elif specials_pat.match(entry):
+                    season_num = 0
+                else:
+                    continue
                 eps = self._scan_episode_files(season_dir, season_num)
                 result[season_num] = sorted(eps)
+                if season_num == 0:
+                    self.log(
+                        f"Specials/Season 00 detected: {season_dir} "
+                        f"({len(eps)} item(s))"
+                    )
         except OSError:
             pass
         return result
@@ -2894,21 +2932,29 @@ class RipperController:
 
             if is_tv:
                 # Build the season prompt — when in library mode, show
-                # the user which seasons already exist so they can pick
-                # the right one without having to remember.
+                # the user which seasons already exist and default to the
+                # season most likely to need more episodes (incomplete
+                # season with the highest number, or the next one after
+                # the highest complete season).
                 season_hint = ""
+                default_season = str(
+                    active_resume.get("season", "")
+                    if active_resume else ""
+                )
                 if library_state:
                     season_hint = " (detected: " + ", ".join(
-                        f"S{s:02d}" for s in sorted(library_state.keys())
+                        f"S{s:02d}:{len(e)}ep"
+                        for s, e in sorted(library_state.items())
                     ) + ")"
+                    if not default_season:
+                        # Suggest the highest season present (most likely
+                        # to be the one still being collected).
+                        default_season = str(max(library_state.keys()))
 
                 season_str = self.gui.ask_input(
                     "Season",
                     f"Season number for disc {disc_number}:{season_hint}",
-                    default_value=str(
-                        active_resume.get("season", "")
-                        if active_resume else ""
-                    )
+                    default_value=default_season,
                 )
                 season = int(season_str) if (
                     season_str and season_str.isdigit()
@@ -3546,6 +3592,36 @@ class RipperController:
                         if not self.gui.ask_yesno(
                             f"Episode numbers not in order: "
                             f"{episode_numbers} — continue anyway?"
+                        ):
+                            continue
+
+                # Duplicate-episode guard: check whether any of the
+                # chosen episode numbers already exist as files in the
+                # destination folder.  This prevents silent overwrites
+                # when pointing at an existing library.
+                if dest_folder and season is not None:
+                    existing_eps = self._scan_episode_files(
+                        dest_folder, season
+                    )
+                    colliding = [
+                        ep for ep in episode_numbers
+                        if ep in existing_eps
+                    ]
+                    if colliding:
+                        collision_str = ", ".join(
+                            f"E{ep:02d}" for ep in sorted(colliding)
+                        )
+                        self.log(
+                            f"WARNING: Episode(s) {collision_str} already "
+                            f"exist in Season {season:02d}. "
+                            f"Existing files will NOT be overwritten "
+                            f"(unique_path will rename)."
+                        )
+                        if not self.gui.ask_yesno(
+                            f"Episode(s) {collision_str} already exist in "
+                            f"this season folder.\n\n"
+                            f"Continue anyway? "
+                            f"(Files will be renamed, not overwritten.)"
                         ):
                             continue
 

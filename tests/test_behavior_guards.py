@@ -1307,3 +1307,88 @@ def test_scan_library_folder_returns_sorted_episodes(tmp_path):
 
     result = c._scan_library_folder(str(tmp_path))
     assert result[1] == [1, 2, 3, 4, 5]
+
+
+# ---------------------------------------------------------------------------
+# Multi-episode filenames (S01E01E02.mkv), Season 00, duplicate protection
+# ---------------------------------------------------------------------------
+
+# --- multi-episode filename detection ---
+
+def test_multi_episode_file_contributes_both_episodes(tmp_path):
+    """S01E01E02.mkv must register BOTH E01 and E02."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Show - S01E01E02 - Title.mkv").write_text("")
+    result = c._scan_episode_files(str(tmp_path), 1)
+    assert result == {1, 2}
+
+
+def test_multi_episode_file_three_episodes(tmp_path):
+    """S01E01E02E03.mkv registers three episodes."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Show - S01E01E02E03 - Title.mkv").write_text("")
+    result = c._scan_episode_files(str(tmp_path), 1)
+    assert result == {1, 2, 3}
+
+
+def test_multi_episode_file_does_not_report_gap_for_covered_range(tmp_path):
+    """When S01E01E02.mkv exists, get_next_episode should suggest E03, not E02."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Show - S01E01E02.mkv").write_text("")
+    existing = c._scan_episode_files(str(tmp_path), 1)
+    assert c.get_next_episode(existing) == 3
+
+
+def test_multi_episode_ignores_wrong_season(tmp_path):
+    """S02E01E02.mkv must not register episodes for season 1."""
+    c, _ = _controller_with_engine()
+    (tmp_path / "Show - S02E01E02 - Title.mkv").write_text("")
+    result = c._scan_episode_files(str(tmp_path), 1)
+    assert result == set()
+
+
+# --- Season 00 / Specials ---
+
+def test_scan_library_folder_detects_season_00(tmp_path):
+    """'Season 00' directory is returned as season 0."""
+    c, _ = _controller_with_engine()
+    s0 = tmp_path / "Season 00"
+    s0.mkdir()
+    (s0 / "Show - S00E01 - Special.mkv").write_text("")
+    result = c._scan_library_folder(str(tmp_path))
+    assert 0 in result
+    assert result[0] == [1]
+
+
+def test_scan_library_folder_detects_specials_folder(tmp_path):
+    """A folder named 'Specials' maps to season 0."""
+    c, _ = _controller_with_engine()
+    sp = tmp_path / "Specials"
+    sp.mkdir()
+    (sp / "Episode 1.mkv").write_text("")
+    result = c._scan_library_folder(str(tmp_path))
+    assert 0 in result
+
+
+def test_scan_library_folder_season_00_logs_detection(tmp_path):
+    """Detecting Season 00 emits a log line (not silently ignored)."""
+    c, _ = _controller_with_engine()
+    s0 = tmp_path / "Season 00"
+    s0.mkdir()
+    (s0 / "Show - S00E01.mkv").write_text("")
+    c._scan_library_folder(str(tmp_path))
+    assert any("Specials" in m or "Season 00" in m for m in c.session_log)
+
+
+# --- _episodes_from_filename edge cases ---
+
+def test_episodes_from_filename_single(tmp_path):
+    """Standard S01E05 returns {5}."""
+    c, _ = _controller_with_engine()
+    assert c._episodes_from_filename("Show - S01E05 - Title.mkv", 1) == {5}
+
+
+def test_episodes_from_filename_wrong_season_returns_empty(tmp_path):
+    """S02E05 returns empty set when queried for season 1."""
+    c, _ = _controller_with_engine()
+    assert c._episodes_from_filename("Show - S02E05.mkv", 1) == set()
