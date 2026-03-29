@@ -1094,7 +1094,11 @@ class RipperEngine:
                 failed_titles.append(tid + 1)
 
         on_progress(100)
-        return not self.abort_event.is_set(), failed_titles
+        # Return True only when no abort AND every selected title succeeded.
+        # Callers also run _normalize_rip_result (file-presence + ffprobe check)
+        # as the authoritative gate, so this accurately reflects title-level success.
+        all_ok = not self.abort_event.is_set() and not bool(failed_titles)
+        return all_ok, failed_titles
 
     def analyze_files(self, mkv_files, on_log):
         """

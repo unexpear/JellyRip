@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.0.9] - 2026-03-29
+
+### Safety / Deadlock fixes (gui/main_window.py)
+
+- **`ask_yesno`**: the wait loop now checks `abort_event` and applies a 300-second safety timeout, matching the existing guard in `ask_input`. Previously the loop was unbounded — if the `_abort_watch` thread failed to fire `done`, the worker thread would hang forever.
+- **`ask_input` race condition**: added `self._input_lock = threading.Lock()` (initialised in `__init__`). Every call to `ask_input` acquires this lock before touching the shared `_input_result`/`_input_event` state, serialising concurrent prompts and eliminating the read-clobber race.
+
+### Correctness fixes
+
+- **`rip_selected_titles`** (engine/ripper_engine.py): return value changed from `(not abort, failed_titles)` to `(not abort and not bool(failed_titles), failed_titles)`. Previously `True` was returned even when individual titles failed, which was misleading — `_normalize_rip_result` was the real gate but the signal was confusing. The change is safe: callers all pass the result through `_normalize_rip_result` which does file-presence + ffprobe validation.
+- **`SessionStateMachine.complete()`** (utils/state_machine.py): new method that forces the state to COMPLETED if the session has not already failed. Used by `_run_disc` which manages its own multi-disc loop and never tracked intermediate state transitions.
+- **`_run_disc`** (controller/controller.py): calls `self.sm.complete()` before `write_session_summary()` at the end of the disc loop. Previously the state machine was always in INIT (never transitioned by this flow), causing `write_session_summary` to skip the COMPLETED branch and miss the warning-list display logic.
+
+### Security fixes
+
+- **Update download TOCTOU** (gui/main_window.py): replaced the predictable fixed temp path (`tempdir/JellyRipUpdate/`) with `tempfile.mkdtemp(prefix="JellyRipUpdate_")`. The unique directory is cleaned up (`shutil.rmtree`) on every failure path and before early returns, preventing stale downloads from lingering.
+- **Path injection in `get_authenticode_signature`** (utils/updater.py): replaced string-formatting the file path into a PowerShell command (only escaped single quotes, leaving backticks and `$(...)` injectable) with a `param([string]$p)` block and `-LiteralPath $p`. The path is now passed as a PowerShell parameter value, never interpolated into command text.
+
+### Architecture / Bad patterns
+
+- **`handle_fallback`** (utils/fallback.py): removed three `hasattr(controller, "_record_fallback_event")` duck-checks. The function is hardwired to `RipperController` — pretending to be generic via `hasattr` added noise without value. Direct calls are cleaner and any AttributeError is now a real programming error.
+- **`shared/runtime.py` `__all__`**: removed all stdlib re-exports (`os`, `re`, `json`, `threading`, `datetime`, `tk`, `ttk`, etc.). `__all__` now only lists runtime constants and project-specific helpers. Stdlib is imported directly by callers.
+- **`gui/main_window.py`**: replaced `from shared.runtime import *` with explicit imports of stdlib (os, re, json, tkinter, etc.) and the specific runtime symbols it needs.
+- **`JellyRip.py`**: replaced `from shared.runtime import *` with explicit imports of only the symbols it re-exports.
+- **`config.py`** and **`utils/helpers.py`**: replaced `from shared.runtime import json, os, shutil, ...` with direct stdlib imports.
+- **`tests/test_imports.py`**: split GUI import into its own `test_gui_import` function guarded by `unittest.mock.patch("tkinter.Tk")`. The original test crashed on headless CI because tkinter requires a display at import time.
+
 ## [1.0.8] - 2026-03-28
 
 ### Code review fixes (10 issues closed)

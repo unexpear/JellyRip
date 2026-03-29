@@ -49,5 +49,16 @@ class SessionStateMachine:
             self._emit(f"[STATE] FAIL: {reason}")
         self.state = SessionState.FAILED
 
+    def complete(self):
+        """Force COMPLETED if not already failed.
+
+        Used by flows (e.g. _run_disc) that don't track every intermediate
+        state transition but still need write_session_summary to take the
+        correct code path at the end of a successful session.
+        """
+        if self.state != SessionState.FAILED:
+            self._emit(f"[STATE] {self.state.name} -> COMPLETED (forced)")
+            self.state = SessionState.COMPLETED
+
     def is_success(self):
         return self.state == SessionState.COMPLETED

@@ -3470,6 +3470,10 @@ class RipperController:
             if not self.gui.ask_yesno("Another disc in this set?"):
                 break
 
+        # Mark session as completed so write_session_summary uses the
+        # correct code path (warnings list vs clean success).
+        # sm.complete() is a no-op if the session already failed.
+        self.sm.complete()
         self.write_session_summary()
         self.gui.set_status("Ready")
         self.gui.set_progress(0)

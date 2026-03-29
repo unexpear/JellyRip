@@ -24,7 +24,7 @@ from controller.naming import (
     resolve_naming_mode,
 )
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 
 def get_config_dir():
@@ -202,36 +202,21 @@ def _duration_debug_warn(val):
 
 
 __all__ = [
+    # Runtime constants
     "CONFIG_FILE",
     "DEFAULTS",
     "RIP_ATTEMPT_FLAGS",
-    "ThreadPoolExecutor",
     "__version__",
+    # Config helpers
+    "get_config_dir",
+    # Debug helpers
     "_duration_debug_warn",
     "_safe_int_debug_warn",
-    "as_completed",
-    "build_fallback_title",
-    "build_naming_preview_text",
     "configure_duration_debug",
     "configure_safe_int_debug",
-    "datetime",
-    "filedialog",
-    "get_config_dir",
-    "glob",
-    "json",
-    "messagebox",
+    # Naming helpers (re-exported from controller.naming)
+    "build_fallback_title",
+    "build_naming_preview_text",
     "normalize_naming_mode",
-    "os",
-    "platform",
-    "queue_module",
-    "re",
     "resolve_naming_mode",
-    "scrolledtext",
-    "shlex",
-    "shutil",
-    "subprocess",
-    "threading",
-    "time",
-    "tk",
-    "ttk",
 ]

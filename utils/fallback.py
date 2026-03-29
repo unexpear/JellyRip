@@ -7,17 +7,14 @@ def handle_fallback(controller, reason, fallback_fn):
     strict_mode = bool(controller.engine.cfg.get("opt_strict_mode", False))
     if strict_mode:
         controller.log("Strict mode enabled — aborting.")
-        if hasattr(controller, "_record_fallback_event"):
-            controller._record_fallback_event(reason, accepted=False, strict=True)
+        controller._record_fallback_event(reason, accepted=False, strict=True)
         return None
 
     if not controller.gui.ask_yesno(f"{reason}\n\nUse fallback?"):
         controller.log("User declined fallback.")
-        if hasattr(controller, "_record_fallback_event"):
-            controller._record_fallback_event(reason, accepted=False, strict=False)
+        controller._record_fallback_event(reason, accepted=False, strict=False)
         return None
 
     controller.log("Fallback accepted — executing.")
-    if hasattr(controller, "_record_fallback_event"):
-        controller._record_fallback_event(reason, accepted=True, strict=False)
+    controller._record_fallback_event(reason, accepted=True, strict=False)
     return fallback_fn()
