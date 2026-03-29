@@ -2814,6 +2814,7 @@ class RipperController:
         temp_root = self.get_path("temp")
 
         self.engine.reset_abort()
+        self._reset_state_machine()
         self._wiped_session_paths.clear()
         self.global_extra_counter = 1
         self.session_report       = []
