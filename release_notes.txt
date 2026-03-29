@@ -1,29 +1,32 @@
-﻿## JellyRip v1.0.6 Update Notes
+﻿## JellyRip v1.0.9 Release Notes
 
 ### Download
-- Direct download (v1.0.6): [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe)
-	https://github.com/unexpear/JellyRip/releases/download/v1.0.6/JellyRip.exe
-- Release page: [v1.0.6 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.6)
-	https://github.com/unexpear/JellyRip/releases/tag/v1.0.6
-- Latest releases list: [all releases](https://github.com/unexpear/JellyRip/releases)
-	https://github.com/unexpear/JellyRip/releases
+- Direct download (v1.0.9): https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRip.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.9
+- Latest releases list: https://github.com/unexpear/JellyRip/releases
 
-### What's New
-- Added per-title Preview support directly in the title picker.
-- Preview now runs as a short disposable sample rip and can auto-open in VLC.
-- Added workflow-level resume with restored metadata context (title, year, season, selected titles, episode fields).
-- Added input prefill so interrupted sessions can resume with less manual re-entry.
+### What's New in 1.0.9
 
-### Reliability Improvements
-- Enforced all-or-nothing rip result handling.
-- Invalid, missing, aborted, or failed-title outputs are treated as session failure.
-- Failed sessions wipe media outputs while preserving metadata for workflow resume.
-- Added regression tests to ensure non-zero MakeMKV exits are always treated as failure, even when files are written.
-- Added regression tests to ensure abort always forces failure, even when files are present and valid.
+Safety
+- ask_yesno now has a 300s safety timeout and abort check (was unbounded).
+- ask_input serialised with a lock — concurrent prompts no longer clobber each other.
 
-### UI and Settings
-- Added naming mode options: timestamp, auto title, and auto title + timestamp.
-- Reorganized Settings layout into clearer grouped sections.
+Reliability
+- Version printed at start of every rip session in log for unambiguous debug.
+- rip_selected_titles returns failure on per-title failures, not just full abort.
+- Session state machine reset and completed correctly in TV/movie disc flow.
 
-Full changelog: [CHANGELOG.md](https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md)
-https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
+Security
+- Auto-update uses unique temp dir per download (prevents TOCTOU).
+- PowerShell signature check uses -LiteralPath + param block (no path injection).
+
+Code quality (1.0.8 + 1.0.9)
+- _normalize_rip_result scans MKV files recursively (catches MakeMKV subdirs).
+- get_available_drives has 30s timeout (stalled MakeMKV no longer hangs app).
+- check_disk_space no longer creates directories as side effect.
+- Corrupt config now logs visible warning instead of silently resetting.
+- Wildcard imports replaced with explicit imports throughout.
+- handle_fallback simplified, hasattr duck-checks removed.
+- DummyGUI in tests has all required stub methods.
+
+Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
