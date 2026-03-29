@@ -2,6 +2,7 @@
 
 ### Download
 - Direct download (v1.0.9): https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRip.exe
+- Installer (v1.0.9): https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRipInstaller.exe
 - Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.9
 - Latest releases list: https://github.com/unexpear/JellyRip/releases
 
@@ -30,3 +31,5 @@ Code quality (1.0.8 + 1.0.9)
 - DummyGUI in tests has all required stub methods.
 
 Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
+
+Build note: generated dist binaries are release assets and are not committed to git.

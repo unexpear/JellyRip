@@ -8,6 +8,7 @@ Tester worksheet (printable): [TESTERS.md](TESTERS.md)
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
 Latest exe (direct): [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
+Latest installer (direct): [JellyRipInstaller.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRipInstaller.exe)
 Latest release page: [latest release](https://github.com/unexpear/JellyRip/releases/latest)
 
 Quick links: [Main entry](main.py) | [Legacy entry](JellyRip.py) | [Engine](engine) | [Controller](controller) | [GUI](gui) | [Utils](utils) | [Build script](build.bat) | [Requirements](requirements.txt) | [Changelog](CHANGELOG.md) | [Release post text](release_notes.md) | [Tester sheet](TESTERS.md) | [Tests](tests)
@@ -31,6 +32,7 @@ Quick links: [Main entry](main.py) | [Legacy entry](JellyRip.py) | [Engine](engi
 
 ## Project Status
 
+- Current stable build: **v1.0.9**
 - Development stage: **Pre-Alpha**
 - Stability: **Highly unstable / pre-release quality**
 - Testing status: **Core flows working; TV show workflows still untested**
@@ -139,7 +141,7 @@ Requires PyInstaller:
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name JellyRip JellyRip.py
+pyinstaller --onefile --windowed --name JellyRip main.py
 ```
 
 Output: `dist/JellyRip.exe`
@@ -154,6 +156,8 @@ Outputs:
 
 - `dist/JellyRip.exe`
 - `dist/JellyRipInstaller.exe`
+
+Note: `dist/` build outputs are intentionally git-ignored and are published through GitHub Releases rather than committed to the repository.
 
 ## License
 
