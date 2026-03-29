@@ -1196,7 +1196,7 @@ class RipperEngine:
             dur = -1.0
 
         result = (dur, mb)
-        self._ffprobe_cache = {cache_key: result}
+        self._ffprobe_cache[cache_key] = result
         return result
 
     def copy_with_abort(self, src, dst, buf_size=8 * 1024 * 1024):

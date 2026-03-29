@@ -53,8 +53,9 @@ Installer (recommended for auto-updates): [JellyRipInstaller.exe latest](https:/
 Auto-update flow:
 
 1. In JellyRip, click **Check Updates**.
-2. If a newer GitHub Release exists, JellyRip downloads the installer/exe package.
-3. JellyRip launches the update package and closes so Windows can replace files.
+2. Configure `opt_update_signer_thumbprint` in Settings with your release certificate thumbprint.
+3. If a newer GitHub Release exists, JellyRip downloads the installer/exe package.
+4. JellyRip verifies the package signature against the pinned thumbprint, launches the update package, and closes so Windows can replace files.
 
 **Windows Defender False Positive?**
 
