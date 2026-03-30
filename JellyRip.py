@@ -7,11 +7,13 @@ from shared.runtime import (
     __version__,
     _duration_debug_warn,
     _safe_int_debug_warn,
-    build_fallback_title,
-    build_naming_preview_text,
     configure_duration_debug,
     configure_safe_int_debug,
     get_config_dir,
+)
+from controller.naming import (  # pyright: ignore[reportMissingImports]
+    build_fallback_title,
+    build_naming_preview_text,
     normalize_naming_mode,
     resolve_naming_mode,
 )
