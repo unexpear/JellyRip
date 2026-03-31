@@ -1,10 +1,21 @@
 """Main entrypoint for the split package layout."""
 
+import sys
+
 from config import load_config
 from gui.main_window import JellyRipperGUI
 
 
 def main():
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "JellyRip.App.1"
+            )
+        except Exception:
+            pass
+
     cfg = load_config()
     app = JellyRipperGUI(cfg)
     app.mainloop()

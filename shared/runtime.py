@@ -44,12 +44,27 @@ def get_config_dir():
 
 CONFIG_FILE = os.path.join(get_config_dir(), "config.json")
 
+_WIN_TEMP = os.environ.get("TEMP") or os.path.expanduser("~\\AppData\\Local\\Temp")
+_WIN_HOME = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+_WIN_VIDEOS = os.path.join(_WIN_HOME, "Videos")
+_DEFAULT_TEMP = _WIN_TEMP if platform.system() == "Windows" else os.path.expanduser("~/tmp")
+_DEFAULT_TV = (
+    os.path.join(_WIN_VIDEOS, "TV Shows")
+    if platform.system() == "Windows"
+    else os.path.expanduser("~/Videos/TV Shows")
+)
+_DEFAULT_MOVIES = (
+    os.path.join(_WIN_VIDEOS, "Movies")
+    if platform.system() == "Windows"
+    else os.path.expanduser("~/Videos/Movies")
+)
+
 DEFAULTS = {
     "makemkvcon_path": r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
     "ffprobe_path": r"C:\Program Files\HandBrake\ffprobe.exe",
-    "temp_folder": r"C:\Temp",
-    "tv_folder": r"C:\Media\TV Shows",
-    "movies_folder": r"C:\Media\Movies",
+    "temp_folder": _DEFAULT_TEMP,
+    "tv_folder": _DEFAULT_TV,
+    "movies_folder": _DEFAULT_MOVIES,
     "log_file": os.path.expanduser("~/Downloads/rip_log.txt"),
     "opt_drive_index": 0,
     "opt_safe_mode": True,

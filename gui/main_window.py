@@ -8,6 +8,7 @@ import queue as queue_module
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -17,7 +18,80 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk
+
+
+if sys.platform == "win32":
+    import ctypes
+    import ctypes.wintypes
+
+    class _TaskbarProgress:
+        """ITaskbarList3 taskbar progress overlay — Windows only."""
+        TBPF_NOPROGRESS = 0
+        TBPF_NORMAL     = 2
+        TBPF_ERROR      = 4
+
+        def __init__(self, hwnd):
+            self._hwnd = hwnd
+            self._com  = None
+            try:
+                clsid = ctypes.c_buffer(
+                    b'\x55\xb9\xfb\x56\x37\x13\x43\x42'
+                    b'\x9a\xdc\x9c\xc6\x04\x2e\x63\x33', 16)
+                iid = ctypes.c_buffer(
+                    b'\x91\xfb\x1a\xea\x28\x9e\x86\x4b'
+                    b'\x90\xe9\x9e\x9f\x8a\x5e\xef\xaf', 16)
+                obj = ctypes.c_void_p()
+                hr = ctypes.windll.ole32.CoCreateInstance(
+                    clsid, None, 1, iid, ctypes.byref(obj))
+                if hr == 0:
+                    self._com = obj
+                    vtbl = ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))
+                    ctypes.CFUNCTYPE(
+                        ctypes.HRESULT, ctypes.c_void_p
+                    )(vtbl[0][3])(obj)
+            except Exception:
+                pass
+
+        def set_value(self, current, total):
+            if not self._com or total <= 0:
+                return
+            try:
+                vtbl = ctypes.cast(self._com, ctypes.POINTER(ctypes.c_void_p))
+                fn = ctypes.CFUNCTYPE(
+                    ctypes.HRESULT, ctypes.c_void_p,
+                    ctypes.wintypes.HWND,
+                    ctypes.c_ulonglong, ctypes.c_ulonglong
+                )(vtbl[0][9])
+                fn(self._com, self._hwnd, current, total)
+            except Exception:
+                pass
+
+        def set_state(self, state):
+            if not self._com:
+                return
+            try:
+                vtbl = ctypes.cast(self._com, ctypes.POINTER(ctypes.c_void_p))
+                fn = ctypes.CFUNCTYPE(
+                    ctypes.HRESULT, ctypes.c_void_p,
+                    ctypes.wintypes.HWND, ctypes.c_int
+                )(vtbl[0][10])
+                fn(self._com, self._hwnd, state)
+            except Exception:
+                pass
+
+        def clear(self):
+            self.set_state(self.TBPF_NOPROGRESS)
+
+else:
+    class _TaskbarProgress:
+        TBPF_NOPROGRESS = 0
+        TBPF_NORMAL     = 2
+        TBPF_ERROR      = 4
+        def __init__(self, hwnd): pass
+        def set_value(self, c, t): pass
+        def set_state(self, s):   pass
+        def clear(self):          pass
 
 from shared.runtime import (
     CONFIG_FILE,
@@ -104,6 +178,8 @@ class JellyRipperGUI(tk.Tk):
         self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
         self.after(100, self.process_queue)
+        self._taskbar_progress = None
+        self.after(500, self._init_taskbar)
 
     def _append_log_text_main(self, msg, tag=None):
         """Append one line to the log widget from the Tk main thread only."""
@@ -206,12 +282,13 @@ class JellyRipperGUI(tk.Tk):
             font=("Segoe UI", 10), relief="flat"
         )
         self.update_btn.pack(side="right", padx=4)
-        tk.Button(
+        self.settings_btn = tk.Button(
             util_frame, text="⚙  Settings",
             command=self.open_settings,
             bg="#21262d", fg="#8b949e",
             font=("Segoe UI", 10), relief="flat"
-        ).pack(side="right", padx=4)
+        )
+        self.settings_btn.pack(side="right", padx=4)
 
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
@@ -268,13 +345,6 @@ class JellyRipperGUI(tk.Tk):
             "<Return>", lambda e: self._confirm_input()
         )
 
-        self.input_browse_btn = tk.Button(
-            self.input_bar, text="Browse",
-            bg="#30363d", fg="#c9d1d9",
-            font=("Segoe UI", 10),
-            command=self._browse_input, relief="flat"
-        )
-
         tk.Button(
             self.input_bar, text="Confirm",
             bg="#238636", fg="white",
@@ -299,7 +369,9 @@ class JellyRipperGUI(tk.Tk):
         )
         self.abort_btn.pack(side="right")
 
-        self.after(500, self._refresh_drives)
+        # Do not auto-probe optical drives on startup; probing can spin up
+        # physical media drives and stall on some systems. Users can refresh
+        # explicitly with the Refresh button.
 
     def _refresh_drives(self):
         def _load():
@@ -350,7 +422,18 @@ class JellyRipperGUI(tk.Tk):
     def _launch_downloaded_update(self, downloaded_path):
         """Launch downloaded update package and close app for file replacement."""
         try:
-            subprocess.Popen([downloaded_path])
+            self.controller.log(
+                "Launching installer — a UAC permission prompt may appear."
+            )
+            self.show_info(
+                "Update Ready",
+                "The installer is starting.\n\n"
+                "A UAC permission prompt may appear.\n"
+                "JellyRip will now close so files can be replaced."
+            )
+            self.engine.abort()
+            self.after(500, self.destroy)
+            os.startfile(downloaded_path)
         except Exception as e:
             self.controller.log(f"Could not launch update package: {e}")
             self.show_error(
@@ -358,15 +441,6 @@ class JellyRipperGUI(tk.Tk):
                 "Downloaded update package but could not launch it.\n\n"
                 f"Run this file manually:\n{downloaded_path}"
             )
-            return
-
-        self.show_info(
-            "Update Ready",
-            "The update package was started.\n\n"
-            "JellyRip will now close so files can be replaced."
-        )
-        self.engine.abort()
-        self.destroy()
 
     def check_for_updates(self):
         """Check GitHub releases for a newer version and offer download."""
@@ -550,14 +624,10 @@ class JellyRipperGUI(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_input_bar(self, label, show_browse=False, initial_value=""):
+    def _show_input_bar(self, label, initial_value=""):
         self.input_label_var.set(label)
         self.input_var.set(initial_value or "")
         self._input_active = True
-        if show_browse:
-            self.input_browse_btn.pack(side="left", padx=4, pady=8)
-        else:
-            self.input_browse_btn.pack_forget()
         self.input_bar.pack(fill="x", padx=20, pady=4)
         if initial_value:
             self.input_field.selection_range(0, "end")
@@ -581,12 +651,7 @@ class JellyRipperGUI(tk.Tk):
         self._input_result = ""
         self._input_event.set()
 
-    def _browse_input(self):
-        path = filedialog.askdirectory(parent=self)
-        if path:
-            self.input_var.set(os.path.normpath(path))
-
-    def ask_input(self, label, prompt, show_browse=False,
+    def ask_input(self, label, prompt,
                   default_value=""):
         """Show non-modal input bar and wait from caller thread for user input.
 
@@ -601,7 +666,7 @@ class JellyRipperGUI(tk.Tk):
                 self._input_event.clear()
                 self._input_result = None
                 self._show_input_bar(
-                    f"{label}: {prompt}", show_browse, default_value
+                    f"{label}: {prompt}", default_value
                 )
 
                 def _wait():
@@ -638,11 +703,6 @@ class JellyRipperGUI(tk.Tk):
                     # Safety timeout prevents deadlock if UI callbacks are lost.
                     return None
             return result[0]
-
-    def ask_folder(self, title):
-        return self._run_on_main(
-            lambda: filedialog.askdirectory(title=title, parent=self)
-        )
 
     def ask_yesno(self, prompt):
         """Render an inline Yes/No prompt in the log pane and wait for answer."""
@@ -1562,6 +1622,14 @@ class JellyRipperGUI(tk.Tk):
                 return
 
     def open_settings(self):
+        if self.rip_thread and self.rip_thread.is_alive():
+            messagebox.showwarning(
+                "Rip in Progress",
+                "Settings cannot be opened during an active rip.\n"
+                "Abort the current session first, or wait for it to finish.",
+                parent=self,
+            )
+            return
         done = threading.Event()
 
         def _show():
@@ -1662,54 +1730,6 @@ class JellyRipperGUI(tk.Tk):
                     relief="flat", bd=3, width=28
                 ).pack(side="left", padx=4)
 
-                def browse(k=key, v=var):
-                    current = v.get().strip()
-                    if current and os.path.exists(current):
-                        start_dir = (
-                            os.path.dirname(current)
-                            if os.path.isfile(current)
-                            else current
-                        )
-                    else:
-                        start_dir = os.path.expanduser("~")
-
-                    if k.endswith("_path") and "log" not in k:
-                        path = filedialog.askopenfilename(
-                            title=f"Select {label}",
-                            initialdir=start_dir,
-                            filetypes=[
-                                ("Executable", "*.exe"),
-                                ("All files", "*.*")
-                            ],
-                            parent=win
-                        )
-                    elif k == "log_file":
-                        path = filedialog.asksaveasfilename(
-                            title="Select log file location",
-                            initialdir=start_dir,
-                            initialfile=os.path.basename(current)
-                                if current else "rip_log.txt",
-                            defaultextension=".txt",
-                            filetypes=[
-                                ("Text files", "*.txt"),
-                                ("All files", "*.*")
-                            ],
-                            parent=win
-                        )
-                    else:
-                        path = filedialog.askdirectory(
-                            title=f"Select {label}",
-                            initialdir=start_dir,
-                            parent=win
-                        )
-                    if path:
-                        v.set(os.path.normpath(path))
-
-                tk.Button(
-                    row, text="Browse", command=browse,
-                    bg="#21262d", fg="#c9d1d9",
-                    font=("Segoe UI", 9), relief="flat"
-                ).pack(side="left", padx=4)
                 vars_map[key] = ("str", var)
 
             def toggle_row(parent, key, label):
@@ -2054,8 +2074,59 @@ class JellyRipperGUI(tk.Tk):
             self.progress_var.set(0)
         self.after(0, _stop)
 
-    def set_progress(self, pct):
-        self.after(0, lambda: self.progress_var.set(pct))
+    def _init_taskbar(self):
+        try:
+            self._taskbar_progress = _TaskbarProgress(self.winfo_id())
+        except Exception:
+            self._taskbar_progress = None
+
+    def _notify_complete(self, title="JellyRip", message="Rip complete."):
+        """Send a Windows toast notification and play a completion beep."""
+        if sys.platform != "win32":
+            return
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+        try:
+            ps = (
+                "[Windows.UI.Notifications.ToastNotificationManager,"
+                " Windows.UI.Notifications, ContentType=WindowsRuntime]"
+                " | Out-Null;"
+                "$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02;"
+                "$x = [Windows.UI.Notifications.ToastNotificationManager]"
+                "::GetTemplateContent($t);"
+                f'$x.GetElementsByTagName("text")[0].AppendChild('
+                f'$x.CreateTextNode("{title}")) | Out-Null;'
+                f'$x.GetElementsByTagName("text")[1].AppendChild('
+                f'$x.CreateTextNode("{message}")) | Out-Null;'
+                "$n = [Windows.UI.Notifications.ToastNotification]::new($x);"
+                '[Windows.UI.Notifications.ToastNotificationManager]'
+                '::CreateToastNotifier("JellyRip.App.1").Show($n);'
+            )
+            _ps = (
+                shutil.which("powershell")
+                or r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            )
+            subprocess.Popen(
+                [_ps, "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,
+            )
+        except Exception:
+            pass
+
+    def set_progress(self, value):
+        def _update():
+            self.progress_var.set(value if value is not None and value >= 0 else 0)
+            if self._taskbar_progress:
+                if value is None or value < 0:
+                    self._taskbar_progress.clear()
+                else:
+                    self._taskbar_progress.set_value(int(value), 100)
+        self.after(0, _update)
 
     def set_status(self, msg):
         self.after(0, lambda: self.status_var.set(msg))
@@ -2087,10 +2158,18 @@ class JellyRipperGUI(tk.Tk):
     def disable_buttons(self):
         for btn in self.mode_buttons.values():
             btn.config(state="disabled")
+        if hasattr(self, "settings_btn"):
+            self.settings_btn.config(state="disabled")
+        if hasattr(self, "update_btn"):
+            self.update_btn.config(state="disabled")
 
     def enable_buttons(self):
         for btn in self.mode_buttons.values():
             btn.config(state="normal")
+        if hasattr(self, "settings_btn"):
+            self.settings_btn.config(state="normal")
+        if hasattr(self, "update_btn"):
+            self.update_btn.config(state="normal")
 
     def request_abort(self):
         """Abort immediately — no confirmation dialog required."""
@@ -2197,6 +2276,7 @@ class JellyRipperGUI(tk.Tk):
         needs_pick = mode in {"m", "u"}
 
         def task_wrapper():
+            _success = False
             try:
                 # Important: mode pickers use ask_yesno(), which schedules UI
                 # work on the main thread and waits from the caller thread.
@@ -2208,8 +2288,12 @@ class JellyRipperGUI(tk.Tk):
                 if self.engine.abort_event.is_set():
                     return
                 fn()
+                _success = True
             except Exception as e:
                 self.controller.log(f"Unhandled error: {e}")
+                self.after(0, lambda msg=str(e): self._notify_complete(
+                    "JellyRip — Error", f"Rip failed: {msg}"
+                ))
             finally:
                 self.stop_indeterminate()
                 self.after(0, self.enable_buttons)
@@ -2218,6 +2302,10 @@ class JellyRipperGUI(tk.Tk):
                     lambda: self.abort_btn.config(state="normal")
                 )
                 self.set_status("Ready")
+                if _success and not self.engine.abort_event.is_set():
+                    self.after(0, lambda: self._notify_complete(
+                        "JellyRip", "Rip complete!"
+                    ))
 
         self.rip_thread = threading.Thread(
             target=task_wrapper, daemon=True
