@@ -159,6 +159,7 @@ class JellyRipperGUI(tk.Tk):
         self.engine        = RipperEngine(cfg)
         self.controller    = RipperController(self.engine, self)
         self.rip_thread    = None
+        self._settings_window = None
         self._input_result = None
         self._input_event  = threading.Event()
         self._input_active = False
@@ -1630,13 +1631,30 @@ class JellyRipperGUI(tk.Tk):
                 parent=self,
             )
             return
+
+        if (
+            self._settings_window is not None
+            and self._settings_window.winfo_exists()
+        ):
+            try:
+                self._settings_window.lift()
+                self._settings_window.focus_force()
+            except Exception:
+                pass
+            return
+
         done = threading.Event()
 
         def _show():
             win = tk.Toplevel(self)
+            self._settings_window = win
             win.title("JellyRip Settings")
             win.configure(bg="#0d1117")
-            win.grab_set()
+            try:
+                win.grab_set()
+            except tk.TclError:
+                # Avoid crashing if another dialog currently owns grab.
+                pass
             win.lift()
             win.focus_force()
             win.geometry("700x800")
@@ -2030,7 +2048,11 @@ class JellyRipperGUI(tk.Tk):
                 except Exception as e:
                     self.controller.log(f"Error saving settings: {e}")
                 finally:
-                    win.destroy()
+                    try:
+                        win.destroy()
+                    except Exception:
+                        pass
+                    self._settings_window = None
                     done.set()
 
             def cancel():
@@ -2039,6 +2061,7 @@ class JellyRipperGUI(tk.Tk):
                 except Exception:
                     pass
                 finally:
+                    self._settings_window = None
                     done.set()
 
             win.protocol("WM_DELETE_WINDOW", cancel)
@@ -2056,8 +2079,20 @@ class JellyRipperGUI(tk.Tk):
                 width=12, command=cancel, relief="flat"
             ).pack(side="left", padx=4)
 
-        self.after(0, _show)
-        done.wait()
+        def _safe_show():
+            try:
+                _show()
+            except Exception as e:
+                self._settings_window = None
+                self.controller.log(f"Error opening settings: {e}")
+                self.show_error("Settings Error", f"Could not open Settings:\n{e}")
+                done.set()
+
+        if threading.current_thread() is threading.main_thread():
+            _safe_show()
+        else:
+            self.after(0, _safe_show)
+            done.wait()
 
     def start_indeterminate(self):
         def _start():
