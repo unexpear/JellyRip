@@ -6,10 +6,14 @@ import os
 import queue as queue_module
 import shutil
 import subprocess
+import sys as _sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+
+# Suppress black CMD flash on Windows for every subprocess we spawn.
+_POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 from shared.runtime import RIP_ATTEMPT_FLAGS
 
@@ -56,6 +60,18 @@ class RipperEngine:
         self._last_scan_total_bytes = None
         self._last_scan_timestamp = 0.0
         self._last_scan_target = None
+
+    @staticmethod
+    def _io_path(path):
+        """Return a Windows long-path form for file I/O when needed."""
+        if _sys.platform != "win32" or not path:
+            return path
+        p = os.path.abspath(str(path))
+        if p.startswith("\\\\?\\"):
+            return p
+        if p.startswith("\\\\"):
+            return "\\\\?\\UNC\\" + p.lstrip("\\")
+        return "\\\\?\\" + p
 
     @property
     def abort_flag(self):
@@ -200,15 +216,17 @@ class RipperEngine:
     def _atomic_write_json(self, path, data):
         """Write JSON atomically using temp file + os.replace."""
         tmp = path + ".tmp"
+        io_tmp = self._io_path(tmp)
+        io_path = self._io_path(path)
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(io_tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            os.replace(tmp, path)
+            os.replace(io_tmp, io_path)
         except Exception as e:
             print(f"Warning: failed atomic JSON write for {path}: {e}")
-            if os.path.exists(tmp):
+            if os.path.exists(io_tmp):
                 try:
-                    os.remove(tmp)
+                    os.remove(io_tmp)
                 except Exception as cleanup_err:
                     print(
                         "Warning: failed to remove temporary JSON file "
@@ -246,8 +264,9 @@ class RipperEngine:
     def update_temp_metadata(self, rip_path, status=None, **updates):
         """Refresh metadata counters/status for a temp session folder."""
         meta_path = os.path.join(rip_path, "_rip_meta.json")
+        io_meta_path = self._io_path(meta_path)
         try:
-            with open(meta_path, encoding="utf-8") as f:
+            with open(io_meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
             # Count MKV files: single pass instead of glob
             file_count = 0
@@ -271,7 +290,7 @@ class RipperEngine:
         """Read metadata for a temp session folder, returning None on failure."""
         meta_path = os.path.join(rip_path, "_rip_meta.json")
         try:
-            with open(meta_path, encoding="utf-8") as f:
+            with open(self._io_path(meta_path), encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return None
@@ -308,7 +327,8 @@ class RipperEngine:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                **_POPEN_FLAGS
             )
             for line in iter(proc.stdout.readline, ""):
                 if self.abort_event.is_set():
@@ -447,7 +467,7 @@ class RipperEngine:
         titles_to_log = scored if log_all else scored[:20]
         if not log_all and scored and scored[0] not in titles_to_log:
             titles_to_log = titles_to_log + [scored[0]]
-        
+
         for t, score in titles_to_log:
             on_log(
                 f"  Title {t['id']+1}: score={score:.3f} | "
@@ -515,7 +535,8 @@ class RipperEngine:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                **_POPEN_FLAGS
             )
             for line in iter(proc.stdout.readline, ""):
                 if self.abort_event.is_set():
@@ -681,7 +702,8 @@ class RipperEngine:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            **_POPEN_FLAGS
         )
         self.current_process = proc
 
@@ -828,7 +850,8 @@ class RipperEngine:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            **_POPEN_FLAGS
         )
         self.current_process = proc
 
@@ -1178,6 +1201,7 @@ class RipperEngine:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **_POPEN_FLAGS
         )
         while proc.poll() is None:
             if honor_abort and self.abort_event.is_set():
@@ -1203,7 +1227,7 @@ class RipperEngine:
         """Stream-copy a file while honoring abort requests between chunks."""
         use_fsync = self.cfg.get("opt_fsync", True)
         try:
-            with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            with open(self._io_path(src), "rb") as fsrc, open(self._io_path(dst), "wb") as fdst:
                 while True:
                     if self.abort_event.is_set():
                         return False
@@ -1251,16 +1275,18 @@ class RipperEngine:
         REQUIRES: Source must be fully written (verified by move start check).
         """
         self.last_move_error = ""
-        if not os.path.exists(source):
+        io_source = self._io_path(source)
+
+        if not os.path.exists(io_source):
             on_log(f"Missing file: {source}")
             self.last_move_error = "Move failed — source file is missing."
             return False
 
         # Verify source has stopped growing before accepting move.
         try:
-            size_before = os.path.getsize(source)
+            size_before = os.path.getsize(io_source)
             time.sleep(1.0)
-            size_after = os.path.getsize(source)
+            size_after = os.path.getsize(io_source)
             if size_before != size_after:
                 on_log(
                     f"ERROR: Source file still growing before move "
@@ -1300,16 +1326,17 @@ class RipperEngine:
 
         if not self.cfg.get("opt_atomic_move", True):
             try:
-                src_size = os.path.getsize(source)
-                shutil.move(source, final_path)
-                if not os.path.exists(final_path):
+                io_final_path = self._io_path(final_path)
+                src_size = os.path.getsize(io_source)
+                shutil.move(io_source, io_final_path)
+                if not os.path.exists(io_final_path):
                     on_log("ERROR: destination missing after move.")
                     self.last_move_error = (
                         "Move failed — destination file missing after move."
                     )
                     return False
                 size_ok, dst_size = wait_for_size_match(
-                    src_size, final_path
+                    src_size, io_final_path
                 )
                 if not size_ok:
                     on_log(
@@ -1322,7 +1349,7 @@ class RipperEngine:
                         "Destination size did not match source."
                     )
                     return False
-                if not self._quick_ffprobe_ok(final_path, on_log):
+                if not self._quick_ffprobe_ok(io_final_path, on_log):
                     self.last_move_error = (
                         "Move failed — destination file failed integrity "
                         "probe (ffprobe)."
@@ -1334,37 +1361,40 @@ class RipperEngine:
                 return False
 
         temp_dest = final_path + ".partial"
+        io_temp_dest = self._io_path(temp_dest)
+        io_final_path = self._io_path(final_path)
         try:
             ok = self.copy_with_abort(source, temp_dest)
             if not ok or self.abort_event.is_set():
-                if os.path.exists(temp_dest):
+                if os.path.exists(io_temp_dest):
                     try:
-                        os.remove(temp_dest)
+                        os.remove(io_temp_dest)
                     except Exception:
                         pass
                 on_log("Move aborted — partial file removed.")
                 self.last_move_error = "Move failed — operation aborted."
                 return False
             try:
-                shutil.copystat(source, temp_dest)
+                shutil.copystat(io_source, io_temp_dest)
             except Exception:
                 pass
-            if os.path.exists(final_path):
+            if os.path.exists(io_final_path):
                 new_final = self.unique_path(final_path)
                 on_log(
                     "Destination appeared during move; "
                     f"using unique path: {new_final}"
                 )
                 final_path = new_final
+                io_final_path = self._io_path(final_path)
             try:
-                os.replace(temp_dest, final_path)
+                os.replace(io_temp_dest, io_final_path)
             except OSError:
                 # Cross-volume fallback when atomic rename is unavailable.
-                shutil.move(temp_dest, final_path)
-            if os.path.exists(final_path):
-                src_size = os.path.getsize(source)
+                shutil.move(io_temp_dest, io_final_path)
+            if os.path.exists(io_final_path):
+                src_size = os.path.getsize(io_source)
                 size_ok, dst_size = wait_for_size_match(
-                    src_size, final_path
+                    src_size, io_final_path
                 )
                 if not size_ok:
                     on_log(
@@ -1378,13 +1408,13 @@ class RipperEngine:
                         "Destination size did not match source."
                     )
                     return False
-                if not self._quick_ffprobe_ok(final_path, on_log):
+                if not self._quick_ffprobe_ok(io_final_path, on_log):
                     self.last_move_error = (
                         "Move failed — destination file failed integrity "
                         "probe (ffprobe)."
                     )
                     return False
-                os.remove(source)
+                os.remove(io_source)
             else:
                 on_log("ERROR: destination missing after move.")
                 self.last_move_error = (
@@ -1393,9 +1423,9 @@ class RipperEngine:
                 return False
             return True
         except Exception as e:
-            if os.path.exists(temp_dest):
+            if os.path.exists(io_temp_dest):
                 try:
-                    os.remove(temp_dest)
+                    os.remove(io_temp_dest)
                 except Exception:
                     pass
             on_log(f"ERROR moving file: {e}")
@@ -1538,11 +1568,12 @@ class RipperEngine:
                 log_file = log_file + '.txt'
             log_dir = os.path.dirname(log_file)
             if log_dir:
-                os.makedirs(log_dir, exist_ok=True)
+                os.makedirs(self._io_path(log_dir), exist_ok=True)
             max_size = 5 * 1024**3
-            if (os.path.exists(log_file) and
-                    os.path.getsize(log_file) >= max_size):
-                with open(log_file, "r", encoding="utf-8") as f:
+            io_log_file = self._io_path(log_file)
+            if (os.path.exists(io_log_file) and
+                    os.path.getsize(io_log_file) >= max_size):
+                with open(io_log_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                 start_date = lines[0][:10] if lines else "unknown"
                 end_date   = lines[-1][:10] if lines else "unknown"
@@ -1550,9 +1581,9 @@ class RipperEngine:
                     f"rip_log_{start_date}_to_{end_date}.txt"
                 )
                 shutil.move(
-                    log_file, os.path.join(log_dir, old_name)
+                    io_log_file, self._io_path(os.path.join(log_dir, old_name))
                 )
-            with open(log_file, "a", encoding="utf-8") as f:
+            with open(io_log_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
                 f.write(
                     f"Session: "

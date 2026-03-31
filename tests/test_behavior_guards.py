@@ -43,7 +43,7 @@ class ScriptedSetupGUI(DummyGUI):
         self._inputs = iter(scripted_inputs)
         self._confirms = iter(scripted_confirms)
 
-    def ask_input(self, _label, _prompt, default_value="", show_browse=False):
+    def ask_input(self, _label, _prompt, default_value=""):
         return next(self._inputs)
 
     def ask_yesno(self, _prompt):
@@ -719,8 +719,8 @@ def test_prompt_run_path_overrides_accepts_custom_existing_path(tmp_path):
 
     responses = iter([custom_temp])
 
-    def ask_input(_label, _prompt, show_browse=False, default_value=""):
-        _ = (show_browse, default_value)
+    def ask_input(_label, _prompt, default_value=""):
+        _ = default_value
         return next(responses)
 
     controller.gui.ask_input = ask_input

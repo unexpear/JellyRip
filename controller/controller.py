@@ -279,6 +279,21 @@ class RipperController:
         def _norm(p):
             return os.path.normcase(os.path.abspath(os.path.normpath(str(p))))
 
+        def _is_writable(path):
+            probe = os.path.join(path, f".jellyrip_probe_{os.getpid()}")
+            try:
+                with open(probe, "w") as f:
+                    f.write("")
+                os.remove(probe)
+                return True
+            except OSError:
+                return False
+
+        _SYSTEM_PATH_RE = re.compile(
+            r'^[A-Za-z]:\\(Windows|Program Files|Program Files \(x86\))(\\|$)',
+            re.IGNORECASE,
+        )
+
         temp_n = _norm(temp) if temp else None
         movies_n = _norm(movies) if movies else None
         tv_n = _norm(tv) if tv else None
@@ -288,18 +303,11 @@ class RipperController:
         if temp_n and tv_n and temp_n == tv_n:
             return "Temp and TV folder cannot be the same"
 
-        blocked = [
-            _norm(r"C:\Windows"),
-            _norm(r"C:\Program Files"),
-            _norm(r"C:\Program Files (x86)"),
-        ]
-
         for p in [x for x in [temp_n, movies_n, tv_n] if x]:
-            for b in blocked:
-                if p == b or p.startswith(b + os.sep):
-                    return f"Blocked system path: {p}"
+            if _SYSTEM_PATH_RE.match(p):
+                return f"Blocked system path: {p}"
 
-            if os.path.exists(p) and (not os.access(p, os.W_OK)):
+            if os.path.exists(p) and not _is_writable(p):
                 return f"Path not writable: {p}"
 
         return None
@@ -330,8 +338,7 @@ class RipperController:
             while True:
                 entered = self.gui.ask_input(
                     f"{label} (Run Override)",
-                    "Select folder path (Skip = keep default):",
-                    show_browse=True,
+                    "Enter folder path (Skip = keep default):",
                     default_value=default_path,
                 )
                 if entered is None:
@@ -976,6 +983,14 @@ class RipperController:
                     f"{size_mb:.0f} MB | {mm:02d}:{ss:02d}"
                 )
                 vlc = shutil.which("vlc")
+                if not vlc:
+                    for candidate in [
+                        r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+                        r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+                    ]:
+                        if os.path.isfile(candidate):
+                            vlc = candidate
+                            break
                 if vlc:
                     subprocess.Popen([vlc, latest])
                     self.log(
@@ -983,9 +998,9 @@ class RipperController:
                     )
                 else:
                     self.log(
-                        "Preview ready, but VLC was not found in PATH. "
-                        f"File: {latest}"
+                        f"VLC not found; opening in default player: {os.path.basename(latest)}"
                     )
+                    os.startfile(latest)
             except Exception as e:
                 self.log(f"Preview open failed: {e}")
             finally:
@@ -2653,8 +2668,9 @@ class RipperController:
     def run_organize(self):
         cfg = self.engine.cfg
 
-        folder_path = self.gui.ask_folder(
-            "Select folder with raw .mkv files"
+        folder_path = self.gui.ask_input(
+            "Organize",
+            "Enter path to folder with raw .mkv files:",
         )
         if not folder_path:
             self.log("Cancelled.")
@@ -2859,8 +2875,9 @@ class RipperController:
                 "already there and suggest the next episode(s).\n\n"
                 "Choose NO to start a new folder from scratch."
             ):
-                chosen = self.gui.ask_folder(
-                    "Select existing show folder (e.g. TV/Breaking Bad)"
+                chosen = self.gui.ask_input(
+                    "Library Folder",
+                    "Enter path to existing show folder (e.g. TV/Breaking Bad):",
                 )
                 if chosen and os.path.isdir(chosen):
                     library_root = os.path.normpath(chosen)

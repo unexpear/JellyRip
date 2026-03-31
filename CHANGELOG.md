@@ -2,6 +2,15 @@
 
 ## [1.0.9] - 2026-03-29
 
+### Windows UX + path hardening
+
+- Removed browse UI flows for now (Settings browse buttons and inline input browse) to keep path entry deterministic while Windows dialog stability work is deferred.
+- Added `CREATE_NO_WINDOW` flags to Windows subprocess calls to stop black console-window flashes during MakeMKV/ffprobe/PowerShell operations.
+- Update installer launch now uses `os.startfile(...)` with a pre-launch UAC notice so elevation is handed off to Windows correctly.
+- Added Windows reserved-name and empty-name guards in `clean_name` (e.g. `NUL`, `COM1`) to avoid invalid or dangerous filenames.
+- Added Windows-friendly path validation using probe-write checks (instead of `os.access(..., os.W_OK)`) and drive-letter-agnostic system-path blocking.
+- Added long-path (`\\?\\`) file-I/O handling in the engine for move/copy/log/metadata operations so deep TV paths do not fail at 260 characters.
+
 ### Docs / release metadata sync
 
 - README build instructions now use `main.py`, matching the current packaged entrypoint.

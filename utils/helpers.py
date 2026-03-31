@@ -4,12 +4,27 @@ import os
 import platform
 import re
 import subprocess
+import sys as _sys
 from datetime import datetime
+
+_POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+_WINDOWS_RESERVED = re.compile(
+    r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)',
+    re.IGNORECASE,
+)
 
 
 def clean_name(name):
     name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '', name)
-    return name.strip().rstrip(". ")
+    name = name.strip().rstrip(". ")
+    if not name:
+        return "Title_Unknown"
+    # Append underscore to Windows reserved device names.
+    stem, _, ext = name.partition(".")
+    if _WINDOWS_RESERVED.match(stem):
+        name = stem + "_" + ("." + ext if ext else "")
+    return name
 
 
 def make_rip_folder_name():
@@ -59,7 +74,8 @@ def get_available_drives(makemkvcon_path):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            **_POPEN_FLAGS
         )
         try:
             for line in iter(proc.stdout.readline, ""):
