@@ -1971,17 +1971,23 @@ class RipperController:
         unattended batch session.
         """
         if disc_number == 1:
-            self.gui.show_info(
-                "Insert Disc",
-                f"Insert disc {disc_number}/{total} and click OK."
+            self.log(
+                f"Insert disc {disc_number}/{total} when ready..."
             )
             time.sleep(2)  # drive spin-up / mount stabilization
         else:
-            self.gui.show_info(
-                "Swap Disc",
-                "Remove current disc (tray open/close), then insert the "
-                f"next disc ({disc_number}/{total}) and click OK."
+            self.log(
+                "Swap disc now: remove current disc and insert "
+                f"disc {disc_number}/{total}."
             )
+
+            # Fast-swap tolerance: if user already swapped while prior UI was
+            # visible, accept a readable unique fingerprint immediately.
+            quick_fp = self._build_disc_fingerprint()
+            if quick_fp and quick_fp not in seen_fingerprints:
+                seen_fingerprints.add(quick_fp)
+                self.log("Detected new disc already inserted.")
+                return quick_fp
 
             self.log("Waiting for disc removal...")
             removed = self._wait_for_disc_state(
@@ -2105,6 +2111,7 @@ class RipperController:
 
         seen_fingerprints = set()
         disc_number = 1
+        verify_failures_for_slot = 0
         while disc_number <= total:
             if self.engine.abort_event.is_set():
                 self.log("Unattended dump aborted.")
@@ -2114,12 +2121,20 @@ class RipperController:
                 seen_fingerprints, disc_number, total
             )
             if fingerprint is None:
-                if self.gui.ask_yesno(
-                    "Could not verify a new disc. Try again for this slot?"
-                ):
+                verify_failures_for_slot += 1
+                if verify_failures_for_slot < 3:
+                    self.log(
+                        "Could not verify a new disc for this slot. "
+                        f"Retrying automatically ({verify_failures_for_slot}/3)."
+                    )
                     continue
+                self.report(
+                    f"Disc {disc_number}: verification failed after 3 attempts."
+                )
                 self.log("Cancelled unattended dump.")
                 break
+
+            verify_failures_for_slot = 0
 
             if fingerprint == "duplicate":
                 duplicate_action = self._resolve_duplicate_dump_disc(
