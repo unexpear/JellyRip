@@ -275,7 +275,7 @@ class JellyRipperGUI(tk.Tk):
         self.update_btn.pack(side="right", padx=4)
         self.settings_btn = tk.Button(
             util_frame, text="⚙  Settings",
-            command=self.open_settings,
+            command=self._open_settings_safe,
             bg="#21262d", fg="#8b949e",
             font=("Segoe UI", 10), relief="flat"
         )
@@ -1698,6 +1698,25 @@ class JellyRipperGUI(tk.Tk):
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
                 return
+
+    def _open_settings_safe(self):
+        """Prevent callback exceptions from tearing down the main window."""
+        try:
+            self.open_settings()
+        except Exception as e:
+            self._settings_window = None
+            try:
+                self.controller.log(f"Fatal settings callback error: {e}")
+            except Exception:
+                pass
+            try:
+                self.show_error("Settings Error", f"Could not open Settings:\n{e}")
+            except Exception:
+                messagebox.showerror(
+                    "Settings Error",
+                    f"Could not open Settings:\n{e}",
+                    parent=self,
+                )
 
     def open_settings(self):
         if self.rip_thread and self.rip_thread.is_alive():
