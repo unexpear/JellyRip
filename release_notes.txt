@@ -1,35 +1,31 @@
-﻿## JellyRip v1.0.9 Release Notes
+﻿## JellyRip v1.0.10 Release Notes
 
 ### Download
-- Direct download (v1.0.9): https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRip.exe
-- Installer (v1.0.9): https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.9
-- Latest releases list: https://github.com/unexpear/JellyRip/releases
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.10
+- All releases: https://github.com/unexpear/JellyRip/releases
 
-### What's New in 1.0.9
+### What's New in 1.0.10
 
-Safety
-- ask_yesno now has a 300s safety timeout and abort check (was unbounded).
-- ask_input serialised with a lock — concurrent prompts no longer clobber each other.
+Tool discovery and validation
+- Unified resolver for MakeMKV and ffprobe: saved config -> common paths -> PATH.
+- validate_makemkvcon and validate_ffprobe run a real probe command before accepting a path.
+- Settings save refuses to overwrite a working tool path with an unvalidated replacement.
+- Engine validate_tools routes both dependencies through the resolver layer.
 
-Reliability
-- Version printed at start of every rip session in log for unambiguous debug.
-- rip_selected_titles returns failure on per-title failures, not just full abort.
-- Session state machine reset and completed correctly in TV/movie disc flow.
+Multi-disc and extras workflow
+- Multi-disc dump mode renamed from Unattended to Dump All.
+- Between-disc confirmation prompt (no default timeout).
+- Unrecognized discs can be bypassed or stopped instead of retry-only.
+- Extras selection changed from yes/no to multi-select picker.
+- Configurable prompt auto-timeouts and disc-swap timeouts in Advanced settings.
 
-Security
-- Auto-update uses unique temp dir per download (prevents TOCTOU).
-- PowerShell signature check uses -LiteralPath + param block (no path injection).
+Settings crash hardening
+- Settings open callback wrapped in safety handler; exceptions show error dialog not crash.
 
-Code quality (1.0.8 + 1.0.9)
-- _normalize_rip_result scans MKV files recursively (catches MakeMKV subdirs).
-- get_available_drives has 30s timeout (stalled MakeMKV no longer hangs app).
-- check_disk_space no longer creates directories as side effect.
-- Corrupt config now logs visible warning instead of silently resetting.
-- Wildcard imports replaced with explicit imports throughout.
-- handle_fallback simplified, hasattr duck-checks removed.
-- DummyGUI in tests has all required stub methods.
-
-Full changelog: https://github.com/unexpear/JellyRip/blob/main/CHANGELOG.md
-
-Build note: generated dist binaries are release assets and are not committed to git.
+Project and documentation
+- Added CONTRIBUTING.md, SECURITY.md, pyproject.toml, GitHub Actions CI workflow.
+- Added docs/architecture.md and docs/repository-layout.md.
+- Version strings synchronized across all files.
+- Fixed Unicode mojibake in controller.

@@ -2,7 +2,7 @@
 ; Compile with: ISCC installer\JellyRip.iss
 
 #define MyAppName "JellyRip"
-#define MyAppVersion "1.0.9"
+#define MyAppVersion "1.0.10"
 #define MyAppPublisher "unexpear"
 #define MyAppURL "https://github.com/unexpear/JellyRip"
 #define MyAppExeName "JellyRip.exe"

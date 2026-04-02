@@ -24,9 +24,8 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ### From GitHub release (recommended, currently `v1.0.10`)
 
-1. Download the exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
-2. If you want the installer build, open [latest release assets](https://github.com/unexpear/JellyRip/releases/latest) and download the installer from that page.
-3. If SmartScreen/Defender flags the file, whitelist the download folder first (common PyInstaller false positive).
+1. Go to the [latest release page](https://github.com/unexpear/JellyRip/releases/latest) and download `JellyRip.exe` (and optionally `JellyRipInstaller.exe`).
+2. If SmartScreen/Defender flags the file, whitelist the download folder first (common PyInstaller false positive).
 
 ### From source (git clone)
 
