@@ -1,45 +1,39 @@
-﻿# JellyRip v1.0.9 Release Notes
+﻿# JellyRip v1.0.10 Release Notes
 
 ## Download
 
-- Direct download (v1.0.9): [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRip.exe)
-- Installer (v1.0.9): [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRipInstaller.exe)
-- Direct download (latest): [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
-- Installer (latest): [JellyRipInstaller.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRipInstaller.exe)
-- Direct URL copy: `https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRip.exe`
-- Installer URL copy: `https://github.com/unexpear/JellyRip/releases/download/v1.0.9/JellyRipInstaller.exe`
-- Release page: [v1.0.9 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.9)
-- Release page URL copy: `https://github.com/unexpear/JellyRip/releases/tag/v1.0.9`
-- Latest releases list: [all releases](https://github.com/unexpear/JellyRip/releases)
-- Releases URL copy: `https://github.com/unexpear/JellyRip/releases`
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRipInstaller.exe)
+- Release page: [v1.0.10 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.10)
+- All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
-## What's New in 1.0.9
+## What's New in 1.0.10
 
-### Safety
+### Tool discovery and validation
 
-- `ask_yesno` now has a 300-second safety timeout and abort-event check — previously the wait loop was unbounded and could hang the app permanently if the UI missed a callback.
-- `ask_input` is now serialised with a lock — concurrent prompts no longer clobber each other's result.
+- Unified tool resolver for MakeMKV and ffprobe: checks saved config → common install paths → PATH environment variable.
+- `validate_makemkvcon` and `validate_ffprobe` run a real probe command before accepting a tool path.
+- Settings save now refuses to overwrite a working tool path with an unvalidated replacement.
+- Engine `validate_tools` routes both dependencies through the resolver layer so PATH-only installs and custom locations are found automatically.
 
-### Reliability
+### Multi-disc and extras workflow
 
-- Version number is now printed at the start of every rip session in the log (`=== JellyRip v1.0.9 — session start ===`) so old logs are unambiguous.
-- `rip_selected_titles` now returns failure when individual titles fail, not just on full abort.
-- Session state machine is now correctly reset and completed in the TV/movie disc flow — session summary warnings were previously silently skipped.
+- Multi-disc dump mode renamed from "Unattended" to "Dump All" in UI labels and logs.
+- Multi-disc dump flow now pauses with an explicit between-disc confirmation prompt (no default timeout).
+- Unrecognized discs during multi-disc dump can now be bypassed or stopped instead of retry-only.
+- Extras selection changed from yes/no keep-all to a multi-select picker for individual titles.
+- Configurable prompt auto-timeouts and disc-swap timeouts in Settings → Advanced.
 
-### Security
+### Settings crash hardening
 
-- Auto-update download now uses a unique temp directory per download (prevents TOCTOU path-prediction attacks).
-- PowerShell signature check now uses `-LiteralPath` with a parameter block — the file path is no longer interpolated into the command string.
+- Settings open callback is now wrapped in a safety handler so an exception during settings initialization shows an error dialog instead of crashing the app.
 
-### Code quality (1.0.8 + 1.0.9)
+### Project and documentation
 
-- `_normalize_rip_result` now scans MKV files recursively — MakeMKV subdirectory outputs are no longer silently missed.
-- `get_available_drives` now has a 30-second timeout — a stalled MakeMKV can no longer hang the app on startup.
-- `check_disk_space` no longer creates directories as a side effect.
-- Corrupt config file now logs a visible warning instead of silently resetting to defaults.
-- All wildcard `from shared.runtime import *` replaced with explicit imports.
-- `handle_fallback` simplified — duck-check `hasattr` guards removed.
-- `DummyGUI` in tests now has all required stub methods.
+- Added `CONTRIBUTING.md`, `SECURITY.md`, `pyproject.toml`, and a GitHub Actions CI workflow.
+- Added `docs/architecture.md` and `docs/repository-layout.md`.
+- Version strings synchronized across `shared/runtime.py`, `pyproject.toml`, `installer/JellyRip.iss`, and CHANGELOG.
+- Fixed Unicode mojibake in controller (corrupted arrow character).
 
 ## Previous versions
 
