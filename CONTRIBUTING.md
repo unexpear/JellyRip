@@ -1,16 +1,50 @@
 # Contributing to JellyRip
 
-JellyRip is a Windows-first desktop tool for MakeMKV-assisted ripping and Jellyfin library organization. The project is still pre-alpha, so the goal of contributions is to improve safety, predictability, and test coverage before adding complexity.
+> **This project is still being built.**
+> The core workflows exist and mostly work, but the codebase is not stable yet.
+> The right contribution right now is **fixes, not features**.
+
+JellyRip is a Windows-first desktop tool for MakeMKV-assisted ripping and Jellyfin library organization.
+
+## What stage are we at?
+
+Pre-alpha. The app runs and rips discs correctly in tested configurations, but:
+
+- edge cases and hardware combinations are still being discovered
+- the workflow layer is being hardened as real-world usage surfaces bugs
+- test coverage for live-rip paths is incomplete
+- the release process is still being standardized
+
+This means the codebase needs **reliability work** more than it needs new capabilities.
+
+## What to contribute
+
+**Good contributions right now:**
+
+- bug fixes for ripping, file handling, or path edge cases
+- regression tests for issues that have been reported or fixed
+- small correctness improvements that are clearly safe
+- documentation corrections or missing setup details
+- tester feedback that identifies specific failure modes
+
+**Not the right time for:**
+
+- new ripping modes or UI workflows
+- refactors that change behavior across multiple files
+- features that require unstable external integrations
+- anything that makes the codebase harder for a solo maintainer to follow
+
+If you want to add something larger, open an issue first and describe the problem it solves. Building on a broken foundation is harder than fixing it first.
 
 ## Priorities
 
-Focus changes on:
+Fix focus order:
 
-- ripping correctness and failure handling
-- Windows UX stability
-- path safety and file handling
-- regression tests for real user-reported issues
-- documentation that helps testers reproduce workflows
+1. ripping correctness and failure handling
+2. Windows path safety and file handling
+3. regression tests for real user-reported issues
+4. Windows UX stability and prompt clarity
+5. documentation that helps testers reproduce failure modes
 
 Avoid mixing unrelated refactors with behavior changes unless the refactor is required to fix the issue safely.
 
