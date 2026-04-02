@@ -198,12 +198,15 @@ class JellyRipperGUI(tk.Tk):
             else:
                 self.log_text.insert("end", text)
             # Trim widget to prevent unbounded memory growth in long sessions.
-            line_count = int(self.log_text.index("end-1c").split(".")[0])
+            line_count = int(self.log_text.index("end").split(".")[0]) - 1
             cap = int(self.cfg.get("opt_log_cap_lines", 300000))
             if line_count > cap:
                 trim = int(self.cfg.get("opt_log_trim_lines", 200000))
                 self.log_text.delete("1.0", f"{line_count - trim}.0")
-            self.log_text.see("end")
+            # Only auto-scroll if user is already near the bottom.
+            visible_end = self.log_text.yview()[1]
+            if visible_end > 0.95:
+                self.log_text.see("end")
             self.log_text.config(state="disabled")
 
     def build_interface(self):
