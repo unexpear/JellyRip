@@ -6,7 +6,7 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ## Project Status
 
-- Current stable line: `v1.0.10`
+- Current stable line: `v1.0.9` (latest published release)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -22,7 +22,7 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ## Quick Start
 
-### From GitHub release (recommended)
+### From GitHub release (recommended, currently `v1.0.9`)
 
 1. Download the exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
 2. If you want the installer build, open [latest release assets](https://github.com/unexpear/JellyRip/releases/latest) and download the installer from that page.
