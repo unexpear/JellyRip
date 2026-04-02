@@ -25,7 +25,7 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 ### From GitHub release (recommended)
 
 - Latest exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
-- Latest installer: [JellyRipInstaller.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRipInstaller.exe)
+- Latest installer: [Download from latest release assets](https://github.com/unexpear/JellyRip/releases/latest)
 - Latest release page: [GitHub Releases](https://github.com/unexpear/JellyRip/releases/latest)
 - If SmartScreen/Defender flags the file, whitelist the download folder first (common PyInstaller false positive)
 
