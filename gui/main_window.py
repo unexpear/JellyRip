@@ -197,6 +197,12 @@ class JellyRipperGUI(tk.Tk):
                 self.log_text.insert("end", text, tag)
             else:
                 self.log_text.insert("end", text)
+            # Trim widget to prevent unbounded memory growth in long sessions.
+            line_count = int(self.log_text.index("end-1c").split(".")[0])
+            cap = int(self.cfg.get("opt_log_cap_lines", 300000))
+            if line_count > cap:
+                trim = int(self.cfg.get("opt_log_trim_lines", 200000))
+                self.log_text.delete("1.0", f"{line_count - trim}.0")
             self.log_text.see("end")
             self.log_text.config(state="disabled")
 
@@ -545,7 +551,10 @@ class JellyRipperGUI(tk.Tk):
                     self.controller.log(f"Update download: {mb} MB")
 
             try:
-                download_asset(asset_url, destination, on_progress)
+                download_asset(
+                    asset_url, destination, on_progress,
+                    abort_event=self.engine.abort_event,
+                )
             except Exception as e:
                 self.controller.log(f"Update download failed: {e}")
                 shutil.rmtree(update_dir, ignore_errors=True)

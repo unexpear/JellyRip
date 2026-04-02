@@ -74,7 +74,8 @@ def fetch_latest_release(repo="unexpear/JellyRip", timeout=8):
     }
 
 
-def download_asset(url, destination_path, progress_callback=None, timeout=15):
+def download_asset(url, destination_path, progress_callback=None, timeout=15,
+                   abort_event=None):
     """Download a release asset to destination_path."""
     req = urllib.request.Request(
         url,
@@ -85,6 +86,8 @@ def download_asset(url, destination_path, progress_callback=None, timeout=15):
         written = 0
         with open(destination_path, "wb") as out:
             while True:
+                if abort_event and abort_event.is_set():
+                    raise InterruptedError("Download aborted by user")
                 chunk = resp.read(1024 * 256)
                 if not chunk:
                     break
