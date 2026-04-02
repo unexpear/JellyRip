@@ -6,7 +6,7 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ## Project Status
 
-- Current stable line: `v1.0.9`
+- Current stable line: `v1.0.10`
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -22,18 +22,23 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ## Quick Start
 
-### Download and run
+### From GitHub release (recommended)
 
 - Latest exe: [JellyRip.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRip.exe)
 - Latest installer: [JellyRipInstaller.exe latest](https://github.com/unexpear/JellyRip/releases/latest/download/JellyRipInstaller.exe)
 - Latest release page: [GitHub Releases](https://github.com/unexpear/JellyRip/releases/latest)
+- If SmartScreen/Defender flags the file, whitelist the download folder first (common PyInstaller false positive)
 
-### Run from source
+### From source (git clone)
 
 ```bash
+git clone https://github.com/unexpear/JellyRip.git
+cd JellyRip
 pip install -r requirements.txt
 python main.py
 ```
+
+First launch tip: open **Settings** and confirm MakeMKV and ffprobe paths before the first rip.
 
 ## Requirements
 
