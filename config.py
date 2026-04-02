@@ -121,15 +121,48 @@ def resolve_makemkvcon(configured_path):
     return resolve_tool(configured_path, fallbacks, "makemkvcon")
 
 
+def _resolve_ffprobe_from_dir(dirpath):
+    """Given a directory, look for ffprobe.exe inside it."""
+    if not dirpath or not os.path.isdir(dirpath):
+        return None
+    for subpath in [
+        "ffprobe.exe",
+        os.path.join("bin", "ffprobe.exe"),
+    ]:
+        candidate = os.path.join(dirpath, subpath)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def resolve_ffprobe(configured_path):
-    fallbacks = [
-        r"C:\Program Files\HandBrake\ffprobe.exe",
-        r"C:\Program Files (x86)\HandBrake\ffprobe.exe",
-        r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
-        r"C:\Program Files (x86)\ffmpeg\bin\ffprobe.exe",
-        r"C:\ffmpeg\bin\ffprobe.exe",
-    ]
-    return resolve_tool(configured_path, fallbacks, "ffprobe")
+    """Resolve ffprobe. Accepts a direct exe path OR a directory (HandBrake/ffmpeg folder)."""
+    # If configured path is a direct exe, use it
+    if _is_file(configured_path):
+        return configured_path
+    # If configured path is a directory, look for ffprobe inside it
+    found = _resolve_ffprobe_from_dir(configured_path)
+    if found:
+        return found
+    # Try common install directories
+    for d in [
+        r"C:\Program Files\HandBrake",
+        r"C:\Program Files (x86)\HandBrake",
+        r"C:\Program Files\ffmpeg",
+        r"C:\Program Files (x86)\ffmpeg",
+        r"C:\Program Files\ffmpeg\bin",
+        r"C:\Program Files (x86)\ffmpeg\bin",
+        r"C:\ffmpeg",
+        r"C:\ffmpeg\bin",
+    ]:
+        found = _resolve_ffprobe_from_dir(d)
+        if found:
+            return found
+    # PATH lookup
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+    return configured_path
 
 __all__ = [
     "CONFIG_FILE",

@@ -61,7 +61,7 @@ _DEFAULT_MOVIES = (
 
 DEFAULTS = {
     "makemkvcon_path": r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
-    "ffprobe_path": r"C:\Program Files\HandBrake\ffprobe.exe",
+    "ffprobe_path": r"C:\Program Files\HandBrake",
     "temp_folder": _DEFAULT_TEMP,
     "tv_folder": _DEFAULT_TV,
     "movies_folder": _DEFAULT_MOVIES,
