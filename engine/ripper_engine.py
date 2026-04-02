@@ -135,8 +135,18 @@ class RipperEngine:
                 f"\n\nDownload ffmpeg from https://ffmpeg.org and point"
                 f"\nSettings \u2192 Paths \u2192 ffprobe folder to its bin directory."
             )
+        self._resolved_makemkvcon = makemkvcon
         self._ffprobe_source = ffprobe_source
         return True, ""
+
+    def _get_makemkvcon(self):
+        """Return resolved makemkvcon path (set by validate_tools)."""
+        cached = getattr(self, "_resolved_makemkvcon", None)
+        if cached:
+            return cached
+        return resolve_makemkvcon(
+            os.path.normpath(self.cfg["makemkvcon_path"])
+        )
 
     def get_disc_target(self):
         """Return MakeMKV disc selector for the configured drive index."""
@@ -309,7 +319,7 @@ class RipperEngine:
 
         Returns list sorted best-first, or None on abort/error.
         """
-        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon  = self._get_makemkvcon()
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
             self.cfg.get("opt_makemkv_global_args", ""),
@@ -521,7 +531,7 @@ class RipperEngine:
         TV/Movie disc flows use size_bytes from scan_disc() instead,
         avoiding a second full pass over the disc.
         """
-        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon  = self._get_makemkvcon()
         disc_target = self.get_disc_target()
         if prefer_cached:
             scan_age = time.time() - float(self._last_scan_timestamp or 0.0)
@@ -948,7 +958,7 @@ class RipperEngine:
 
     def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
         """Rip a short disposable preview clip for a single title."""
-        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon  = self._get_makemkvcon()
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
             self.cfg.get("opt_makemkv_global_args", ""),
@@ -980,7 +990,7 @@ class RipperEngine:
 
     def rip_all_titles(self, rip_path, on_progress, on_log):
         """Rip all disc titles with retry flags and stall-aware process handling."""
-        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon  = self._get_makemkvcon()
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
             self.cfg.get("opt_makemkv_global_args", ""),
@@ -1032,7 +1042,7 @@ class RipperEngine:
     def rip_selected_titles(self, rip_path, title_ids,
                             on_progress, on_log):
         """Rip selected title IDs with per-title retries and aggregated progress."""
-        makemkvcon  = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon  = self._get_makemkvcon()
         disc_target = self.get_disc_target()
         global_args = parse_cli_args(
             self.cfg.get("opt_makemkv_global_args", ""),
