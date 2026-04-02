@@ -2416,7 +2416,7 @@ class JellyRipperGUI(tk.Tk):
 
         src = getattr(self.engine, "_ffprobe_source", "")
         if src:
-            self.log(f"ffprobe resolved via: {src}")
+            self.controller.log(f"ffprobe resolved via: {src}")
 
         temp_folder = os.path.normpath(
             self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
