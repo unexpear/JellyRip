@@ -1,4 +1,4 @@
-"""Controller layer implementation."""
+﻿"""Controller layer implementation."""
 
 import glob
 import json
@@ -25,14 +25,14 @@ from utils.state_machine import SessionState, SessionStateMachine
 class RipperController:
     def __init__(self, engine, gui):
         """
-        LAYER 2 — Controller
+        LAYER 2 â€” Controller
 
         Workflow orchestration layer. Calls engine methods and GUI methods
         but owns neither. No tkinter widgets, no subprocess calls.
 
         Owns the session flow for each ripping mode:
           - Temp folder management and resume detection
-          - scan_with_retry() — single choke point for all disc scanning
+          - scan_with_retry() â€” single choke point for all disc scanning
           - Disc loop (insert → scan → select → rip → analyze → move)
           - Session logging and failure reporting
 
@@ -77,7 +77,7 @@ class RipperController:
         for tid in self.engine.last_degraded_titles:
             self.report(
                 f"Title {tid}: MakeMKV read errors but output produced "
-                f"(degraded rip — validated downstream by ffprobe)"
+                f"(degraded rip â€” validated downstream by ffprobe)"
             )
 
     def _reset_state_machine(self):
@@ -150,7 +150,7 @@ class RipperController:
                 if self.session_report:
                     self.log("Session summary: Completed with warnings.")
                     self.log("=" * 44)
-                    self.log("SESSION SUMMARY — WARNINGS")
+                    self.log("SESSION SUMMARY â€” WARNINGS")
                     self.log("=" * 44)
                     for line in self.session_report:
                         self.log(f"  {line}")
@@ -169,7 +169,7 @@ class RipperController:
             )
             return
         self.log("=" * 44)
-        self.log("SESSION SUMMARY — FAILURES/WARNINGS")
+        self.log("SESSION SUMMARY â€” FAILURES/WARNINGS")
         self.log("=" * 44)
         for line in self.session_report:
             self.log(f"  {line}")
@@ -179,7 +179,7 @@ class RipperController:
         """
         Single choke point for all disc scanning.
         Wraps engine.scan_disc() with UI state management and one
-        automatic retry. All run_* methods must use this — never
+        automatic retry. All run_* methods must use this â€” never
         call engine.scan_disc() directly.
         """
         for attempt in range(3):
@@ -203,7 +203,7 @@ class RipperController:
 
             if result is None:
                 if attempt < 2:
-                    self.log("Scan failed — retrying...")
+                    self.log("Scan failed â€” retrying...")
                     time.sleep(2 + attempt)
                 continue
 
@@ -269,7 +269,7 @@ class RipperController:
     def _log_session_paths(self):
         if not self.session_paths:
             return
-        self.log(f"=== JellyRip v{__version__} — session start ===")
+        self.log(f"=== JellyRip v{__version__} â€” session start ===")
         self.log(f"Temp:   {self.session_paths.get('temp')}")
         self.log(f"Movies: {self.session_paths.get('movies')}")
         self.log(f"TV:     {self.session_paths.get('tv')}")
@@ -280,6 +280,9 @@ class RipperController:
             return os.path.normcase(os.path.abspath(os.path.normpath(str(p))))
 
         def _is_writable(path):
+            # Fast pre-check keeps behavior explicit and testable on all OSes.
+            if not os.access(path, os.W_OK):
+                return False
             probe = os.path.join(path, f".jellyrip_probe_{os.getpid()}")
             try:
                 with open(probe, "w") as f:
@@ -351,7 +354,7 @@ class RipperController:
 
                 if os.path.isdir(chosen):
                     resolved[key] = chosen
-                    self.log(f"Run override — {label}: {chosen}")
+                    self.log(f"Run override â€” {label}: {chosen}")
                     break
 
                 if self.gui.ask_yesno(
@@ -360,7 +363,7 @@ class RipperController:
                     try:
                         os.makedirs(chosen, exist_ok=True)
                         resolved[key] = chosen
-                        self.log(f"Run override — {label}: {chosen}")
+                        self.log(f"Run override â€” {label}: {chosen}")
                         break
                     except Exception as e:
                         self.log(
@@ -436,11 +439,11 @@ class RipperController:
             try:
                 size_gb = os.path.getsize(f) / (1024**3)
                 self.log(
-                    f"Ripped file: {os.path.basename(f)} — {size_gb:.2f} GB"
+                    f"Ripped file: {os.path.basename(f)} â€” {size_gb:.2f} GB"
                 )
             except Exception as e:
                 self.log(
-                    f"Ripped file: {os.path.basename(f)} — size unavailable ({e})"
+                    f"Ripped file: {os.path.basename(f)} â€” size unavailable ({e})"
                 )
 
     def _title_id_from_filename(self, path):
@@ -545,7 +548,7 @@ class RipperController:
         """Hard guard: raises if session_paths has not been initialized."""
         if not self.session_paths:
             raise RuntimeError(
-                "session_paths not initialized — "
+                "session_paths not initialized â€” "
                 "call _init_session_paths() first"
             )
 
@@ -567,9 +570,9 @@ class RipperController:
 
         Tiers:
           < 50%  → severe warning (TRUNCATION ERROR when BOTH dur AND size agree)
-          50–75% → likely truncation warning
-          75–90% → minor mismatch warning
-          ≥ 90%  → normal variance, no warning
+          50â€“75% → likely truncation warning
+          75â€“90% → minor mismatch warning
+          â‰¥ 90%  → normal variance, no warning
 
         Expected size values below 200 MB are treated as unreliable disc scan
         metadata and excluded from size-based escalation.
@@ -580,8 +583,8 @@ class RipperController:
         In strict mode (opt_strict_mode), any tier below "minor" (< 75%)
         escalates to a hard failure.
         """
-        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB — below this, size is noise
-        _SHORT_TITLE = 600                  # < 600 s — widen tiers
+        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB â€” below this, size is noise
+        _SHORT_TITLE = 600                  # < 600 s â€” widen tiers
 
         if not mkv_files:
             return False
@@ -680,29 +683,29 @@ class RipperController:
             if dur_ratio < t_severe:
                 if size_ratio is not None and size_ratio < t_severe:
                     self.report(
-                        f"TRUNCATION ERROR: {label} — "
+                        f"TRUNCATION ERROR: {label} â€” "
                         f"duration {total_dur / 60:.1f} min "
                         f"(expected ~{exp_dur / 60:.1f} min, "
                         f"{dur_ratio * 100:.0f}%) AND "
                         f"size {total_bytes // (1024**2)} MB "
                         f"(expected ~{int(exp_size) // (1024**2)} MB, "
-                        f"{size_ratio * 100:.0f}%) — "
+                        f"{size_ratio * 100:.0f}%) â€” "
                         f"both signals indicate corrupt/incomplete rip"
                     )
                     if strict:
                         strict_fail = True
                 else:
                     self.report(
-                        f"WARNING: Severe duration mismatch — {label}: "
+                        f"WARNING: Severe duration mismatch â€” {label}: "
                         f"actual {total_dur / 60:.1f} min, "
                         f"expected ~{exp_dur / 60:.1f} min "
-                        f"({dur_ratio * 100:.0f}%) — possible truncation"
+                        f"({dur_ratio * 100:.0f}%) â€” possible truncation"
                     )
                     if strict:
                         strict_fail = True
             elif dur_ratio < t_likely:
                 self.report(
-                    f"WARNING: Likely truncation — {label}: "
+                    f"WARNING: Likely truncation â€” {label}: "
                     f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
@@ -716,7 +719,7 @@ class RipperController:
                     strict_fail = True
             else:
                 self.report(
-                    f"WARNING: Minor duration mismatch — {label}: "
+                    f"WARNING: Minor duration mismatch â€” {label}: "
                     f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
@@ -724,7 +727,7 @@ class RipperController:
 
         if strict_fail:
             self.log(
-                "ERROR: Strict mode — truncation warning escalated to failure."
+                "ERROR: Strict mode â€” truncation warning escalated to failure."
             )
             return False
 
@@ -742,11 +745,11 @@ class RipperController:
         ]
 
         if self.engine.abort_flag:
-            self.log("Rip aborted — treating session as failure.")
+            self.log("Rip aborted â€” treating session as failure.")
         if failed_titles:
             self.log(f"Titles failed: {failed_titles}")
         if not mkv_files:
-            self.log("No MKV files produced — treating as failure.")
+            self.log("No MKV files produced â€” treating as failure.")
 
         self.log(
             "Failure gate: "
@@ -763,7 +766,7 @@ class RipperController:
         )
 
         if len(valid_files) != len(mkv_files):
-            self.log("One or more MKV files are invalid — treating as failure.")
+            self.log("One or more MKV files are invalid â€” treating as failure.")
         if not normalized:
             return False, mkv_files
 
@@ -773,15 +776,15 @@ class RipperController:
     # Library-scanning helpers (used by "attach to existing show" mode)
     # ------------------------------------------------------------------
 
-    # SxxEyy with optional chained episodes: S01E01, S01E01E02, S01E01E02E03 …
+    # SxxEyy with optional chained episodes: S01E01, S01E01E02, S01E01E02E03 â€¦
     # Captured groups: season, first episode, then zero or more extra E-tokens.
     _RE_SxxEyy = re.compile(
         r"S(\d{1,3})((?:E\d{1,3})+)",
         re.IGNORECASE,
     )
-    # 1x01 / Nx01 — season × episode
+    # 1x01 / Nx01 â€” season Ã— episode
     _RE_NxNN = re.compile(r"(\d{1,2})x(\d{1,2})")
-    # "Episode N" — no season token; useful when file is already inside a
+    # "Episode N" â€” no season token; useful when file is already inside a
     # Season folder (the folder itself encodes the season).
     _RE_EPISODE_N = re.compile(r"[Ee]pisode\s+(\d{1,4})")
     # Splits the E-token block into individual episode numbers.
@@ -818,7 +821,7 @@ class RipperController:
         m = self._RE_SxxEyy.search(fname)
         if m:
             if int(m.group(1)) != season:
-                # Season token present but wrong season — do not fall through.
+                # Season token present but wrong season â€” do not fall through.
                 return set()
             return {int(n) for n in self._RE_E_SPLIT.findall(m.group(2))}
 
@@ -843,7 +846,7 @@ class RipperController:
         episode numbers so gap detection is never fooled into thinking an
         episode is missing when it is part of a combined file.
         Season 00 is supported (Jellyfin treats it as Specials).
-        Only reads the directory listing — no ffprobe or file I/O.
+        Only reads the directory listing â€” no ffprobe or file I/O.
         """
         found: set = set()
         if not folder or not os.path.isdir(folder):
@@ -860,7 +863,7 @@ class RipperController:
 
         Returns a dict mapping season number (int) to a sorted list of
         episode numbers already present on disk.  Season 00 ("Specials")
-        is included and logged.  Only reads directory listings — no file I/O.
+        is included and logged.  Only reads directory listings â€” no file I/O.
 
         Example::
 
@@ -907,7 +910,7 @@ class RipperController:
 
     def _mark_session_failed(self, rip_path, **metadata):
         """Wipe session outputs and persist a single failed session state."""
-        self.log("Session failed — wiping outputs.")
+        self.log("Session failed â€” wiping outputs.")
         self.engine.update_temp_metadata(
             rip_path,
             status="failed",
@@ -1015,7 +1018,7 @@ class RipperController:
                                            expected_size_by_title):
         """Retry rip once after size sanity failure and re-run checks."""
         self.log(
-            "Safe Mode: size sanity failed — retrying rip once automatically."
+            "Safe Mode: size sanity failed â€” retrying rip once automatically."
         )
         self.engine.cleanup_partial_files(rip_path, self.log)
         for pattern in ("**/*.mkv", "**/*.partial"):
@@ -1036,7 +1039,7 @@ class RipperController:
         self._warn_degraded_rips()
         if failed_titles:
             self.report(
-                f"Retry: titles failed — {failed_titles}"
+                f"Retry: titles failed â€” {failed_titles}"
             )
         success, mkv_files = self._normalize_rip_result(
             rip_path, success, failed_titles
@@ -1064,7 +1067,7 @@ class RipperController:
         """Wait for file to be stable: N equal reads AND 3+ seconds of no growth.
 
         Stability = file size stopped changing. Size alone is NOT a stability
-        signal — extras and short titles are legitimately small. Size validation
+        signal â€” extras and short titles are legitimately small. Size validation
         is a separate post-stabilization concern.
         """
         start = time.time()
@@ -1101,7 +1104,7 @@ class RipperController:
                 stable_polls += 1
                 stable_duration = time.time() - stable_start_time
                 self.log(
-                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — "
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB â€” "
                     f"stable ({stable_polls}/{min_stable_polls}, "
                     f"{stable_duration:.1f}s duration)"
                 )
@@ -1121,7 +1124,7 @@ class RipperController:
                         return True, False
                     self.log(
                         f"Stabilizing: {cur / (1024**2):.0f} MB -> "
-                        f"{post / (1024**2):.0f} MB — resumed growth"
+                        f"{post / (1024**2):.0f} MB â€” resumed growth"
                     )
                     stable_polls = 0
                     stable_start_time = None
@@ -1131,7 +1134,7 @@ class RipperController:
                 stable_polls = 0
                 stable_start_time = None
                 self.log(
-                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — still growing"
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB â€” still growing"
                 )
             prev = cur
 
@@ -1208,7 +1211,7 @@ class RipperController:
                 return False, timed_out
 
             # Post-stabilization size advisory: log when file is below the
-            # effective threshold but do NOT fail — extras are legitimately
+            # effective threshold but do NOT fail â€” extras are legitimately
             # small. Strict size validation uses ratio checks in
             # _verify_expected_sizes after all files are stable.
             try:
@@ -1222,12 +1225,12 @@ class RipperController:
                     f" → threshold {effective_floor / (1024**3):.2f} GB"
                     if expected > 0 else
                     f"advisory floor {effective_floor / (1024**2):.0f} MB"
-                    f" — normal for extras/short titles"
+                    f" â€” normal for extras/short titles"
                 )
                 self.log(
                     f"INFO: {os.path.basename(f)}: "
                     f"{final_size / (1024**2):.0f} MB "
-                    f"(below threshold — {detail})"
+                    f"(below threshold â€” {detail})"
                 )
 
         return True, False
@@ -1275,14 +1278,14 @@ class RipperController:
         auto_title_pending = not bool(title)
         if auto_title_pending:
             self.log(
-                "WARNING: No title entered — will use fallback naming "
+                "WARNING: No title entered â€” will use fallback naming "
                 "mode after scan."
             )
 
         year = self.gui.ask_input("Year", "Release year:")
         if not year:
             year = "0000"
-            self.log("WARNING: No year — using 0000")
+            self.log("WARNING: No year â€” using 0000")
 
         time.sleep(2)  # drive spin-up / mount stabilization
         disc_titles = self.scan_with_retry()
@@ -1377,8 +1380,7 @@ class RipperController:
                 self.log("Cancelled.")
                 return
 
-        keep_extras = self.gui.ask_yesno("Keep extras from this disc?")
-        if keep_extras:
+        if self.gui.ask_yesno("Keep all extras from this disc?"):
             selected_ids  = [t["id"] for t in disc_titles]
             selected_size = sum(
                 t.get("size_bytes", 0) for t in disc_titles
@@ -1389,9 +1391,45 @@ class RipperController:
                 if int(t.get("id", -1)) in selected_ids
             }
             self.log(
-                f"Extras enabled — ripping all "
-                f"{len(selected_ids)} titles."
+                f"Extras enabled — ripping all {len(selected_ids)} titles."
             )
+        else:
+            _extra_disc = [
+                t for t in disc_titles if t["id"] != best["id"]
+            ]
+            if _extra_disc:
+                _eopts = [
+                    f"Title {t['id']+1}:  "
+                    f"{t.get('name', '') or 'Untitled'}  "
+                    f"({t.get('duration', '')}  {t.get('size', '')})"
+                    for t in _extra_disc
+                ]
+                _chosen = self.gui.show_extras_picker(
+                    "Select Extras",
+                    "All extras are selected. "
+                    "Deselect any you don't want:",
+                    _eopts,
+                )
+                if _chosen:
+                    _extra_ids = [
+                        _extra_disc[i]["id"] for i in _chosen
+                    ]
+                    selected_ids = [best["id"]] + _extra_ids
+                    selected_size = sum(
+                        t.get("size_bytes", 0) for t in disc_titles
+                        if t["id"] in selected_ids
+                    )
+                    expected_size_by_title = {
+                        int(t.get("id", -1)):
+                        int(t.get("size_bytes", 0) or 0)
+                        for t in disc_titles
+                        if int(t.get("id", -1)) in selected_ids
+                    }
+                    self.log(
+                        f"Extras selected — ripping"
+                        f" {len(selected_ids)} titles"
+                        f" ({len(_extra_ids)} extras)."
+                    )
 
         movie_folder  = os.path.join(
             movie_root, f"{clean_name(title)} ({year})"
@@ -1425,7 +1463,7 @@ class RipperController:
 
         status_msg = (
             "Ripping all titles..."
-            if keep_extras else
+            if len(selected_ids) > 1 else
             "Ripping main feature..."
         )
         self.gui.set_status("Ripping... (this may take 20-60 min)")
@@ -1513,7 +1551,7 @@ class RipperController:
                 self.flush_log()
                 self.gui.show_error(
                     "Rip Failed",
-                    "Rip incomplete — file too small.\n\n"
+                    "Rip incomplete â€” file too small.\n\n"
                     "Automatic retry was attempted once and still failed."
                 )
                 return
@@ -1527,7 +1565,7 @@ class RipperController:
                 self.log("Cancelled due to size warning threshold.")
                 return
             self.report(
-                f"USER OVERRIDE — Smart Rip size warning for {title} ({year})"
+                f"USER OVERRIDE â€” Smart Rip size warning for {title} ({year})"
             )
 
         # Analyze files once; reuse the result for both integrity check and
@@ -1567,7 +1605,7 @@ class RipperController:
                 if exp_size > 0:
                     _expected_sizes[fp] = exp_size
 
-        # Container integrity uses the already-analyzed data — no extra ffprobe.
+        # Container integrity uses the already-analyzed data â€” no extra ffprobe.
         if not self._verify_container_integrity(
             mkv_files,
             analyzed=titles_list,
@@ -1599,7 +1637,7 @@ class RipperController:
         # Primary path uses explicit tracking captured during rip.
         # This avoids assuming analyze_files sort order matches smart score.
         main_indices = [0]
-        if keep_extras:
+        if len(selected_ids) > 1:
             mapped = self._map_title_ids_to_analyzed_indices(
                 titles_list, [best.get("id")]
             )
@@ -1658,7 +1696,7 @@ class RipperController:
         ok, _, moved_paths = self.engine.move_files(
             titles_list, main_indices,
             episode_numbers=[], real_names=[],
-            keep_extras=keep_extras,
+            extra_indices=None if len(selected_ids) > 1 else [],
             is_tv=False,
             title=title, dest_folder=movie_folder,
             extras_folder=extras_folder,
@@ -1684,7 +1722,7 @@ class RipperController:
                 ok = False
             elif post_status == "warn":
                 self.report(
-                    f"USER OVERRIDE — Smart Rip post-move size warning for {title} ({year})"
+                    f"USER OVERRIDE â€” Smart Rip post-move size warning for {title} ({year})"
                 )
             if ok and (not self._verify_container_integrity(moved_paths)):
                 self.report(
@@ -1742,14 +1780,16 @@ class RipperController:
         temp_root = self.get_path("temp")
 
         multi_disc = self.gui.ask_yesno(
-            "Dump multiple discs in one unattended session?\n\n"
+            "Dump multiple discs in one session?\n\n"
             "Yes = multi-disc with auto swap detection\n"
             "No = single-disc dump"
         )
         if multi_disc:
+            self.log("Multi-disc dump mode: you will be asked for custom disc names and batch folder name.")
             self._run_dump_all_multi(temp_root)
             return
 
+        self.log("Single-disc dump mode: you will be asked for a disc name.")
         if cfg.get("opt_show_temp_manager", True):
             self.gui.show_temp_manager(
                 self.engine.find_old_temp_folders(temp_root),
@@ -1764,11 +1804,13 @@ class RipperController:
         time.sleep(2)  # drive spin-up / mount stabilization
 
         title = self.gui.ask_input(
-            "Title", "Exact title (used for folder name):"
+            "Disc Name", 
+            "Name for this disc (used in folder name).\n"
+            "Skip for auto-generated name (timestamp)."
         )
         if not title:
             title = self._fallback_title_from_mode()
-            self.log(f"WARNING: No title — using: {title}")
+            self.log(f"Using auto-generated disc name: {title}")
 
         rip_path = os.path.join(temp_root, make_rip_folder_name())
         os.makedirs(rip_path, exist_ok=True)
@@ -1874,30 +1916,42 @@ class RipperController:
         start    = time.time()
         last_log = 0
         self.log(f"Waiting for disc to be {state_text}...")
-        while time.time() - start < timeout_seconds:
+        while True:
             if self.engine.abort_event.is_set():
                 return False
             if self._disc_present() == want_present:
                 return True
-            remaining = int(timeout_seconds - (time.time() - start))
-            self.gui.set_status(
-                f"Waiting for disc to be {state_text} "
-                f"({max(0, remaining)}s)..."
-            )
-            # Log a heartbeat every ~10 s so the user sees activity.
             elapsed = int(time.time() - start)
-            if elapsed - last_log >= 10:
-                self.log(
-                    f"Still waiting for disc to be {state_text} "
-                    f"({max(0, remaining)}s remaining)..."
+            if timeout_seconds is None:
+                self.gui.set_status(
+                    f"Waiting for disc to be {state_text}..."
                 )
+            else:
+                remaining = int(timeout_seconds - (time.time() - start))
+                if remaining <= 0:
+                    return False
+                self.gui.set_status(
+                    f"Waiting for disc to be {state_text} "
+                    f"({max(0, remaining)}s)..."
+                )
+            # Log a heartbeat every ~10 s so the user sees activity.
+            if elapsed - last_log >= 10:
+                if timeout_seconds is None:
+                    self.log(
+                        f"Still waiting for disc to be {state_text}..."
+                    )
+                else:
+                    remaining = int(timeout_seconds - (time.time() - start))
+                    self.log(
+                        f"Still waiting for disc to be {state_text} "
+                        f"({max(0, remaining)}s remaining)..."
+                    )
                 last_log = elapsed
             # Split sleep into short intervals so abort is responsive.
             for _ in range(20):
                 if self.engine.abort_event.is_set():
                     return False
                 time.sleep(0.1)
-        return False
 
     def _build_disc_fingerprint(self):
         """Build a disc fingerprint using the standard scan retry path."""
@@ -1968,7 +2022,7 @@ class RipperController:
                                   disc_number, total):
         """
         Wait for physical swap and ensure inserted disc is unique in this
-        unattended batch session.
+        multi-disc batch session.
         """
         if disc_number == 1:
             self.log(
@@ -1976,13 +2030,29 @@ class RipperController:
             )
             time.sleep(2)  # drive spin-up / mount stabilization
         else:
+            swap_timeout = None
+            if self.engine.cfg.get("opt_disc_swap_timeout_enabled", False):
+                try:
+                    swap_timeout = max(
+                        1,
+                        int(self.engine.cfg.get(
+                            "opt_disc_swap_timeout_seconds", 300
+                        ))
+                    )
+                except Exception:
+                    swap_timeout = 300
+            self.gui.show_info(
+                "Swap Disc",
+                f"Disc {disc_number - 1}/{total} completed successfully.\n\n"
+                f"Remove it, insert disc {disc_number}/{total}, then click OK."
+            )
             self.log(
                 "Swap disc now: remove current disc and insert "
                 f"disc {disc_number}/{total}."
             )
 
-            # Fast-swap tolerance: if user already swapped while prior UI was
-            # visible, accept a readable unique fingerprint immediately.
+            # After explicit user acknowledgment, allow pre-swapped insertion
+            # to proceed immediately when a unique disc is already mounted.
             quick_fp = self._build_disc_fingerprint()
             if quick_fp and quick_fp not in seen_fingerprints:
                 seen_fingerprints.add(quick_fp)
@@ -1992,24 +2062,26 @@ class RipperController:
             self.log("Waiting for disc removal...")
             removed = self._wait_for_disc_state(
                 want_present=False,
-                timeout_seconds=300
+                timeout_seconds=swap_timeout
             )
             if not removed:
-                self.report(
-                    f"Disc {disc_number}: timed out waiting for removal."
-                )
+                if swap_timeout is None:
+                    self.report(f"Disc {disc_number}: stopped while waiting for removal.")
+                else:
+                    self.report(f"Disc {disc_number}: timed out waiting for removal.")
                 return None
             self.log("Disc removal detected.")
 
             self.log("Waiting for next disc insertion...")
             inserted = self._wait_for_disc_state(
                 want_present=True,
-                timeout_seconds=300
+                timeout_seconds=swap_timeout
             )
             if not inserted:
-                self.report(
-                    f"Disc {disc_number}: timed out waiting for insertion."
-                )
+                if swap_timeout is None:
+                    self.report(f"Disc {disc_number}: stopped while waiting for insertion.")
+                else:
+                    self.report(f"Disc {disc_number}: timed out waiting for insertion.")
                 return None
             self.log("New disc insertion detected.")
 
@@ -2019,6 +2091,23 @@ class RipperController:
             self.report(
                 f"Disc {disc_number}: could not read disc fingerprint."
             )
+            decision = self.gui.ask_duplicate_resolution(
+                "Could not verify this disc automatically.\n\n"
+                "Choose how to continue:",
+                retry_text="Retry Scan",
+                bypass_text="Advance Anyway",
+                stop_text="Stop",
+            )
+            if decision == "bypass":
+                self.log(
+                    "Manual advance selected for unverified disc. "
+                    "Proceeding without fingerprint check."
+                )
+                return "manual-advance"
+            if decision == "stop":
+                self.report(
+                    f"Disc {disc_number}: stopped after unverified disc prompt."
+                )
             return None
 
         if fingerprint in seen_fingerprints:
@@ -2031,7 +2120,7 @@ class RipperController:
         return fingerprint
 
     def _collect_dump_all_multi_setup(self):
-        """Collect unattended batch setup with a review/edit loop."""
+        """Collect multi-disc batch setup with a review/edit loop."""
         while True:
             total_str = self.gui.ask_input(
                 "Disc Count", "How many discs do you want to dump?"
@@ -2044,17 +2133,20 @@ class RipperController:
             total = max(1, total)
 
             per_disc_titles_input = self.gui.ask_input(
-                "Disc Titles (Optional)",
-                "Optional titles in order (comma or ' - ' separated),\n"
-                "e.g. Toony, Herb, Jeckel"
+                "Custom Disc Names",
+                "Optional: custom names for each disc in order\n"
+                "(comma or ' - ' separated).\n"
+                "Example: Movie A, Movie B, Movie C\n\n"
+                "Skip if you want auto-generated names (timestamp)."
             )
             if per_disc_titles_input is None:
                 return None
             per_disc_titles = parse_ordered_titles(per_disc_titles_input)
 
             batch_title = self.gui.ask_input(
-                "Batch Name",
-                "Optional batch name for temp folder (blank = timestamp):"
+                "Batch Folder Name",
+                "Optional: name for the batch folder (contains all discs).\n"
+                "Skip for auto-generated name (timestamp)."
             )
             if batch_title is None:
                 return None
@@ -2067,7 +2159,7 @@ class RipperController:
                 if per_disc_titles else "(none)"
             )
             if self.gui.ask_yesno(
-                "Review unattended setup:\n\n"
+                "Review multi-disc setup:\n\n"
                 f"Disc count: {total}\n"
                 f"Batch name: {batch_title}\n"
                 f"Custom disc titles: {len(per_disc_titles)}\n"
@@ -2077,7 +2169,7 @@ class RipperController:
             ):
                 return total, per_disc_titles, batch_title
 
-            self.log("Setup edit requested — re-enter unattended settings.")
+            self.log("Setup edit requested — re-enter multi-disc settings.")
 
     def _run_dump_all_multi(self, temp_root):
         cfg = self.engine.cfg
@@ -2092,7 +2184,7 @@ class RipperController:
 
         setup = self._collect_dump_all_multi_setup()
         if setup is None:
-            self.log("Unattended dump cancelled during setup.")
+            self.log("Multi-disc dump cancelled during setup.")
             return
         total, per_disc_titles, batch_title = setup
         if per_disc_titles:
@@ -2106,7 +2198,7 @@ class RipperController:
             f"DumpBatch_{clean_name(batch_title)}_{make_rip_folder_name()}"
         )
         os.makedirs(batch_root, exist_ok=True)
-        self.log(f"Unattended dump batch root: {batch_root}")
+        self.log(f"Multi-disc dump batch root: {batch_root}")
         self.log(f"Planned discs: {total}")
 
         seen_fingerprints = set()
@@ -2114,13 +2206,16 @@ class RipperController:
         verify_failures_for_slot = 0
         while disc_number <= total:
             if self.engine.abort_event.is_set():
-                self.log("Unattended dump aborted.")
+                self.log("Multi-disc dump aborted.")
                 break
 
             fingerprint = self._wait_for_new_unique_disc(
                 seen_fingerprints, disc_number, total
             )
             if fingerprint is None:
+                if self.engine.abort_event.is_set():
+                    self.log("Multi-disc dump aborted.")
+                    break
                 verify_failures_for_slot += 1
                 if verify_failures_for_slot < 3:
                     self.log(
@@ -2131,7 +2226,7 @@ class RipperController:
                 self.report(
                     f"Disc {disc_number}: verification failed after 3 attempts."
                 )
-                self.log("Cancelled unattended dump.")
+                self.log("Cancelled multi-disc dump.")
                 break
 
             verify_failures_for_slot = 0
@@ -2155,6 +2250,11 @@ class RipperController:
                     )
                     break
 
+            if fingerprint == "manual-advance":
+                self.report(
+                    f"Disc {disc_number}: manual advance used without fingerprint verification."
+                )
+
             safe_marker = f"disc_{disc_number:02d}"
             rip_path = os.path.join(
                 batch_root, f"Disc_{disc_number:02d}_{safe_marker}"
@@ -2171,8 +2271,12 @@ class RipperController:
                 disc_number
             )
             self.log(
-                f"--- Dump disc {disc_number}/{total}: {disc_title} ---"
+                f"--- Disc {disc_number}/{total}: '{disc_title}' ---"
             )
+            if (disc_number - 1) < len(per_disc_titles):
+                self.log(f"Using custom disc name.")
+            else:
+                self.log(f"Using auto-generated disc name.")
 
             if cfg.get("opt_scan_disc_size", True):
                 self.gui.set_status("Scanning disc size...")
@@ -2252,7 +2356,7 @@ class RipperController:
                         if timed_out else
                         f"Disc {disc_number} failed stabilization checks.\n\n"
                     ) +
-                    "Stopping unattended dump to prevent partial files."
+                    "Stopping multi-disc dump to prevent partial files."
                 )
                 break
             if not self._verify_container_integrity(mkv_files):
@@ -2262,7 +2366,7 @@ class RipperController:
                 self.gui.show_error(
                     "Rip Failed",
                     "Container integrity check failed (ffprobe).\n\n"
-                    "Stopping unattended dump to prevent corrupt files."
+                    "Stopping multi-disc dump to prevent corrupt files."
                 )
                 break
             self.gui.set_progress(0)
@@ -2274,410 +2378,14 @@ class RipperController:
         self.gui.set_status("Ready")
         if self.engine.abort_event.is_set():
             self.gui.show_info(
-                "Unattended Dump Stopped",
+                "Multi-Disc Dump Stopped",
                 f"Session stopped. Files saved so far in:\n{batch_root}"
             )
             return
         self.gui.show_info(
-            "Unattended Dump Complete",
+            "Multi-Disc Dump Complete",
             f"Batch output:\n{batch_root}\n\n"
             f"Use 'Organize Existing MKVs' to sort them."
-        )
-
-    def _prepare_unattended_session(self, temp_root, mode_label):
-        """Initialize unattended mode state and optionally show temp manager."""
-        self.engine.reset_abort()
-        self.session_report = []
-        self.log(f"{mode_label} started.")
-        self.engine.cleanup_partial_files(temp_root, self.log)
-        if self.engine.cfg.get("opt_show_temp_manager", True):
-            self._offer_temp_manager(temp_root)
-        if self.engine.abort_event.is_set():
-            self.log(f"{mode_label} cancelled.")
-            return False
-        return True
-
-    def run_unattended_single(self):
-        cfg       = self.engine.cfg
-        path_overrides = self._prompt_run_path_overrides([
-            ("temp_folder", "Temp Folder"),
-        ])
-        if path_overrides is None:
-            self.log("Cancelled before unattended single (path override step).")
-            return
-        self._init_session_paths(path_overrides)
-        self._log_session_paths()
-        temp_root = self.get_path("temp")
-
-        if not self._prepare_unattended_session(
-            temp_root, "Unattended single-disc mode"
-        ):
-            return
-
-        self.gui.show_info(
-            "Unattended — Single Disc",
-            "Insert disc and click OK. "
-            "Everything will be ripped automatically."
-        )
-        time.sleep(2)  # drive spin-up / mount stabilization
-
-        rip_path = os.path.join(
-            temp_root, f"Unattended_{make_rip_folder_name()}"
-        )
-        os.makedirs(rip_path, exist_ok=True)
-        self.engine.write_temp_metadata(rip_path, "Unattended", 1)
-        self.log(f"Unattended single disc — temp: {rip_path}")
-
-        if cfg.get("opt_scan_disc_size", True):
-            self.gui.set_status("Scanning disc size...")
-            self.gui.start_indeterminate()
-            try:
-                disc_size = self.engine.get_disc_size(self.log)
-            finally:
-                self.gui.stop_indeterminate()
-                self.gui.set_progress(0)
-
-            if self.engine.abort_event.is_set():
-                return
-
-            if disc_size:
-                status, free, required = self.engine.check_disk_space(
-                    temp_root, disc_size, self.log
-                )
-                if status == "block":
-                    self.gui.show_error(
-                        "Critically Low Space",
-                        f"Only {free / (1024**3):.1f} GB free.\n"
-                        f"Minimum: "
-                        f"{cfg.get('opt_hard_block_gb', 20)} GB."
-                    )
-                    return
-                elif (status == "warn" and
-                      cfg.get("opt_warn_low_space", True)):
-                    if not self.gui.ask_space_override(
-                        required / (1024**3), free / (1024**3)
-                    ):
-                        return
-
-        self.gui.set_status("Ripping... (this may take 20-60 min)")
-        success = self.engine.rip_all_titles(
-            rip_path,
-            on_progress=self.gui.set_progress,
-            on_log=self.log
-        )
-        success, mkv_files = self._normalize_rip_result(
-            rip_path, success, []
-        )
-
-        if not success:
-            self.report("Unattended single: rip failed.")
-            self.flush_log()
-            self.gui.show_error(
-                "Rip Failed", "Disc could not be ripped."
-            )
-            return
-
-        self.engine.update_temp_metadata(rip_path, status="ripped")
-        self.log(f"Done. {len(mkv_files)} file(s) in: {rip_path}")
-        self._log_ripped_file_sizes(mkv_files)
-        stabilized, timed_out = self._stabilize_ripped_files(mkv_files)
-        if not stabilized:
-            self.log("File stabilization check failed after rip.")
-            self.report("Unattended current-disc rip failed stabilization check")
-            self.gui.show_error(
-                "Rip Failed",
-                (
-                    "Ripped file(s) did not stabilize in time.\n\n"
-                    if timed_out else
-                    "Ripped file(s) failed stabilization checks.\n\n"
-                ) +
-                "Move is blocked to prevent partial file corruption."
-            )
-            return
-        if not self._verify_container_integrity(mkv_files):
-            self.report("Unattended current-disc ffprobe integrity check failed")
-            self.gui.show_error(
-                "Rip Failed",
-                "Container integrity check failed (ffprobe)."
-            )
-            return
-        self.write_session_summary()
-        self.flush_log()
-        self.gui.set_progress(0)
-        self.gui.show_info(
-            "Unattended Complete",
-            f"Ripped {len(mkv_files)} file(s) to:\n{rip_path}\n\n"
-            f"Use 'Organize Existing MKVs' to sort them."
-        )
-
-    def run_unattended_series(self):
-        cfg       = self.engine.cfg
-        path_overrides = self._prompt_run_path_overrides([
-            ("temp_folder", "Temp Folder"),
-        ])
-        if path_overrides is None:
-            self.log("Cancelled before unattended series (path override step).")
-            return
-        self._init_session_paths(path_overrides)
-        self._log_session_paths()
-        temp_root = self.get_path("temp")
-
-        if not self._prepare_unattended_session(
-            temp_root, "Unattended series mode"
-        ):
-            return
-
-        title = self.gui.ask_input(
-            "Series Title", "Exact series title:"
-        )
-        if not title:
-            title = self._fallback_title_from_mode()
-            self.log(f"WARNING: No title — using: {title}")
-
-        num_seasons_str = self.gui.ask_input(
-            "Seasons", "How many seasons are you ripping?"
-        )
-        num_seasons = int(num_seasons_str) if (
-            num_seasons_str and num_seasons_str.isdigit()
-        ) else 1
-
-        eps_per_season = {}
-        for s in range(1, num_seasons + 1):
-            eps_str = self.gui.ask_input(
-                f"Season {s:02d} Episodes",
-                f"How many episodes in Season {s:02d}?"
-            )
-            eps_per_season[s] = int(eps_str) if (
-                eps_str and eps_str.isdigit()
-            ) else 0
-
-        self.log(f"Series: {title}")
-        self.log(f"Seasons: {num_seasons}")
-        for s, eps in eps_per_season.items():
-            self.log(f"  Season {s:02d}: {eps} episodes")
-
-        series_root = os.path.join(temp_root, clean_name(title))
-        os.makedirs(series_root, exist_ok=True)
-
-        disc_number       = 0
-        current_season    = 1
-        seen_fingerprints = set()
-        stop_requested    = False
-
-        while current_season <= num_seasons:
-            if self.engine.abort_event.is_set():
-                self.log("Session aborted.")
-                break
-
-            season_folder = os.path.join(
-                series_root, f"Season {current_season:02d}"
-            )
-            os.makedirs(season_folder, exist_ok=True)
-            self.log(f"--- Season {current_season:02d} ---")
-
-            season_done = False
-            while not season_done:
-                if self.engine.abort_event.is_set():
-                    break
-
-                next_disc_number = disc_number + 1
-                self.log(f"--- Disc {next_disc_number} ---")
-
-                self.gui.show_info(
-                    "Insert Disc",
-                    f"Insert disc {next_disc_number} "
-                    f"(Season {current_season:02d}) and click OK."
-                )
-                time.sleep(2)  # drive spin-up / mount stabilization
-
-                fingerprint = self._build_disc_fingerprint()
-                if not fingerprint:
-                    self.report(
-                        f"{title} S{current_season:02d} "
-                        f"Disc {next_disc_number}: could not read disc "
-                        f"fingerprint."
-                    )
-                    action = self.gui.ask_duplicate_resolution(
-                        f"{title} — Season {current_season:02d}, "
-                        f"Disc {next_disc_number}: could not verify this "
-                        "disc fingerprint.",
-                        "Retry Disc",
-                        "Proceed Anyway",
-                        "Stop"
-                    )
-                    if action == "retry":
-                        continue
-                    if action == "stop":
-                        stop_requested = True
-                        break
-                    self.log(
-                        "Fingerprint check bypassed manually; proceeding."
-                    )
-                elif fingerprint in seen_fingerprints:
-                    duplicate_action = self.gui.ask_duplicate_resolution(
-                        f"{title} — Season {current_season:02d}, "
-                        f"Disc {next_disc_number}: this disc looks like a "
-                        "duplicate from earlier in this session.",
-                        "Swap and Retry",
-                        "Not a Dup",
-                        "Stop"
-                    )
-                    if duplicate_action == "retry":
-                        continue
-                    if duplicate_action == "stop":
-                        self.report(
-                            f"{title} S{current_season:02d} "
-                            f"Disc {next_disc_number}: duplicate not accepted."
-                        )
-                        stop_requested = True
-                        break
-                    self.log(
-                        "Manual duplicate bypass selected; proceeding "
-                        "with this disc."
-                    )
-                else:
-                    seen_fingerprints.add(fingerprint)
-
-                disc_number = next_disc_number
-
-                rip_path = os.path.join(
-                    season_folder, make_rip_folder_name()
-                )
-                os.makedirs(rip_path, exist_ok=True)
-                self.engine.write_temp_metadata(
-                    rip_path, title, disc_number,
-                    season=current_season
-                )
-
-                if cfg.get("opt_scan_disc_size", True):
-                    self.gui.set_status("Scanning disc size...")
-                    self.gui.start_indeterminate()
-                    try:
-                        disc_size = self.engine.get_disc_size(
-                            self.log
-                        )
-                    finally:
-                        self.gui.stop_indeterminate()
-                        self.gui.set_progress(0)
-
-                    if self.engine.abort_event.is_set():
-                        break
-
-                    if disc_size:
-                        status, free, required = (
-                            self.engine.check_disk_space(
-                                temp_root, disc_size, self.log
-                            )
-                        )
-                        if status == "block":
-                            self.gui.show_error(
-                                "Critically Low Space",
-                                f"Only {free/(1024**3):.1f} GB "
-                                f"free.\nMinimum: "
-                                f"{cfg.get('opt_hard_block_gb',20)}"
-                                f" GB."
-                            )
-                            break
-                        elif (status == "warn" and
-                              cfg.get("opt_warn_low_space", True)):
-                            if not self.gui.ask_space_override(
-                                required / (1024**3),
-                                free / (1024**3)
-                            ):
-                                break
-
-                self.gui.set_status("Ripping... (this may take 20-60 min)")
-                success = self.engine.rip_all_titles(
-                    rip_path,
-                    on_progress=self.gui.set_progress,
-                    on_log=self.log
-                )
-                success, mkv_files = self._normalize_rip_result(
-                    rip_path, success, []
-                )
-
-                if not success:
-                    if self.engine.abort_event.is_set():
-                        break
-                    self.report(
-                        f"{title} S{current_season:02d} "
-                        f"Disc {disc_number}: rip failed."
-                    )
-                    if not self.gui.ask_yesno(
-                        f"Disc {disc_number} failed. "
-                        f"Try another disc?"
-                    ):
-                        season_done = True
-                    continue
-
-                self.engine.update_temp_metadata(
-                    rip_path, status="ripped"
-                )
-                self.log(
-                    f"Disc {disc_number} done. "
-                    f"{len(mkv_files)} file(s) ripped."
-                )
-                self._log_ripped_file_sizes(mkv_files)
-                stabilized, timed_out = self._stabilize_ripped_files(
-                    mkv_files
-                )
-                if not stabilized:
-                    self.log("File stabilization check failed after rip.")
-                    self.report(
-                        f"{title} S{current_season:02d} Disc {disc_number}: "
-                        "failed stabilization check"
-                    )
-                    self.gui.show_error(
-                        "Rip Failed",
-                        (
-                            f"Disc {disc_number} did not stabilize in time.\n\n"
-                            if timed_out else
-                            f"Disc {disc_number} failed stabilization checks.\n\n"
-                        ) +
-                        "Stopping unattended series to prevent partial files."
-                    )
-                    stop_requested = True
-                    break
-                if not self._verify_container_integrity(mkv_files):
-                    self.report(
-                        f"{title} S{current_season:02d} Disc {disc_number}: "
-                        "failed ffprobe integrity check"
-                    )
-                    self.gui.show_error(
-                        "Rip Failed",
-                        "Container integrity check failed (ffprobe).\n\n"
-                        "Stopping unattended series to prevent corrupt files."
-                    )
-                    stop_requested = True
-                    break
-                self.gui.set_progress(0)
-
-                if not self.gui.ask_yesno(
-                    f"Season {current_season:02d} — "
-                    f"another disc for this season?"
-                ):
-                    season_done = True
-
-            if stop_requested:
-                self.log("Unattended series stopped by user decision.")
-                break
-
-            current_season += 1
-
-        self.write_session_summary()
-        self.flush_log()
-        self.gui.set_status("Ready")
-        self.gui.set_progress(0)
-        if self.engine.abort_event.is_set() or stop_requested:
-            self.gui.show_info(
-                "Series Stopped",
-                "Unattended series mode was stopped before completion."
-            )
-            return
-        self.gui.show_info(
-            "Series Complete",
-            f"All discs ripped to:\n{series_root}\n\n"
-            f"Use 'Organize Existing MKVs' to sort into your library."
         )
 
     def run_organize(self):
@@ -2730,8 +2438,8 @@ class RipperController:
         self._init_session_paths(path_overrides)
         self._ensure_session_paths()
         self._log_session_paths()
-        # Always derive all folder roots from session_paths — never from cfg
-        # directly — so run-time path overrides are always honored.
+        # Always derive all folder roots from session_paths â€” never from cfg
+        # directly â€” so run-time path overrides are always honored.
         tv_root    = self.get_path("tv")
         movie_root = self.get_path("movies")
         temp_root  = self.get_path("temp")
@@ -2739,7 +2447,7 @@ class RipperController:
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
             title = self._fallback_title_from_mode()
-            self.log(f"WARNING: No title — using: {title}")
+            self.log(f"WARNING: No title â€” using: {title}")
         self.log(f"Title: {title}")
 
         if is_tv:
@@ -2750,7 +2458,7 @@ class RipperController:
                 season_str and season_str.isdigit()
             ) else 0
             if season == 0:
-                self.log("WARNING: No season number — using 00")
+                self.log("WARNING: No season number â€” using 00")
             season_folder = os.path.join(
                 tv_root, clean_name(title), f"Season {season:02d}"
             )
@@ -2763,7 +2471,7 @@ class RipperController:
             year = self.gui.ask_input("Year", "Release year:")
             if not year:
                 year = "0000"
-                self.log("WARNING: No year — using 0000")
+                self.log("WARNING: No year â€” using 0000")
             movie_folder = os.path.join(
                 movie_root, f"{clean_name(title)} ({year})"
             )
@@ -2809,7 +2517,7 @@ class RipperController:
                     )
         elif self.engine.abort_event.is_set():
             self.log(
-                "Move stopped before completion — "
+                "Move stopped before completion â€” "
                 "some files may not have moved."
             )
 
@@ -2824,6 +2532,37 @@ class RipperController:
         self.gui.show_temp_manager(
             old_folders, self.engine, self.log
         )
+
+    def _ask_extras_selection(self, titles_list, main_indices):
+        """Prompt user to select which non-main titles to keep as extras.
+
+        Returns:
+            None      — keep all non-main titles as extras.
+            []        — keep no extras.
+            [idx ...] — absolute indices in titles_list for chosen extras.
+        """
+        _main_set = set(main_indices)
+        _non_main = [
+            i for i in range(len(titles_list)) if i not in _main_set
+        ]
+        if not _non_main:
+            return []
+        if self.gui.ask_yesno("Keep all extras?"):
+            return None
+        opts = [
+            f"{os.path.basename(titles_list[i][0])}  "
+            f"({int(titles_list[i][1] / 60)}min  "
+            f"{titles_list[i][2]:.0f} MB)"
+            for i in _non_main
+        ]
+        chosen = self.gui.show_extras_picker(
+            "Select Extras",
+            "All extras are selected. Deselect any you don't want:",
+            opts,
+        )
+        if chosen is None:
+            return []
+        return [_non_main[c] for c in chosen]
 
     def _run_disc(self, is_tv):
         cfg        = self.engine.cfg
@@ -2878,7 +2617,7 @@ class RipperController:
             # a previous session or another tool), they can point
             # JellyRip at the show root and it will infer title,
             # detect what episodes exist, and pick up exactly where
-            # the library left off — including filling gaps.
+            # the library left off â€” including filling gaps.
             # -------------------------------------------------------
             library_root: str | None = None
             library_state: dict = {}   # {season_num: [ep, ...]}
@@ -2908,11 +2647,11 @@ class RipperController:
                         )
                     else:
                         self.log(
-                            f"No season folders found in {library_root} — "
+                            f"No season folders found in {library_root} â€” "
                             f"will create them as needed."
                         )
                 else:
-                    self.log("No folder selected — starting fresh.")
+                    self.log("No folder selected â€” starting fresh.")
                     library_root = None
 
             title = self.gui.ask_input(
@@ -2925,7 +2664,7 @@ class RipperController:
             )
             if not title:
                 title = self._fallback_title_from_mode()
-                self.log(f"WARNING: No title — using: {title}")
+                self.log(f"WARNING: No title â€” using: {title}")
             self.log(f"Title: {title}")
             if resume_path:
                 series_root = os.path.dirname(
@@ -2958,7 +2697,7 @@ class RipperController:
             auto_title_pending = False
 
             if is_tv:
-                # Build the season prompt — when in library mode, show
+                # Build the season prompt â€” when in library mode, show
                 # the user which seasons already exist and default to the
                 # season most likely to need more episodes (incomplete
                 # season with the highest number, or the next one after
@@ -2987,7 +2726,7 @@ class RipperController:
                     season_str and season_str.isdigit()
                 ) else 0
                 if season == 0:
-                    self.log("WARNING: No season number — using 00")
+                    self.log("WARNING: No season number â€” using 00")
 
                 season_temp = os.path.join(
                     series_root, f"Season {season:02d}"
@@ -3023,7 +2762,7 @@ class RipperController:
                     auto_title_pending = True
                     title = make_temp_title()
                     self.log(
-                        "WARNING: No title entered — using fallback naming "
+                        "WARNING: No title entered â€” using fallback naming "
                         "mode after scan when possible."
                     )
                 year = self.gui.ask_input(
@@ -3034,7 +2773,7 @@ class RipperController:
                 )
                 if not year:
                     year = "0000"
-                    self.log("WARNING: No year — using 0000")
+                    self.log("WARNING: No year â€” using 0000")
                 movie_folder = os.path.join(
                     movie_root, f"{clean_name(title)} ({year})"
                 )
@@ -3250,7 +2989,7 @@ class RipperController:
 
             if cfg.get("opt_confirm_before_rip", True):
                 if not self.gui.ask_yesno(
-                    f"Rip {len(selected_ids)} title(s) — "
+                    f"Rip {len(selected_ids)} title(s) â€” "
                     f"~{selected_size / (1024**3):.1f} GB. Continue?"
                 ):
                     self.log("Rip cancelled by user.")
@@ -3259,7 +2998,7 @@ class RipperController:
                     continue
 
             self.log(
-                f"Selected {len(selected_ids)} title(s) — "
+                f"Selected {len(selected_ids)} title(s) â€” "
                 f"~{selected_size / (1024**3):.1f} GB"
             )
 
@@ -3294,7 +3033,7 @@ class RipperController:
 
             if failed_titles:
                 self.report(
-                    f"Disc {disc_number}: titles failed — "
+                    f"Disc {disc_number}: titles failed â€” "
                     f"{failed_titles}"
                 )
 
@@ -3385,7 +3124,7 @@ class RipperController:
                     )
                     self.gui.show_error(
                         "Rip Failed",
-                        "Rip incomplete — file too small.\n\n"
+                        "Rip incomplete â€” file too small.\n\n"
                         "Automatic retry was attempted once and still failed."
                     )
                     if not self.gui.ask_yesno("Try another disc?"):
@@ -3401,7 +3140,7 @@ class RipperController:
                         break
                     continue
                 self.report(
-                    f"USER OVERRIDE — Disc {disc_number} size warning"
+                    f"USER OVERRIDE â€” Disc {disc_number} size warning"
                 )
 
             # Analyze files once; reuse for both integrity check and move step.
@@ -3425,7 +3164,7 @@ class RipperController:
                     break
                 continue
 
-            # Integrity check uses pre-analyzed data — no extra ffprobe pass.
+            # Integrity check uses pre-analyzed data â€” no extra ffprobe pass.
             # Build expected-duration/size maps from disc scan + rip tracking.
             _dur_by_id_d = {
                 int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
@@ -3494,7 +3233,7 @@ class RipperController:
             else:
                 if self.engine.abort_event.is_set():
                     self.log(
-                        "Move stopped before completion — "
+                        "Move stopped before completion â€” "
                         "some files may not have moved."
                     )
                 self.log(f"Temp folder preserved at: {rip_path}")
@@ -3578,8 +3317,8 @@ class RipperController:
                     verb = "gap-filling from" if gap_fill else "continuing from"
                     self.log(
                         f"Detected {len(existing_eps)} existing episode(s) in "
-                        f"Season {season:02d} — {verb} "
-                        f"episode(s) {suggested[0]}–{suggested[-1]}."
+                        f"Season {season:02d} â€” {verb} "
+                        f"episode(s) {suggested[0]}â€“{suggested[-1]}."
                     )
 
             default_episode_input = ", ".join(
@@ -3622,7 +3361,7 @@ class RipperController:
                     ):
                         if not self.gui.ask_yesno(
                             f"Episode numbers not in order: "
-                            f"{episode_numbers} — continue anyway?"
+                            f"{episode_numbers} â€” continue anyway?"
                         ):
                             continue
 
@@ -3666,8 +3405,10 @@ class RipperController:
                     session_meta.get("episode_names", [])
                 ) if session_meta else ""
             )
-            real_names  = parse_episode_names(name_input)
-            keep_extras = self.gui.ask_yesno("Keep extras?")
+            real_names    = parse_episode_names(name_input)
+            extra_indices = self._ask_extras_selection(
+                titles_list, main_indices
+            )
 
             if session_rip_path:
                 self.engine.update_temp_metadata(
@@ -3689,7 +3430,7 @@ class RipperController:
 
             if self.engine.cfg.get("opt_confirm_before_move", True):
                 if not self.gui.ask_yesno(
-                    "Confirm — move these files?"
+                    "Confirm â€” move these files?"
                 ):
                     self.log("Cancelled by user.")
                     return False
@@ -3710,8 +3451,10 @@ class RipperController:
                     self.log("Cancelled.")
                     return False
 
-                main_indices = [int(selected[0].split(":")[0]) - 1]
-            keep_extras     = self.gui.ask_yesno("Keep extras?")
+                main_indices  = [int(selected[0].split(":")[0]) - 1]
+            extra_indices  = self._ask_extras_selection(
+                titles_list, main_indices
+            )
             episode_numbers = []
             real_names      = []
 
@@ -3728,7 +3471,7 @@ class RipperController:
 
             if self.engine.cfg.get("opt_confirm_before_move", True):
                 if not self.gui.ask_yesno(
-                    "Confirm — move this file?"
+                    "Confirm â€” move this file?"
                 ):
                     self.log("Cancelled by user.")
                     return False
@@ -3736,7 +3479,7 @@ class RipperController:
         self.gui.set_status("Moving files...")
         success, self.global_extra_counter, moved_paths = self.engine.move_files(
             titles_list, main_indices, episode_numbers,
-            real_names, keep_extras, is_tv, title,
+            real_names, extra_indices, is_tv, title,
             dest_folder, extras_folder, season, year,
             self.global_extra_counter,
             on_progress=self.gui.set_progress,
@@ -3754,7 +3497,7 @@ class RipperController:
                 )
                 success = False
             elif post_status == "warn":
-                self.report("USER OVERRIDE — post-move size warning")
+                self.report("USER OVERRIDE â€” post-move size warning")
         if success and moved_paths and (not self._verify_container_integrity(moved_paths)):
             self.report("Post-move ffprobe integrity check failed")
             self.gui.show_error(
@@ -3780,7 +3523,7 @@ class RipperController:
 
 
 # ==========================================
-# LAYER 3 — GUI
+# LAYER 3 â€” GUI
 # ==========================================
 
 
