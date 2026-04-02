@@ -124,29 +124,32 @@ class RipperEngine:
         ffprobe, ffprobe_source = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
         )
-        if not os.path.exists(makemkvcon):
+        if not os.path.isfile(makemkvcon):
             return False, (
                 f"MakeMKV not found at:\n{makemkvcon}"
                 f"\n\nPlease check Settings."
             )
-        if not os.path.exists(ffprobe):
+        if not os.path.isfile(ffprobe):
             return False, (
                 f"ffprobe not found."
                 f"\n\nDownload ffmpeg from https://ffmpeg.org and point"
                 f"\nSettings \u2192 Paths \u2192 ffprobe folder to its bin directory."
             )
         self._resolved_makemkvcon = makemkvcon
+        self._resolved_makemkvcon_src = os.path.normpath(self.cfg["makemkvcon_path"])
         self._ffprobe_source = ffprobe_source
         return True, ""
 
     def _get_makemkvcon(self):
-        """Return resolved makemkvcon path (set by validate_tools)."""
+        """Return resolved makemkvcon path, re-resolving if config changed."""
         cached = getattr(self, "_resolved_makemkvcon", None)
-        if cached:
+        current = os.path.normpath(self.cfg["makemkvcon_path"])
+        if cached and getattr(self, "_resolved_makemkvcon_src", None) == current:
             return cached
-        return resolve_makemkvcon(
-            os.path.normpath(self.cfg["makemkvcon_path"])
-        )
+        resolved = resolve_makemkvcon(current)
+        self._resolved_makemkvcon = resolved
+        self._resolved_makemkvcon_src = current
+        return resolved
 
     def get_disc_target(self):
         """Return MakeMKV disc selector for the configured drive index."""
