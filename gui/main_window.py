@@ -2193,6 +2193,11 @@ class JellyRipperGUI(tk.Tk):
                     self.controller.log("Settings saved.")
                 except Exception as e:
                     self.controller.log(f"Error saving settings: {e}")
+                    messagebox.showerror(
+                        "Save Failed",
+                        f"Settings could not be saved:\n{e}",
+                        parent=win,
+                    )
                 finally:
                     try:
                         win.destroy()
@@ -2271,6 +2276,9 @@ class JellyRipperGUI(tk.Tk):
         except Exception:
             pass
         try:
+            # Escape for safe PS string interpolation.
+            safe_title = title.replace('"', '`"').replace("'", "''")
+            safe_msg = message.replace('"', '`"').replace("'", "''")
             ps = (
                 "[Windows.UI.Notifications.ToastNotificationManager,"
                 " Windows.UI.Notifications, ContentType=WindowsRuntime]"
@@ -2279,9 +2287,9 @@ class JellyRipperGUI(tk.Tk):
                 "$x = [Windows.UI.Notifications.ToastNotificationManager]"
                 "::GetTemplateContent($t);"
                 f'$x.GetElementsByTagName("text")[0].AppendChild('
-                f'$x.CreateTextNode("{title}")) | Out-Null;'
+                f'$x.CreateTextNode("{safe_title}")) | Out-Null;'
                 f'$x.GetElementsByTagName("text")[1].AppendChild('
-                f'$x.CreateTextNode("{message}")) | Out-Null;'
+                f'$x.CreateTextNode("{safe_msg}")) | Out-Null;'
                 "$n = [Windows.UI.Notifications.ToastNotification]::new($x);"
                 '[Windows.UI.Notifications.ToastNotificationManager]'
                 '::CreateToastNotifier("JellyRip.App.1").Show($n);'

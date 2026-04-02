@@ -39,7 +39,7 @@ def save_config(cfg):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
     except Exception as exc:
-        print(f"Warning: could not save config: {exc}")
+        raise RuntimeError(f"Could not save config: {exc}") from exc
 
 
 def _is_file(path):

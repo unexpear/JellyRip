@@ -1007,7 +1007,11 @@ class RipperController:
             except Exception as e:
                 self.log(f"Preview open failed: {e}")
             finally:
-                self.engine.reset_abort()
+                # Only clear abort if no rip is running — otherwise
+                # preview cleanup would cancel a real abort request.
+                rip = getattr(self.gui, "rip_thread", None)
+                if not (rip and rip.is_alive()):
+                    self.engine.reset_abort()
                 self.gui.set_status("Ready")
                 if self._preview_lock.locked():
                     self._preview_lock.release()

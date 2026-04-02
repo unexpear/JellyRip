@@ -240,14 +240,15 @@ class RipperEngine:
                 json.dump(data, f, indent=2)
             os.replace(io_tmp, io_path)
         except Exception as e:
-            print(f"Warning: failed atomic JSON write for {path}: {e}")
+            import logging
+            logging.warning("Failed atomic JSON write for %s: %s", path, e)
             if os.path.exists(io_tmp):
                 try:
                     os.remove(io_tmp)
                 except Exception as cleanup_err:
-                    print(
-                        "Warning: failed to remove temporary JSON file "
-                        f"{tmp}: {cleanup_err}"
+                    logging.warning(
+                        "Failed to remove temporary JSON file %s: %s",
+                        tmp, cleanup_err,
                     )
 
     def write_temp_metadata(self, rip_path, title, disc_number,
@@ -1630,10 +1631,6 @@ class RipperEngine:
         except Exception as e:
             on_log(f"Warning: could not write log: {e}")
 
-
-# ==========================================
-# LAYER 2 — CONTROLLER
-# ==========================================
 
 
 __all__ = ["RipperEngine"]
