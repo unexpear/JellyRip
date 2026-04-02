@@ -772,6 +772,9 @@ class JellyRipperGUI(tk.Tk):
                 command=no, relief="flat"
             ).pack(side="left", padx=6, pady=4)
 
+            # Re-enable widget for embedded button insertion
+            # (_append_log_text_main leaves it disabled).
+            self.log_text.config(state="normal")
             self.log_text.window_create("end", window=btn_frame)
             self.log_text.insert("end", "\n")
             self.log_text.see("end")
@@ -2131,6 +2134,8 @@ class JellyRipperGUI(tk.Tk):
                         "ffprobe_path": validate_ffprobe,
                     }
 
+                    # Stage all changes before touching live config.
+                    staged = {}
                     for key, (vtype, var) in vars_map.items():
                         if vtype == "str":
                             v = var.get().strip()
@@ -2150,28 +2155,31 @@ class JellyRipperGUI(tk.Tk):
                                         f"new path failed validation ({new_err})."
                                     )
                                     continue
-                            cfg[key] = candidate
+                            staged[key] = candidate
                         elif vtype == "text":
-                            cfg[key] = var.get().strip()
+                            staged[key] = var.get().strip()
                         elif vtype == "bool":
-                            cfg[key] = var.get()
+                            staged[key] = var.get()
                         elif vtype == "int":
                             try:
-                                cfg[key] = int(var.get())
+                                staged[key] = int(var.get())
                             except ValueError:
                                 pass
                         elif vtype == "float":
                             try:
-                                cfg[key] = float(var.get())
+                                staged[key] = float(var.get())
                             except ValueError:
                                 pass
                         elif vtype == "choice":
-                            cfg[key] = var.get().strip()
+                            staged[key] = var.get().strip()
                         elif vtype == "naming_mode":
                             selected = var.get().strip()
-                            cfg[key] = naming_mode_label_to_value.get(
+                            staged[key] = naming_mode_label_to_value.get(
                                 selected, "timestamp"
                             )
+
+                    # Apply staged changes atomically.
+                    cfg.update(staged)
                     self.engine.cfg = cfg
                     configure_safe_int_debug(
                         cfg.get("opt_debug_safe_int", False),
