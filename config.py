@@ -142,14 +142,17 @@ def _resolve_ffprobe_from_dir(dirpath):
 
 
 def resolve_ffprobe(configured_path):
-    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder)."""
+    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder).
+
+    Returns (resolved_path, source) where source describes how it was found.
+    """
     # If configured path is a direct exe, use it
     if _is_file(configured_path):
-        return configured_path
+        return configured_path, "configured"
     # If configured path is a directory, look for ffprobe inside it
     found = _resolve_ffprobe_from_dir(configured_path)
     if found:
-        return found
+        return found, "configured folder"
     # Try common install directories
     for d in [
         r"C:\Program Files\ffmpeg",
@@ -161,12 +164,12 @@ def resolve_ffprobe(configured_path):
     ]:
         found = _resolve_ffprobe_from_dir(d)
         if found:
-            return found
+            return found, f"common path ({d})"
     # PATH lookup
     found = shutil.which("ffprobe")
     if found:
-        return found
-    return configured_path
+        return found, f"PATH ({found})"
+    return configured_path or "", "not found"
 
 __all__ = [
     "CONFIG_FILE",

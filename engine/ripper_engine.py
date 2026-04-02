@@ -121,7 +121,7 @@ class RipperEngine:
         makemkvcon = resolve_makemkvcon(
             os.path.normpath(self.cfg["makemkvcon_path"])
         )
-        ffprobe    = resolve_ffprobe(
+        ffprobe, ffprobe_source = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
         )
         if not os.path.exists(makemkvcon):
@@ -131,9 +131,11 @@ class RipperEngine:
             )
         if not os.path.exists(ffprobe):
             return False, (
-                f"ffprobe not found at:\n{ffprobe}"
-                f"\n\nInstall ffmpeg and point Settings to its folder."
+                f"ffprobe not found."
+                f"\n\nDownload ffmpeg from https://ffmpeg.org and point"
+                f"\nSettings \u2192 Paths \u2192 ffprobe folder to its bin directory."
             )
+        self._ffprobe_source = ffprobe_source
         return True, ""
 
     def get_disc_target(self):
@@ -1151,7 +1153,7 @@ class RipperEngine:
         """
         ffprobe = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
-        )
+        )[0]
         abort   = self.abort_event
         results = []
         total   = len(mkv_files)
@@ -1205,7 +1207,7 @@ class RipperEngine:
 
         ffprobe_exe = ffprobe or resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
-        )
+        )[0]
         mb = stat.st_size // (1024**2)
         dur = -1.0
         proc = subprocess.Popen(
@@ -1261,7 +1263,7 @@ class RipperEngine:
         try:
             ffprobe = resolve_ffprobe(
                 os.path.normpath(self.cfg["ffprobe_path"])
-            )
+            )[0]
             duration, _mb = self._probe_file_duration_and_size(
                 path, ffprobe=ffprobe, honor_abort=False
             )
