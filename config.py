@@ -77,6 +77,12 @@ def validate_makemkvcon(path):
 
 
 def validate_ffprobe(path):
+    """Validate ffprobe. Accepts a direct exe path or a folder containing it."""
+    if os.path.isdir(path):
+        resolved = _resolve_ffprobe_from_dir(path)
+        if not resolved:
+            return False, "No ffprobe.exe found in folder"
+        return _run_probe(resolved, ["-version"])
     return _run_probe(path, ["-version"])
 
 
