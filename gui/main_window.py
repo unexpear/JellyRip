@@ -578,7 +578,7 @@ class JellyRipperGUI(tk.Tk):
                 self.controller.log(f"Could not compute update SHA256: {e}")
 
             require_sig = bool(
-                self.cfg.get("opt_update_require_signature", True)
+                self.cfg.get("opt_update_require_signature", False)
             )
             pinned_thumbprint = str(
                 self.cfg.get("opt_update_signer_thumbprint", "")
@@ -2136,6 +2136,7 @@ class JellyRipperGUI(tk.Tk):
 
                     # Stage all changes before touching live config.
                     staged = {}
+                    rejected_fields = []
                     for key, (vtype, var) in vars_map.items():
                         if vtype == "str":
                             v = var.get().strip()
@@ -2164,12 +2165,12 @@ class JellyRipperGUI(tk.Tk):
                             try:
                                 staged[key] = int(var.get())
                             except ValueError:
-                                pass
+                                rejected_fields.append(key)
                         elif vtype == "float":
                             try:
                                 staged[key] = float(var.get())
                             except ValueError:
-                                pass
+                                rejected_fields.append(key)
                         elif vtype == "choice":
                             staged[key] = var.get().strip()
                         elif vtype == "naming_mode":
@@ -2181,6 +2182,11 @@ class JellyRipperGUI(tk.Tk):
                     # Apply staged changes atomically.
                     cfg.update(staged)
                     self.engine.cfg = cfg
+                    if rejected_fields:
+                        names = ", ".join(rejected_fields)
+                        self.controller.log(
+                            f"Settings: invalid numeric input ignored for: {names}"
+                        )
                     configure_safe_int_debug(
                         cfg.get("opt_debug_safe_int", False),
                         self.controller.log
@@ -2340,7 +2346,16 @@ class JellyRipperGUI(tk.Tk):
                 self.log_text.config(state="normal")
                 batch_text = "\n".join(messages) + "\n"
                 self.log_text.insert("end", batch_text)
-                self.log_text.see("end")
+                # Trim widget (same cap/trim as _append_log_text_main).
+                line_count = int(self.log_text.index("end").split(".")[0]) - 1
+                cap = int(self.cfg.get("opt_log_cap_lines", 300000))
+                if line_count > cap:
+                    trim = int(self.cfg.get("opt_log_trim_lines", 200000))
+                    self.log_text.delete("1.0", f"{line_count - trim}.0")
+                # Only auto-scroll if user is already near the bottom.
+                visible_end = self.log_text.yview()[1]
+                if visible_end > 0.95:
+                    self.log_text.see("end")
                 self.log_text.config(state="disabled")
         self.after(100, self.process_queue)
 

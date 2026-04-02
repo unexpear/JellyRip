@@ -945,6 +945,9 @@ class RipperController:
                     self.log("Preview already running. Wait for it to finish.")
                     return
 
+                if self.engine.abort_event.is_set():
+                    self.log("Preview skipped: abort requested.")
+                    return
                 self.log(f"Preview: starting Title {title_id + 1} for 40s...")
                 self.gui.set_status(
                     f"Previewing Title {title_id + 1}... (40s sample)"
