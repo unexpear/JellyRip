@@ -1705,8 +1705,10 @@ class JellyRipperGUI(tk.Tk):
             self.open_settings()
         except Exception as e:
             self._settings_window = None
+            import traceback
+            tb = traceback.format_exc()
             try:
-                self.controller.log(f"Fatal settings callback error: {e}")
+                self.controller.log(f"Fatal settings callback error: {e}\n{tb}")
             except Exception:
                 pass
             try:
@@ -2368,6 +2370,10 @@ class JellyRipperGUI(tk.Tk):
                 "Configuration Error", msg, parent=self
             )
             return
+
+        src = getattr(self.engine, "_ffprobe_source", "")
+        if src:
+            self.log(f"ffprobe resolved via: {src}")
 
         temp_folder = os.path.normpath(
             self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
