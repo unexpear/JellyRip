@@ -1938,7 +1938,7 @@ class JellyRipperGUI(tk.Tk):
 
             section(paths_tab, "Apps")
             path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
-            path_row(paths_tab, "ffprobe_path",    "HandBrake / ffmpeg folder")
+            path_row(paths_tab, "ffprobe_path",    "ffmpeg / ffprobe folder")
             section(paths_tab, "Folders")
             path_row(paths_tab, "temp_folder",     "Temp folder")
             path_row(paths_tab, "tv_folder",       "TV shows library folder")

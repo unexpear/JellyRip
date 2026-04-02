@@ -132,7 +132,7 @@ class RipperEngine:
         if not os.path.exists(ffprobe):
             return False, (
                 f"ffprobe not found at:\n{ffprobe}"
-                f"\n\nPoint Settings to your HandBrake or ffmpeg folder."
+                f"\n\nInstall ffmpeg and point Settings to its folder."
             )
         return True, ""
 

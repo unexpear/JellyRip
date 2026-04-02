@@ -42,7 +42,7 @@ First launch tip: open **Settings** and confirm MakeMKV and ffprobe paths before
 
 - Windows
 - MakeMKV
-- ffprobe from HandBrake or ffmpeg
+- ffprobe (from ffmpeg)
 - optical drive for live ripping
 
 ## Main Workflows
