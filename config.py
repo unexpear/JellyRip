@@ -142,7 +142,7 @@ def _resolve_ffprobe_from_dir(dirpath):
 
 
 def resolve_ffprobe(configured_path):
-    """Resolve ffprobe. Accepts a direct exe path OR a directory (HandBrake/ffmpeg folder)."""
+    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder)."""
     # If configured path is a direct exe, use it
     if _is_file(configured_path):
         return configured_path
@@ -152,11 +152,9 @@ def resolve_ffprobe(configured_path):
         return found
     # Try common install directories
     for d in [
-        r"C:\Program Files\HandBrake",
-        r"C:\Program Files (x86)\HandBrake",
         r"C:\Program Files\ffmpeg",
-        r"C:\Program Files (x86)\ffmpeg",
         r"C:\Program Files\ffmpeg\bin",
+        r"C:\Program Files (x86)\ffmpeg",
         r"C:\Program Files (x86)\ffmpeg\bin",
         r"C:\ffmpeg",
         r"C:\ffmpeg\bin",

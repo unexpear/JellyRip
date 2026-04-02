@@ -55,7 +55,7 @@ Requirements:
 - Windows
 - Python 3.13+
 - MakeMKV installed for live testing
-- ffprobe installed or bundled with HandBrake/ffmpeg
+- ffprobe (from ffmpeg)
 
 Install and run:
 
