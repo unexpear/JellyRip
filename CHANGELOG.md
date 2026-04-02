@@ -1,23 +1,31 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.10] - 2026-04-02
 
 ### Added
 
 - Added repository-standard project files: `CONTRIBUTING.md`, `SECURITY.md`, `pyproject.toml`, and a Windows GitHub Actions test workflow.
 - Added `docs/architecture.md` and `docs/repository-layout.md` to explain the app's layered design and flat-layout rationale.
 - Added settings for optional prompt auto-timeouts and optional unattended disc-swap timeouts.
+- Added unified tool resolver layer (`resolve_tool`, `resolve_makemkvcon`, `resolve_ffprobe`) with resolution order: saved config → common install paths → PATH environment variable.
+- Added `validate_makemkvcon` and `validate_ffprobe` helpers that run a live probe command and return a success flag and error message.
+- Added `should_keep_current_tool_path` safeguard: a working saved tool path is never replaced by an unvalidated new path.
+- Added `tests/test_config_tools.py` with 5 regression tests covering resolver order and the overwrite-guard rule.
 
 ### Changed
 
 - Reworked repository documentation to better match the expectations of a maintained small Windows desktop app project.
 - Updated preview-related tests so pytest never launches a real media player during local or CI test runs.
+- Settings save flow now validates new tool paths before accepting them; rejects silently-broken replacements and logs the rejection reason.
+- Engine `validate_tools` now routes both MakeMKV and ffprobe through the resolver layer so PATH installs and custom locations are found automatically.
+- Multi-disc dump mode renamed from "Unattended" to "Dump All" in UI labels and log messages for clarity.
+- Extras selection changed from a yes/no keep-all toggle to a multi-select picker so individual extra titles can be deselected.
 
 ### Fixed
 
-- Unattended multi-disc flow now pauses with an explicit between-disc prompt and no longer times out by default while waiting for user swap actions.
-- Unrecognized unattended discs can now be advanced manually instead of forcing the operator into retry-only behavior.
-- GUI prompt timeout behavior is now configurable instead of hard-coded.
+- Multi-disc dump flow now pauses with an explicit between-disc confirmation prompt and no longer times out by default while waiting for user swap actions.
+- Unrecognized discs during multi-disc dump can now be advanced manually (bypass) or stopped instead of being forced into retry-only behavior.
+- GUI prompt timeout behaviour is now configurable via Settings → Advanced → Interactive Timeouts instead of being a hard-coded 300-second safety value.
 
 ## [1.0.9] - 2026-03-29
 
@@ -120,7 +128,7 @@
 - Added 7 regression tests covering `_ensure_session_paths`, `_verify_container_integrity` with and without pre-analyzed data, integrity failure cases (zero duration, count mismatch), and advisory log format.
 - Added 4 regression tests for degraded rip classification: degraded success path, real failure path (no files), session report population, and session summary warnings vs. clean success branching.
 
-## 1.0.6 - 2026-03-27
+## [1.0.6] - 2026-03-27
 
 ### New features
 
@@ -152,7 +160,7 @@
 - Added Inno Setup installer support (`installer/JellyRip.iss`) targeting per-user install at `%LOCALAPPDATA%\Programs\JellyRip`.
 - Added `build_installer.bat` to build both `JellyRip.exe` and `JellyRipInstaller.exe`.
 
-## 1.0.5 - 2026-03-25
+## [1.0.5] - 2026-03-25
 
 ### Critical bug fixes
 
@@ -169,7 +177,7 @@
 
 - Better error messages when file analysis fails, with option to retry instead of silently skipping.
 
-## 1.0.4 - 2026-03-25
+## [1.0.4] - 2026-03-25
 
 ### Reliability and parsing hardening
 
