@@ -109,7 +109,13 @@ from shared.runtime import (
     resolve_naming_mode,
 )
 
-from config import load_config, save_config
+from config import (
+    load_config,
+    save_config,
+    should_keep_current_tool_path,
+    validate_ffprobe,
+    validate_makemkvcon,
+)
 from controller.controller import RipperController
 from engine.ripper_engine import RipperEngine
 from utils.helpers import (
@@ -244,22 +250,6 @@ class JellyRipperGUI(tk.Tk):
         for text, mode, color, width in buttons_row1:
             btn = tk.Button(
                 mode_frame, text=text,
-                command=lambda m=mode: self.start_task(m),
-                bg=color, fg="white",
-                font=("Segoe UI", 11),
-                width=width, height=2, relief="flat"
-            )
-            btn.pack(side="left", padx=5)
-            self.mode_buttons[mode] = btn
-
-        mode_frame2 = tk.Frame(self, bg=BG)
-        mode_frame2.pack(pady=(4, 8))
-        buttons_row2 = [
-            ("🤖  Unattended Mode", "u", "#6e3a1e", 36),
-        ]
-        for text, mode, color, width in buttons_row2:
-            btn = tk.Button(
-                mode_frame2, text=text,
                 command=lambda m=mode: self.start_task(m),
                 bg=color, fg="white",
                 font=("Segoe UI", 11),
@@ -662,6 +652,8 @@ class JellyRipperGUI(tk.Tk):
         with self._input_lock:
             result = [None]
             done   = threading.Event()
+            timeout_seconds = self._get_user_prompt_timeout_seconds()
+            start = time.time()
 
             def _show():
                 self._input_event.clear()
@@ -696,12 +688,12 @@ class JellyRipperGUI(tk.Tk):
 
             self.after(0, _show)
             # Caller may be a worker thread; this loop must not touch tkinter.
-            start = time.time()
             while not done.wait(timeout=0.1):
                 if self.engine.abort_event.is_set():
                     return None
-                if time.time() - start > 300:
-                    # Safety timeout prevents deadlock if UI callbacks are lost.
+                if (timeout_seconds is not None and
+                    time.time() - start >= timeout_seconds):
+                    self.after(0, self._hide_input_bar)
                     return None
             return result[0]
 
@@ -718,6 +710,8 @@ class JellyRipperGUI(tk.Tk):
 
         result = [None]
         done   = threading.Event()
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        start = time.time()
 
         def _show():
             ts = datetime.now().strftime("%H:%M:%S")
@@ -795,12 +789,11 @@ class JellyRipperGUI(tk.Tk):
         self.after(0, _show)
         # Wait by event polling so worker threads can call this safely
         # while tkinter widgets are still managed on the main thread.
-        start = time.time()
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
                 return False
-            if time.time() - start > 300:
-                # Safety timeout: if UI callbacks are lost, unblock the caller.
+            if (timeout_seconds is not None and
+                    time.time() - start >= timeout_seconds):
                 return False
         return result[0] if result[0] is not None else False
 
@@ -822,6 +815,8 @@ class JellyRipperGUI(tk.Tk):
 
         result = ["stop"]
         done   = threading.Event()
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        start = time.time()
 
         def _show():
             self.log_text.config(state="normal")
@@ -905,13 +900,24 @@ class JellyRipperGUI(tk.Tk):
             ).start()
 
         self.after(0, _show)
-        start = time.time()
         while not done.wait(timeout=0.1):
             if self.engine.abort_event.is_set():
                 return "stop"
-            if time.time() - start > 300:
+            if (timeout_seconds is not None and
+                    time.time() - start >= timeout_seconds):
                 return "stop"
         return result[0]
+
+    def _get_user_prompt_timeout_seconds(self):
+        if not self.cfg.get("opt_user_prompt_timeout_enabled", False):
+            return None
+        try:
+            return max(
+                1,
+                int(self.cfg.get("opt_user_prompt_timeout_seconds", 300))
+            )
+        except Exception:
+            return 300
 
     def _ask_duplicate_resolution_modal(self, prompt,
                                         retry_text="Swap and Retry",
@@ -1439,6 +1445,77 @@ class JellyRipperGUI(tk.Tk):
                 return []
         return result[0]
 
+    def show_extras_picker(self, title, prompt, options):
+        """Multi-select dialog with all items pre-selected.
+        Returns list of selected 0-based indices, or None if cancelled.
+        """
+        result = [None]
+        done   = threading.Event()
+
+        def _show():
+            win = tk.Toplevel(self)
+            win.title(title)
+            win.configure(bg="#0d1117")
+            win.grab_set()
+            win.lift()
+            win.focus_force()
+
+            tk.Label(
+                win, text=prompt,
+                bg="#0d1117", fg="#c9d1d9",
+                font=("Segoe UI", 11), wraplength=500
+            ).pack(pady=10, padx=15)
+
+            listbox = tk.Listbox(
+                win, bg="#161b22", fg="#c9d1d9",
+                font=("Consolas", 10), width=70,
+                height=min(len(options), 15),
+                selectmode="extended", relief="flat"
+            )
+            listbox.pack(padx=15, pady=5)
+            for opt in options:
+                listbox.insert("end", opt)
+            listbox.select_set(0, "end")  # pre-select all
+
+            btn_row = tk.Frame(win, bg="#0d1117")
+            btn_row.pack(pady=4)
+            tk.Button(
+                btn_row, text="Select All",
+                bg="#21262d", fg="#c9d1d9",
+                command=lambda: listbox.select_set(0, "end"),
+                relief="flat"
+            ).pack(side="left", padx=6)
+            tk.Button(
+                btn_row, text="Deselect All",
+                bg="#21262d", fg="#c9d1d9",
+                command=lambda: listbox.selection_clear(0, "end"),
+                relief="flat"
+            ).pack(side="left", padx=6)
+
+            def confirm():
+                result[0] = list(listbox.curselection())
+                win.destroy()
+                done.set()
+
+            def on_close():
+                result[0] = None
+                win.destroy()
+                done.set()
+
+            win.protocol("WM_DELETE_WINDOW", on_close)
+            tk.Button(
+                win, text="Confirm",
+                bg="#238636", fg="white",
+                font=("Segoe UI", 11),
+                command=confirm, relief="flat"
+            ).pack(pady=10)
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
     def show_temp_manager(self, old_folders, engine, log_fn):
         if not old_folders:
             return
@@ -1958,6 +2035,15 @@ class JellyRipperGUI(tk.Tk):
                        "Warn when MakeMKV goes quiet")
             number_row(advanced_tab, "opt_stall_timeout_seconds",
                        "Quiet-time warning in seconds:", 120)
+            section(advanced_tab, "Interactive Timeouts")
+            toggle_row(advanced_tab, "opt_user_prompt_timeout_enabled",
+                       "Let prompts auto-timeout")
+            number_row(advanced_tab, "opt_user_prompt_timeout_seconds",
+                       "Prompt timeout in seconds:", 300)
+            toggle_row(advanced_tab, "opt_disc_swap_timeout_enabled",
+                       "Let multi-disc swap wait timeout")
+            number_row(advanced_tab, "opt_disc_swap_timeout_seconds",
+                       "Disc swap timeout in seconds:", 300)
             toggle_row(advanced_tab, "opt_auto_retry",
                        "Retry failed titles automatically")
             number_row(advanced_tab, "opt_retry_attempts",
@@ -2007,12 +2093,31 @@ class JellyRipperGUI(tk.Tk):
 
             def save():
                 try:
+                    tool_validators = {
+                        "makemkvcon_path": validate_makemkvcon,
+                        "ffprobe_path": validate_ffprobe,
+                    }
+
                     for key, (vtype, var) in vars_map.items():
                         if vtype == "str":
                             v = var.get().strip()
-                            cfg[key] = (
-                                os.path.normpath(v) if v else ""
-                            )
+                            candidate = os.path.normpath(v) if v else ""
+                            if key in tool_validators:
+                                current = os.path.normpath(
+                                    str(cfg.get(key, "")).strip()
+                                )
+                                if should_keep_current_tool_path(
+                                    current,
+                                    candidate,
+                                    tool_validators[key],
+                                ):
+                                    _new_ok, new_err = tool_validators[key](candidate)
+                                    self.controller.log(
+                                        f"Settings: kept working {key}; "
+                                        f"new path failed validation ({new_err})."
+                                    )
+                                    continue
+                            cfg[key] = candidate
                         elif vtype == "text":
                             cfg[key] = var.get().strip()
                         elif vtype == "bool":
@@ -2229,15 +2334,6 @@ class JellyRipperGUI(tk.Tk):
             return self.controller.run_smart_rip
         return self.controller.run_movie_disc
 
-    def _pick_unattended_mode(self):
-        if self.ask_yesno(
-            "Use unattended series mode?\n\n"
-            "Yes = multiple discs/seasons\n"
-            "No = single disc"
-        ):
-            return self.controller.run_unattended_series
-        return self.controller.run_unattended_single
-
     def start_task(self, mode):
         if self.rip_thread and self.rip_thread.is_alive():
             messagebox.showwarning(
@@ -2303,12 +2399,9 @@ class JellyRipperGUI(tk.Tk):
             "sr": self.controller.run_smart_rip,
             "d":  self.controller.run_dump_all,
             "i":  self.controller.run_organize,
-            "u1": self.controller.run_unattended_single,
-            "us": self.controller.run_unattended_series,
-            "u":  self._pick_unattended_mode,
         }
         target = targets.get(mode, self.controller.run_organize)
-        needs_pick = mode in {"m", "u"}
+        needs_pick = mode == "m"
 
         def task_wrapper():
             _success = False

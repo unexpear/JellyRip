@@ -1,0 +1,22 @@
+[project]
+name = "jellyrip"
+version = "1.0.9"
+description = "Windows-first MakeMKV companion for ripping and organizing discs into a Jellyfin library"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+  { name = "unexpear" }
+]
+keywords = ["makemkv", "jellyfin", "ripping", "windows", "tkinter"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Video",
+  "Topic :: System :: Archiving"
+]

@@ -474,7 +474,7 @@ def test_move_files_movie_with_extras_uses_clean_name_without_name_error(
         main_indices=[0],
         episode_numbers=[],
         real_names=[],
-        keep_extras=True,
+        extra_indices=None,
         is_tv=False,
         title="Pitch Perfect 2",
         dest_folder=str(dest_folder),
@@ -615,10 +615,72 @@ def test_duplicate_resolution_prefers_custom_title_override_yes(monkeypatch):
     assert called["value"] is False
 
 
+def test_wait_for_new_unique_disc_allows_manual_advance_when_unverified(monkeypatch):
+    controller, _engine = _controller_with_engine()
+    seen = set()
+
+    monkeypatch.setattr(
+        controller.gui, "show_info", lambda *_a, **_k: None, raising=False
+    )
+    monkeypatch.setattr(controller, "_wait_for_disc_state", lambda *_a, **_k: True)
+
+    calls = iter([None, None])
+    monkeypatch.setattr(controller, "_build_disc_fingerprint", lambda: next(calls))
+    monkeypatch.setattr(
+        controller.gui,
+        "ask_duplicate_resolution",
+        lambda *_a, **_k: "bypass",
+        raising=False,
+    )
+
+    result = controller._wait_for_new_unique_disc(
+        seen_fingerprints=seen,
+        disc_number=2,
+        total=4,
+    )
+
+    assert result == "manual-advance"
+    assert any(
+        "could not read disc fingerprint" in line.lower()
+        for line in controller.session_report
+    )
+
+
+def test_wait_for_new_unique_disc_stop_after_unverified(monkeypatch):
+    controller, _engine = _controller_with_engine()
+
+    monkeypatch.setattr(
+        controller.gui, "show_info", lambda *_a, **_k: None, raising=False
+    )
+    monkeypatch.setattr(controller, "_wait_for_disc_state", lambda *_a, **_k: True)
+
+    calls = iter([None, None])
+    monkeypatch.setattr(controller, "_build_disc_fingerprint", lambda: next(calls))
+    monkeypatch.setattr(
+        controller.gui,
+        "ask_duplicate_resolution",
+        lambda *_a, **_k: "stop",
+        raising=False,
+    )
+
+    result = controller._wait_for_new_unique_disc(
+        seen_fingerprints=set(),
+        disc_number=2,
+        total=4,
+    )
+
+    assert result is None
+    assert any(
+        "stopped after unverified disc prompt" in line.lower()
+        for line in controller.session_report
+    )
+
+
 def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine(_engine_cfg(
         temp_folder=str(tmp_path)
     ))
+    opened = []
 
     def fake_rip_preview(rip_path, title_id, preview_seconds, on_log):
         _ = (rip_path, title_id, preview_seconds, on_log)
@@ -634,6 +696,19 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         lambda files, _log: [(files[0], 40, 100)] if files else [],
     )
     monkeypatch.setattr("controller.controller.shutil.which", lambda _x: None)
+    real_isfile = controller_module.os.path.isfile
+    monkeypatch.setattr(
+        "controller.controller.os.path.isfile",
+        lambda path: False if "VideoLAN\\VLC\\vlc.exe" in str(path) else real_isfile(path),
+    )
+    monkeypatch.setattr(
+        "controller.controller.subprocess.Popen",
+        lambda args: opened.append(args),
+    )
+    monkeypatch.setattr(
+        "controller.controller.os.startfile",
+        lambda path: opened.append(path),
+    )
     monkeypatch.setattr("controller.controller.time.sleep", lambda _x: None)
 
     # Run thread target inline for deterministic test behavior.
@@ -654,11 +729,12 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         for m in controller.gui.messages
     )
     assert any(
-        ("Preview ready, but VLC was not found in PATH." in m) or
+        ("VLC not found; opening in default player:" in m) or
         ("Preview opened in VLC:" in m)
         for m in controller.gui.messages
     )
     assert any("Preview candidate:" in m for m in controller.gui.messages)
+    assert len(opened) == 1
 
 
 def test_state_machine_invalid_transition_raises():

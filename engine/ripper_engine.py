@@ -17,7 +17,7 @@ _POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 from shared.runtime import RIP_ATTEMPT_FLAGS
 
-from config import resolve_ffprobe
+from config import resolve_ffprobe, resolve_makemkvcon
 from utils.helpers import clean_name
 from utils.parsing import (
     parse_cli_args,
@@ -118,7 +118,9 @@ class RipperEngine:
 
     def validate_tools(self):
         """Validate configured MakeMKV and ffprobe paths."""
-        makemkvcon = os.path.normpath(self.cfg["makemkvcon_path"])
+        makemkvcon = resolve_makemkvcon(
+            os.path.normpath(self.cfg["makemkvcon_path"])
+        )
         ffprobe    = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
         )
@@ -469,17 +471,28 @@ class RipperEngine:
             titles_to_log = titles_to_log + [scored[0]]
 
         for t, score in titles_to_log:
+            raw_name = str(t.get("name", "") or "").strip()
+            projected_name = clean_name(raw_name) if raw_name else ""
+            if not projected_name:
+                projected_name = f"Title_{safe_int(t.get('id', 0)) + 1:02d}"
             on_log(
                 f"  Title {t['id']+1}: score={score:.3f} | "
                 f"{t['duration']} {t['size']} | "
                 f"chap={safe_int(t.get('chapters', 0))} "
                 f"aud={len(t.get('audio_tracks', []))} "
-                f"sub={len(t.get('subtitle_tracks', []))}"
+                f"sub={len(t.get('subtitle_tracks', []))} | "
+                f"projected='{projected_name}'"
             )
         if scored:
+            best_title = scored[0][0]
+            best_raw_name = str(best_title.get("name", "") or "").strip()
+            best_projected_name = clean_name(best_raw_name) if best_raw_name else ""
+            if not best_projected_name:
+                best_projected_name = f"Title_{safe_int(best_title.get('id', 0)) + 1:02d}"
             on_log(
                 f"BEST: Title {scored[0][0]['id']+1} "
-                f"(score={scored[0][1]:.3f})"
+                f"(score={scored[0][1]:.3f}) "
+                f"projected='{best_projected_name}'"
             )
 
             if len(scored) > 1:
@@ -502,7 +515,7 @@ class RipperEngine:
 
     def get_disc_size(self, on_log, prefer_cached=False):
         """
-        Lightweight disc size query used only by dump/unattended modes.
+        Lightweight disc size query used only by dump/multi-disc modes.
         TV/Movie disc flows use size_bytes from scan_disc() instead,
         avoiding a second full pass over the disc.
         """
@@ -1433,25 +1446,31 @@ class RipperEngine:
             return False
 
     def move_files(self, titles_list, main_indices, episode_numbers,
-                   real_names, keep_extras, is_tv, title, dest_folder,
+                   real_names, extra_indices, is_tv, title, dest_folder,
                    extras_folder, season, year, extra_counter,
                    on_progress, on_log):
-        """Move selected main/extras files into final library structure."""
+        """Move selected main/extras files into final library structure.
 
-        total_to_move = len(main_indices) + (
-            len(titles_list) - len(main_indices) if keep_extras else 0
+        extra_indices: None = keep all non-main as extras,
+                       []   = keep no extras,
+                       [i]  = keep only those absolute indices as extras.
+        """
+        _main_set    = set(main_indices)
+        _extras_list = (
+            [i for i in range(len(titles_list)) if i not in _main_set]
+            if extra_indices is None
+            else list(extra_indices)
         )
+        total_to_move = len(main_indices) + len(_extras_list)
         moved = 0
         moved_paths = []
 
         selected_size = sum(
             os.path.getsize(titles_list[i][0]) for i in main_indices
         )
-        if keep_extras:
+        if _extras_list:
             selected_size += sum(
-                os.path.getsize(titles_list[i][0])
-                for i in range(len(titles_list))
-                if i not in main_indices
+                os.path.getsize(titles_list[i][0]) for i in _extras_list
             )
 
         if self.cfg.get("opt_check_dest_space", True):
@@ -1506,44 +1525,43 @@ class RipperEngine:
                 on_progress(int(moved / total_to_move * 100))
                 on_log(f"Done: {os.path.basename(final_path)}")
 
-            if keep_extras:
-                for i, (old_file, dur, mb) in enumerate(titles_list):
-                    if self.abort_event.is_set():
-                        on_log("Move aborted by user.")
-                        return False, extra_counter, moved_paths
-                    if i not in main_indices:
-                        if is_tv:
-                            name = (
-                                f"{clean_name(title)} - "
-                                f"S{season:02d}E00 - "
-                                f"Ex{extra_counter}.mkv"
-                            )
-                        else:
-                            name = (
-                                f"{clean_name(title)} ({year}) "
-                                f"- Ex{extra_counter}.mkv"
-                            )
-                        final_path = self.unique_path(
-                            os.path.join(extras_folder, name)
-                        )
-                        extra_counter += 1
-                        on_log(
-                            f"Moving extra: "
-                            f"{os.path.basename(old_file)}"
-                        )
-                        ok = self.move_file_atomic(
-                            old_file, final_path, on_log
-                        )
-                        if not ok:
-                            return False, extra_counter, moved_paths
-                        moved += 1
-                        moved_paths.append(final_path)
-                        on_progress(
-                            int(moved / total_to_move * 100)
-                        )
-                        on_log(
-                            f"Done: {os.path.basename(final_path)}"
-                        )
+            for i in _extras_list:
+                if self.abort_event.is_set():
+                    on_log("Move aborted by user.")
+                    return False, extra_counter, moved_paths
+                old_file, dur, mb = titles_list[i]
+                if is_tv:
+                    name = (
+                        f"{clean_name(title)} - "
+                        f"S{season:02d}E00 - "
+                        f"Ex{extra_counter}.mkv"
+                    )
+                else:
+                    name = (
+                        f"{clean_name(title)} ({year}) "
+                        f"- Ex{extra_counter}.mkv"
+                    )
+                final_path = self.unique_path(
+                    os.path.join(extras_folder, name)
+                )
+                extra_counter += 1
+                on_log(
+                    f"Moving extra: "
+                    f"{os.path.basename(old_file)}"
+                )
+                ok = self.move_file_atomic(
+                    old_file, final_path, on_log
+                )
+                if not ok:
+                    return False, extra_counter, moved_paths
+                moved += 1
+                moved_paths.append(final_path)
+                on_progress(
+                    int(moved / total_to_move * 100)
+                )
+                on_log(
+                    f"Done: {os.path.basename(final_path)}"
+                )
 
             on_log(f"All files moved. {moved} file(s) total.")
             return True, extra_counter, moved_paths

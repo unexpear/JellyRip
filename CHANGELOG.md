@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added repository-standard project files: `CONTRIBUTING.md`, `SECURITY.md`, `pyproject.toml`, and a Windows GitHub Actions test workflow.
+- Added `docs/architecture.md` and `docs/repository-layout.md` to explain the app's layered design and flat-layout rationale.
+- Added settings for optional prompt auto-timeouts and optional unattended disc-swap timeouts.
+
+### Changed
+
+- Reworked repository documentation to better match the expectations of a maintained small Windows desktop app project.
+- Updated preview-related tests so pytest never launches a real media player during local or CI test runs.
+
+### Fixed
+
+- Unattended multi-disc flow now pauses with an explicit between-disc prompt and no longer times out by default while waiting for user swap actions.
+- Unrecognized unattended discs can now be advanced manually instead of forcing the operator into retry-only behavior.
+- GUI prompt timeout behavior is now configurable instead of hard-coded.
+
 ## [1.0.9] - 2026-03-29
 
 ### Windows UX + path hardening
