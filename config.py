@@ -250,15 +250,31 @@ def _locate_ffprobe_registry():
         for hive, subkey in reg_paths:
             try:
                 with winreg.OpenKey(hive, subkey) as key:
-                    for value_name in ("InstallLocation", "InstallDir"):
+                    for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
                         try:
                             val, _ = winreg.QueryValueEx(key, value_name)
                             if val:
-                                found = _resolve_ffprobe_from_dir(val)
+                                val = str(val).strip().strip('"')
+                                if val.lower().endswith(".exe"):
+                                    if os.path.isfile(val) and os.path.basename(val).lower() == "ffprobe.exe":
+                                        return val
+                                    found = _resolve_ffprobe_from_dir(os.path.dirname(val))
+                                else:
+                                    found = _resolve_ffprobe_from_dir(val)
                                 if found:
                                     return found
                         except OSError:
                             continue
+                    try:
+                        uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
+                        if uninstall:
+                            uninstall = str(uninstall).strip().strip('"')
+                            install_dir = os.path.dirname(uninstall)
+                            found = _resolve_ffprobe_from_dir(install_dir)
+                            if found:
+                                return found
+                    except OSError:
+                        pass
             except OSError:
                 continue
     except Exception:
