@@ -1730,10 +1730,23 @@ class RipperEngine:
             io_log_file = self._io_path(log_file)
             if (os.path.exists(io_log_file) and
                     os.path.getsize(io_log_file) >= max_size):
-                with open(io_log_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                start_date = lines[0][:10] if lines else "unknown"
-                end_date   = lines[-1][:10] if lines else "unknown"
+                # Read only first/last line metadata to avoid loading large logs in memory.
+                start_date = "unknown"
+                end_date = "unknown"
+                with open(io_log_file, "rb") as f:
+                    first = f.readline().decode("utf-8", errors="replace").strip()
+                    if first:
+                        start_date = first[:10]
+
+                    f.seek(0, os.SEEK_END)
+                    file_size = f.tell()
+                    if file_size > 0:
+                        offset = min(file_size, 8192)
+                        f.seek(-offset, os.SEEK_END)
+                        tail = f.read().decode("utf-8", errors="replace")
+                        tail_lines = [ln for ln in tail.splitlines() if ln.strip()]
+                        if tail_lines:
+                            end_date = tail_lines[-1][:10]
                 old_name = (
                     f"rip_log_{start_date}_to_{end_date}.txt"
                 )

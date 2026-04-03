@@ -11,13 +11,13 @@ sys.path.insert(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 )
 
-from JellyRip import (  # pyright: ignore[reportMissingImports]
+from utils.media import select_largest_file  # pyright: ignore[reportMissingImports]
+from utils.parsing import (  # pyright: ignore[reportMissingImports]
     parse_cli_args,
     parse_duration_to_seconds,
     parse_ordered_titles,
     parse_size_to_bytes,
     safe_int,
-    select_largest_file,
 )
 
 

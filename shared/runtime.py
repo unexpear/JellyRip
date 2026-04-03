@@ -14,13 +14,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from controller.naming import (
-    build_fallback_title,
-    build_naming_preview_text,
-    normalize_naming_mode,
-    resolve_naming_mode,
-)
-
 __version__ = "1.0.11"
 
 
@@ -233,9 +226,4 @@ __all__ = [
     "_safe_int_debug_warn",
     "configure_duration_debug",
     "configure_safe_int_debug",
-    # Naming helpers (re-exported from controller.naming)
-    "build_fallback_title",
-    "build_naming_preview_text",
-    "normalize_naming_mode",
-    "resolve_naming_mode",
 ]

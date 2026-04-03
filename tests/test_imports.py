@@ -2,6 +2,10 @@
 import unittest.mock
 
 
+class _FakeTkBase:
+    pass
+
+
 def test_imports():
     import config  # noqa: F401
     import engine.ripper_engine  # noqa: F401
@@ -14,19 +18,19 @@ def test_gui_import():
     main_window.py imports tkinter at module level; patch Tk so this test
     passes on headless CI without a display server.
     """
-    with unittest.mock.patch("tkinter.Tk"):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
         import gui.main_window  # noqa: F401
 
 
 def test_gui_import_exposes_make_rip_folder_name():
-    with unittest.mock.patch("tkinter.Tk"):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
         import gui.main_window as main_window
 
     assert callable(main_window.make_rip_folder_name)
 
 
 def test_run_on_main_executes_directly_on_main_thread():
-    with unittest.mock.patch("tkinter.Tk"):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
         from gui.main_window import JellyRipperGUI
 
     gui = object.__new__(JellyRipperGUI)
@@ -37,7 +41,7 @@ def test_run_on_main_executes_directly_on_main_thread():
 
 
 def test_ask_duplicate_resolution_uses_modal_fallback_on_main_thread():
-    with unittest.mock.patch("tkinter.Tk"):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
         from gui.main_window import JellyRipperGUI
 
     gui = object.__new__(JellyRipperGUI)
@@ -50,7 +54,7 @@ def test_ask_duplicate_resolution_uses_modal_fallback_on_main_thread():
 
 
 def test_ask_space_override_uses_modal_fallback_on_main_thread():
-    with unittest.mock.patch("tkinter.Tk"):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
         from gui.main_window import JellyRipperGUI
 
     gui = object.__new__(JellyRipperGUI)
