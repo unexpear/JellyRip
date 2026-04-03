@@ -36,7 +36,12 @@ def make_temp_title():
 
 
 def is_network_path(path):
-    """Best-effort check for UNC or mapped/network drive paths."""
+    """Best-effort check for UNC or mapped/network drive paths.
+    
+    On Windows: checks for UNC paths (\\\\server\share) and DRIVE_REMOTE via GetDriveType.
+    On Linux/macOS: checks /proc/mounts or mount output for network filesystem types (nfs, cifs, smb).
+    Note: /mnt/ on WSL contains local mounts, not network paths; this function checks actual mount types.
+    """
     try:
         if not path:
             return False
@@ -55,10 +60,37 @@ def is_network_path(path):
                 except Exception:
                     return False
         else:
-            # Non-Windows fallback: check for common network patterns.
-            # We assume /mnt, /media, /net, cifs, nfs are network paths.
-            if any(x in p.lower() for x in ('/mnt/', '/media/', '/net/', 'cifs', 'nfs')):
-                return True
+            # Non-Windows: check /proc/mounts or mount output for network filesystem types.
+            # This properly handles WSL where /mnt/* are local mounts, not network paths.
+            try:
+                # Try /proc/mounts first (Linux)
+                if os.path.exists("/proc/mounts"):
+                    with open("/proc/mounts", "r") as f:
+                        for line in f:
+                            parts = line.split()
+                            if len(parts) >= 3:
+                                mount_point = parts[1]
+                                fs_type = parts[2]
+                                # Check if path starts with this mount point and fs_type is network
+                                if p.startswith(mount_point) and fs_type in ("nfs", "nfs4", "cifs", "smb", "smbfs"):
+                                    return True
+            except Exception:
+                pass
+            # Fallback: if /proc/mounts is unavailable, try 'mount' command
+            try:
+                import subprocess
+                result = subprocess.run(["mount"], capture_output=True, text=True, timeout=2)
+                for line in result.stdout.split("\n"):
+                    if any(fs in line.lower() for fs in ("nfs", "cifs", "smb")):
+                        # Try to extract mount point and see if path is under it
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == "on" and i + 1 < len(parts):
+                                mount_point = parts[i + 1]
+                                if p.startswith(mount_point):
+                                    return True
+            except Exception:
+                pass
         return False
     except Exception:
         return False
