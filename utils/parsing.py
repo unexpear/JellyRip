@@ -237,11 +237,12 @@ def parse_cli_args(raw, on_log=None, label="args"):
 
     filtered = []
     dropped = []
+    profile_tokens = []
     for tok in tokens:
         low = tok.lower()
         # Remove unsupported MakeMKV profile tokens
         if low.startswith(("+sel:", "-sel:")):
-            dropped.append(tok)
+            profile_tokens.append(tok)
             continue
         # Whitelist check: allow flag if it matches or starts with allowed flag + "="
         is_allowed = False
@@ -254,6 +255,11 @@ def parse_cli_args(raw, on_log=None, label="args"):
             continue
         filtered.append(tok)
 
+    if profile_tokens and on_log:
+        on_log(
+            f"Warning: removed unsupported MakeMKV profile token(s) in {label}: "
+            + ", ".join(profile_tokens)
+        )
     if dropped and on_log:
         on_log(
             f"Warning: removed disallowed token(s) in {label}: "
