@@ -110,6 +110,7 @@ from shared.runtime import (
 )
 
 from config import (
+    auto_locate_tools,
     load_config,
     save_config,
     should_keep_current_tool_path,
@@ -1956,6 +1957,41 @@ class JellyRipperGUI(tk.Tk):
             section(paths_tab, "Apps")
             path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
             path_row(paths_tab, "ffprobe_path",    "ffmpeg / ffprobe folder")
+
+            # Auto Locate button
+            _auto_status_var = tk.StringVar()
+
+            def _do_auto_locate():
+                mkv, ffp = auto_locate_tools()
+                results = []
+                if mkv:
+                    vars_map["makemkvcon_path"][1].set(mkv)
+                    results.append("MakeMKV")
+                if ffp:
+                    vars_map["ffprobe_path"][1].set(ffp)
+                    results.append("FFprobe")
+                if results:
+                    _auto_status_var.set(f"  Found: {', '.join(results)}")
+                else:
+                    _auto_status_var.set("  Neither tool found automatically.")
+                win.after(5000, lambda: _auto_status_var.set(""))
+
+            auto_btn_row = tk.Frame(paths_tab, bg="#0d1117")
+            auto_btn_row.pack(fill="x", padx=16, pady=(0, 6))
+            tk.Button(
+                auto_btn_row, text="Auto Locate",
+                bg="#21262d", fg="#c9d1d9",
+                font=("Segoe UI", 10),
+                relief="flat", bd=0, padx=8, pady=2,
+                cursor="hand2",
+                command=_do_auto_locate,
+            ).pack(side="left")
+            tk.Label(
+                auto_btn_row, textvariable=_auto_status_var,
+                bg="#0d1117", fg="#3fb950",
+                font=("Segoe UI", 9),
+            ).pack(side="left", padx=8)
+
             section(paths_tab, "Folders")
             path_row(paths_tab, "temp_folder",     "Temp folder")
             path_row(paths_tab, "tv_folder",       "TV shows library folder")
