@@ -1301,7 +1301,7 @@ class RipperEngine:
                     if self.abort_event.is_set():
                         proc.kill()
                         try:
-                            proc.wait(timeout=2)
+                            proc.communicate(timeout=2)
                         except Exception:
                             pass
                         return -1, mb
