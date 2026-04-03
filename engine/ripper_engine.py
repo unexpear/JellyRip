@@ -1557,13 +1557,12 @@ class RipperEngine:
                 if is_tv:
                     name = (
                         f"{clean_name(title)} - "
-                        f"S{season:02d}E00 - "
-                        f"Ex{extra_counter}.mkv"
+                        f"Extra {extra_counter}.mkv"
                     )
                 else:
                     name = (
                         f"{clean_name(title)} ({year}) "
-                        f"- Ex{extra_counter}.mkv"
+                        f"- Extra {extra_counter}.mkv"
                     )
                 final_path = self.unique_path(
                     os.path.join(extras_folder, name)
@@ -1596,13 +1595,12 @@ class RipperEngine:
                 if is_tv:
                     name = (
                         f"{clean_name(title)} - "
-                        f"S{season:02d}E00 - "
-                        f"Bonus{bonus_counter}.mkv"
+                        f"Bonus {bonus_counter}.mkv"
                     )
                 else:
                     name = (
                         f"{clean_name(title)} ({year}) "
-                        f"- Bonus{bonus_counter}.mkv"
+                        f"- Bonus {bonus_counter}.mkv"
                     )
                 target_dir = bonus_folder or extras_folder
                 final_path = self.unique_path(
