@@ -122,6 +122,14 @@ Expected outputs:
 
 Build output is intentionally git-ignored and should be published through GitHub Releases rather than committed to the repository.
 
+### Full release pipeline
+
+```bash
+release.bat 1.0.12
+```
+
+This runs tests, checks version consistency, builds both executables, pushes code, and publishes a GitHub release with assets attached — in the correct order. Never create a release without assets.
+
 ## Support and Reporting
 
 - Issues: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
