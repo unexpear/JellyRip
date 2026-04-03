@@ -2543,33 +2543,92 @@ class RipperController:
     def _ask_extras_selection(self, titles_list, main_indices):
         """Prompt user to select which non-main titles to keep as extras.
 
+        When opt_extras_folder_mode is "split", shows two pickers so the
+        user can assign titles to the Extras folder and the bonus folder
+        separately.
+
         Returns:
-            None      — keep all non-main titles as extras.
-            []        — keep no extras.
-            [idx ...] — absolute indices in titles_list for chosen extras.
+            (extra_indices, bonus_indices) tuple.
+            extra_indices: None (keep all), [] (none), or [idx ...].
+            bonus_indices: None when mode is "single" (caller ignores),
+                           or [] / [idx ...] when "split".
         """
         _main_set = set(main_indices)
         _non_main = [
             i for i in range(len(titles_list)) if i not in _main_set
         ]
         if not _non_main:
-            return []
-        if self.gui.ask_yesno("Keep all extras?"):
-            return None
+            return [], None
+
+        split_mode = (
+            self.engine.cfg.get("opt_extras_folder_mode", "single") == "split"
+        )
+
+        if not split_mode:
+            # --- single-folder mode (original behaviour) ---
+            if self.gui.ask_yesno("Keep all extras?"):
+                return None, None
+            opts = [
+                f"{os.path.basename(titles_list[i][0])}  "
+                f"({int(titles_list[i][1] / 60)}min  "
+                f"{titles_list[i][2]:.0f} MB)"
+                for i in _non_main
+            ]
+            chosen = self.gui.show_extras_picker(
+                "Select Extras",
+                "All extras are selected. Deselect any you don't want:",
+                opts,
+            )
+            if chosen is None:
+                return [], None
+            return [_non_main[c] for c in chosen], None
+
+        # --- split mode: two pickers ---
+        bonus_name = self.engine.cfg.get(
+            "opt_bonus_folder_name", "featurettes"
+        ).title()
+
         opts = [
             f"{os.path.basename(titles_list[i][0])}  "
             f"({int(titles_list[i][1] / 60)}min  "
             f"{titles_list[i][2]:.0f} MB)"
             for i in _non_main
         ]
-        chosen = self.gui.show_extras_picker(
+
+        # Picker 1 — Extras folder
+        extras_chosen = self.gui.show_extras_picker(
             "Select Extras",
-            "All extras are selected. Deselect any you don't want:",
+            "Select titles to put in the Extras folder.\n"
+            "(Deselect any you don't want as extras.)",
             opts,
         )
-        if chosen is None:
-            return []
-        return [_non_main[c] for c in chosen]
+        extras_abs = (
+            [_non_main[c] for c in extras_chosen]
+            if extras_chosen else []
+        )
+
+        # Remaining non-main titles not claimed as extras
+        extras_set = set(extras_abs)
+        remaining = [i for i in _non_main if i not in extras_set]
+
+        bonus_abs = []
+        if remaining:
+            remaining_opts = [
+                f"{os.path.basename(titles_list[i][0])}  "
+                f"({int(titles_list[i][1] / 60)}min  "
+                f"{titles_list[i][2]:.0f} MB)"
+                for i in remaining
+            ]
+            bonus_chosen = self.gui.show_extras_picker(
+                f"Select {bonus_name}",
+                f"Select titles to put in the {bonus_name} folder.\n"
+                f"(Deselect any you don't want.)",
+                remaining_opts,
+            )
+            if bonus_chosen:
+                bonus_abs = [remaining[c] for c in bonus_chosen]
+
+        return extras_abs, bonus_abs
 
     def _run_disc(self, is_tv):
         cfg        = self.engine.cfg
@@ -3413,7 +3472,7 @@ class RipperController:
                 ) if session_meta else ""
             )
             real_names    = parse_episode_names(name_input)
-            extra_indices = self._ask_extras_selection(
+            extra_indices, bonus_indices = self._ask_extras_selection(
                 titles_list, main_indices
             )
 
@@ -3459,7 +3518,7 @@ class RipperController:
                     return False
 
                 main_indices  = [int(selected[0].split(":")[0]) - 1]
-            extra_indices  = self._ask_extras_selection(
+            extra_indices, bonus_indices = self._ask_extras_selection(
                 titles_list, main_indices
             )
             episode_numbers = []
@@ -3484,13 +3543,23 @@ class RipperController:
                     return False
 
         self.gui.set_status("Moving files...")
+        bonus_folder = None
+        if bonus_indices:
+            bonus_name = self.engine.cfg.get(
+                "opt_bonus_folder_name", "featurettes"
+            )
+            parent = os.path.dirname(extras_folder)
+            bonus_folder = os.path.join(parent, bonus_name)
+            os.makedirs(bonus_folder, exist_ok=True)
         success, self.global_extra_counter, moved_paths = self.engine.move_files(
             titles_list, main_indices, episode_numbers,
             real_names, extra_indices, is_tv, title,
             dest_folder, extras_folder, season, year,
             self.global_extra_counter,
             on_progress=self.gui.set_progress,
-            on_log=self.log
+            on_log=self.log,
+            bonus_indices=bonus_indices,
+            bonus_folder=bonus_folder,
         )
         if success and moved_paths and expected_size_by_title:
             post_status, post_reason = self._verify_expected_sizes(
