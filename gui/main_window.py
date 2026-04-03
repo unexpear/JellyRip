@@ -2077,6 +2077,8 @@ class JellyRipperGUI(tk.Tk):
             section(advanced_tab, "MakeMKV")
             number_row(advanced_tab, "opt_drive_index",
                        "Drive number for MakeMKV:", 0)
+            number_row(advanced_tab, "opt_minlength_seconds",
+                       "Min title length in seconds (0=off):", 0)
             toggle_row(advanced_tab, "opt_stall_detection",
                        "Warn when MakeMKV goes quiet")
             number_row(advanced_tab, "opt_stall_timeout_seconds",

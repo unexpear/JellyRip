@@ -10,7 +10,12 @@ import threading
 import time
 from datetime import datetime
 
-from controller.naming import build_fallback_title
+from controller.naming import (
+    build_fallback_title,
+    build_movie_folder_name,
+    build_tv_folder_name,
+    parse_metadata_id,
+)
 
 from shared.runtime import __version__
 from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
@@ -25,14 +30,14 @@ from utils.state_machine import SessionState, SessionStateMachine
 class RipperController:
     def __init__(self, engine, gui):
         """
-        LAYER 2 â€” Controller
+        LAYER 2 — Controller
 
         Workflow orchestration layer. Calls engine methods and GUI methods
         but owns neither. No tkinter widgets, no subprocess calls.
 
         Owns the session flow for each ripping mode:
           - Temp folder management and resume detection
-          - scan_with_retry() â€” single choke point for all disc scanning
+          - scan_with_retry() — single choke point for all disc scanning
           - Disc loop (insert → scan → select → rip → analyze → move)
           - Session logging and failure reporting
 
@@ -77,7 +82,7 @@ class RipperController:
         for tid in self.engine.last_degraded_titles:
             self.report(
                 f"Title {tid}: MakeMKV read errors but output produced "
-                f"(degraded rip â€” validated downstream by ffprobe)"
+                f"(degraded rip — validated downstream by ffprobe)"
             )
 
     def _reset_state_machine(self):
@@ -150,7 +155,7 @@ class RipperController:
                 if self.session_report:
                     self.log("Session summary: Completed with warnings.")
                     self.log("=" * 44)
-                    self.log("SESSION SUMMARY â€” WARNINGS")
+                    self.log("SESSION SUMMARY — WARNINGS")
                     self.log("=" * 44)
                     for line in self.session_report:
                         self.log(f"  {line}")
@@ -169,7 +174,7 @@ class RipperController:
             )
             return
         self.log("=" * 44)
-        self.log("SESSION SUMMARY â€” FAILURES/WARNINGS")
+        self.log("SESSION SUMMARY — FAILURES/WARNINGS")
         self.log("=" * 44)
         for line in self.session_report:
             self.log(f"  {line}")
@@ -179,7 +184,7 @@ class RipperController:
         """
         Single choke point for all disc scanning.
         Wraps engine.scan_disc() with UI state management and one
-        automatic retry. All run_* methods must use this â€” never
+        automatic retry. All run_* methods must use this — never
         call engine.scan_disc() directly.
         """
         for attempt in range(3):
@@ -203,7 +208,7 @@ class RipperController:
 
             if result is None:
                 if attempt < 2:
-                    self.log("Scan failed â€” retrying...")
+                    self.log("Scan failed — retrying...")
                     time.sleep(2 + attempt)
                 continue
 
@@ -269,7 +274,7 @@ class RipperController:
     def _log_session_paths(self):
         if not self.session_paths:
             return
-        self.log(f"=== JellyRip v{__version__} â€” session start ===")
+        self.log(f"=== JellyRip v{__version__} — session start ===")
         self.log(f"Temp:   {self.session_paths.get('temp')}")
         self.log(f"Movies: {self.session_paths.get('movies')}")
         self.log(f"TV:     {self.session_paths.get('tv')}")
@@ -354,7 +359,7 @@ class RipperController:
 
                 if os.path.isdir(chosen):
                     resolved[key] = chosen
-                    self.log(f"Run override â€” {label}: {chosen}")
+                    self.log(f"Run override — {label}: {chosen}")
                     break
 
                 if self.gui.ask_yesno(
@@ -363,7 +368,7 @@ class RipperController:
                     try:
                         os.makedirs(chosen, exist_ok=True)
                         resolved[key] = chosen
-                        self.log(f"Run override â€” {label}: {chosen}")
+                        self.log(f"Run override — {label}: {chosen}")
                         break
                     except Exception as e:
                         self.log(
@@ -423,12 +428,14 @@ class RipperController:
 
     def _fallback_title_from_mode(self, disc_titles=None):
         """Build fallback title string based on configured naming mode."""
+        disc_name = self.engine.last_disc_info.get("title")
         title = build_fallback_title(
             self.engine.cfg,
             make_temp_title,
             clean_name,
             choose_best_title,
             disc_titles=disc_titles,
+            disc_name=disc_name,
         )
         self.report(f"Auto-title fallback used: '{title}'")
         return title
@@ -439,11 +446,11 @@ class RipperController:
             try:
                 size_gb = os.path.getsize(f) / (1024**3)
                 self.log(
-                    f"Ripped file: {os.path.basename(f)} â€” {size_gb:.2f} GB"
+                    f"Ripped file: {os.path.basename(f)} — {size_gb:.2f} GB"
                 )
             except Exception as e:
                 self.log(
-                    f"Ripped file: {os.path.basename(f)} â€” size unavailable ({e})"
+                    f"Ripped file: {os.path.basename(f)} — size unavailable ({e})"
                 )
 
     def _title_id_from_filename(self, path):
@@ -548,7 +555,7 @@ class RipperController:
         """Hard guard: raises if session_paths has not been initialized."""
         if not self.session_paths:
             raise RuntimeError(
-                "session_paths not initialized â€” "
+                "session_paths not initialized — "
                 "call _init_session_paths() first"
             )
 
@@ -583,8 +590,8 @@ class RipperController:
         In strict mode (opt_strict_mode), any tier below "minor" (< 75%)
         escalates to a hard failure.
         """
-        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB â€” below this, size is noise
-        _SHORT_TITLE = 600                  # < 600 s â€” widen tiers
+        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB — below this, size is noise
+        _SHORT_TITLE = 600                  # < 600 s — widen tiers
 
         if not mkv_files:
             return False
@@ -683,29 +690,29 @@ class RipperController:
             if dur_ratio < t_severe:
                 if size_ratio is not None and size_ratio < t_severe:
                     self.report(
-                        f"TRUNCATION ERROR: {label} â€” "
+                        f"TRUNCATION ERROR: {label} — "
                         f"duration {total_dur / 60:.1f} min "
                         f"(expected ~{exp_dur / 60:.1f} min, "
                         f"{dur_ratio * 100:.0f}%) AND "
                         f"size {total_bytes // (1024**2)} MB "
                         f"(expected ~{int(exp_size) // (1024**2)} MB, "
-                        f"{size_ratio * 100:.0f}%) â€” "
+                        f"{size_ratio * 100:.0f}%) — "
                         f"both signals indicate corrupt/incomplete rip"
                     )
                     if strict:
                         strict_fail = True
                 else:
                     self.report(
-                        f"WARNING: Severe duration mismatch â€” {label}: "
+                        f"WARNING: Severe duration mismatch — {label}: "
                         f"actual {total_dur / 60:.1f} min, "
                         f"expected ~{exp_dur / 60:.1f} min "
-                        f"({dur_ratio * 100:.0f}%) â€” possible truncation"
+                        f"({dur_ratio * 100:.0f}%) — possible truncation"
                     )
                     if strict:
                         strict_fail = True
             elif dur_ratio < t_likely:
                 self.report(
-                    f"WARNING: Likely truncation â€” {label}: "
+                    f"WARNING: Likely truncation — {label}: "
                     f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
@@ -719,7 +726,7 @@ class RipperController:
                     strict_fail = True
             else:
                 self.report(
-                    f"WARNING: Minor duration mismatch â€” {label}: "
+                    f"WARNING: Minor duration mismatch — {label}: "
                     f"actual {total_dur / 60:.1f} min, "
                     f"expected ~{exp_dur / 60:.1f} min "
                     f"({dur_ratio * 100:.0f}%)"
@@ -727,7 +734,7 @@ class RipperController:
 
         if strict_fail:
             self.log(
-                "ERROR: Strict mode â€” truncation warning escalated to failure."
+                "ERROR: Strict mode — truncation warning escalated to failure."
             )
             return False
 
@@ -745,11 +752,11 @@ class RipperController:
         ]
 
         if self.engine.abort_flag:
-            self.log("Rip aborted â€” treating session as failure.")
+            self.log("Rip aborted — treating session as failure.")
         if failed_titles:
             self.log(f"Titles failed: {failed_titles}")
         if not mkv_files:
-            self.log("No MKV files produced â€” treating as failure.")
+            self.log("No MKV files produced — treating as failure.")
 
         self.log(
             "Failure gate: "
@@ -766,7 +773,7 @@ class RipperController:
         )
 
         if len(valid_files) != len(mkv_files):
-            self.log("One or more MKV files are invalid â€” treating as failure.")
+            self.log("One or more MKV files are invalid — treating as failure.")
         if not normalized:
             return False, mkv_files
 
@@ -782,9 +789,9 @@ class RipperController:
         r"S(\d{1,3})((?:E\d{1,3})+)",
         re.IGNORECASE,
     )
-    # 1x01 / Nx01 â€” season Ã— episode
+    # 1x01 / Nx01 — season Ã— episode
     _RE_NxNN = re.compile(r"(\d{1,2})x(\d{1,2})")
-    # "Episode N" â€” no season token; useful when file is already inside a
+    # "Episode N" — no season token; useful when file is already inside a
     # Season folder (the folder itself encodes the season).
     _RE_EPISODE_N = re.compile(r"[Ee]pisode\s+(\d{1,4})")
     # Splits the E-token block into individual episode numbers.
@@ -821,7 +828,7 @@ class RipperController:
         m = self._RE_SxxEyy.search(fname)
         if m:
             if int(m.group(1)) != season:
-                # Season token present but wrong season â€” do not fall through.
+                # Season token present but wrong season — do not fall through.
                 return set()
             return {int(n) for n in self._RE_E_SPLIT.findall(m.group(2))}
 
@@ -846,7 +853,7 @@ class RipperController:
         episode numbers so gap detection is never fooled into thinking an
         episode is missing when it is part of a combined file.
         Season 00 is supported (Jellyfin treats it as Specials).
-        Only reads the directory listing â€” no ffprobe or file I/O.
+        Only reads the directory listing — no ffprobe or file I/O.
         """
         found: set = set()
         if not folder or not os.path.isdir(folder):
@@ -863,7 +870,7 @@ class RipperController:
 
         Returns a dict mapping season number (int) to a sorted list of
         episode numbers already present on disk.  Season 00 ("Specials")
-        is included and logged.  Only reads directory listings â€” no file I/O.
+        is included and logged.  Only reads directory listings — no file I/O.
 
         Example::
 
@@ -910,7 +917,7 @@ class RipperController:
 
     def _mark_session_failed(self, rip_path, **metadata):
         """Wipe session outputs and persist a single failed session state."""
-        self.log("Session failed â€” wiping outputs.")
+        self.log("Session failed — wiping outputs.")
         self.engine.update_temp_metadata(
             rip_path,
             status="failed",
@@ -1025,7 +1032,7 @@ class RipperController:
                                            expected_size_by_title):
         """Retry rip once after size sanity failure and re-run checks."""
         self.log(
-            "Safe Mode: size sanity failed â€” retrying rip once automatically."
+            "Safe Mode: size sanity failed — retrying rip once automatically."
         )
         self.engine.cleanup_partial_files(rip_path, self.log)
         for pattern in ("**/*.mkv", "**/*.partial"):
@@ -1046,7 +1053,7 @@ class RipperController:
         self._warn_degraded_rips()
         if failed_titles:
             self.report(
-                f"Retry: titles failed â€” {failed_titles}"
+                f"Retry: titles failed — {failed_titles}"
             )
         success, mkv_files = self._normalize_rip_result(
             rip_path, success, failed_titles
@@ -1074,7 +1081,7 @@ class RipperController:
         """Wait for file to be stable: N equal reads AND 3+ seconds of no growth.
 
         Stability = file size stopped changing. Size alone is NOT a stability
-        signal â€” extras and short titles are legitimately small. Size validation
+        signal — extras and short titles are legitimately small. Size validation
         is a separate post-stabilization concern.
         """
         start = time.time()
@@ -1111,7 +1118,7 @@ class RipperController:
                 stable_polls += 1
                 stable_duration = time.time() - stable_start_time
                 self.log(
-                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB â€” "
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — "
                     f"stable ({stable_polls}/{min_stable_polls}, "
                     f"{stable_duration:.1f}s duration)"
                 )
@@ -1131,7 +1138,7 @@ class RipperController:
                         return True, False
                     self.log(
                         f"Stabilizing: {cur / (1024**2):.0f} MB -> "
-                        f"{post / (1024**2):.0f} MB â€” resumed growth"
+                        f"{post / (1024**2):.0f} MB — resumed growth"
                     )
                     stable_polls = 0
                     stable_start_time = None
@@ -1141,7 +1148,7 @@ class RipperController:
                 stable_polls = 0
                 stable_start_time = None
                 self.log(
-                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB â€” still growing"
+                    f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — still growing"
                 )
             prev = cur
 
@@ -1218,7 +1225,7 @@ class RipperController:
                 return False, timed_out
 
             # Post-stabilization size advisory: log when file is below the
-            # effective threshold but do NOT fail â€” extras are legitimately
+            # effective threshold but do NOT fail — extras are legitimately
             # small. Strict size validation uses ratio checks in
             # _verify_expected_sizes after all files are stable.
             try:
@@ -1232,12 +1239,12 @@ class RipperController:
                     f" → threshold {effective_floor / (1024**3):.2f} GB"
                     if expected > 0 else
                     f"advisory floor {effective_floor / (1024**2):.0f} MB"
-                    f" â€” normal for extras/short titles"
+                    f" — normal for extras/short titles"
                 )
                 self.log(
                     f"INFO: {os.path.basename(f)}: "
                     f"{final_size / (1024**2):.0f} MB "
-                    f"(below threshold â€” {detail})"
+                    f"(below threshold — {detail})"
                 )
 
         return True, False
@@ -1285,14 +1292,22 @@ class RipperController:
         auto_title_pending = not bool(title)
         if auto_title_pending:
             self.log(
-                "WARNING: No title entered â€” will use fallback naming "
+                "WARNING: No title entered — will use fallback naming "
                 "mode after scan."
             )
 
         year = self.gui.ask_input("Year", "Release year:")
         if not year:
             year = "0000"
-            self.log("WARNING: No year â€” using 0000")
+            self.log("WARNING: No year — using 0000")
+
+        metadata_id = self.gui.ask_input(
+            "Metadata ID",
+            "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+            "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+        )
+        if metadata_id:
+            self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
         time.sleep(2)  # drive spin-up / mount stabilization
         disc_titles = self.scan_with_retry()
@@ -1439,7 +1454,8 @@ class RipperController:
                     )
 
         movie_folder  = os.path.join(
-            movie_root, f"{clean_name(title)} ({year})"
+            movie_root,
+            build_movie_folder_name(clean_name(title), year, metadata_id),
         )
         extras_folder = os.path.join(movie_folder, "Extras")
         os.makedirs(movie_folder, exist_ok=True)
@@ -1558,7 +1574,7 @@ class RipperController:
                 self.flush_log()
                 self.gui.show_error(
                     "Rip Failed",
-                    "Rip incomplete â€” file too small.\n\n"
+                    "Rip incomplete — file too small.\n\n"
                     "Automatic retry was attempted once and still failed."
                 )
                 return
@@ -1572,7 +1588,7 @@ class RipperController:
                 self.log("Cancelled due to size warning threshold.")
                 return
             self.report(
-                f"USER OVERRIDE â€” Smart Rip size warning for {title} ({year})"
+                f"USER OVERRIDE — Smart Rip size warning for {title} ({year})"
             )
 
         # Analyze files once; reuse the result for both integrity check and
@@ -1612,7 +1628,7 @@ class RipperController:
                 if exp_size > 0:
                     _expected_sizes[fp] = exp_size
 
-        # Container integrity uses the already-analyzed data â€” no extra ffprobe.
+        # Container integrity uses the already-analyzed data — no extra ffprobe.
         if not self._verify_container_integrity(
             mkv_files,
             analyzed=titles_list,
@@ -1729,7 +1745,7 @@ class RipperController:
                 ok = False
             elif post_status == "warn":
                 self.report(
-                    f"USER OVERRIDE â€” Smart Rip post-move size warning for {title} ({year})"
+                    f"USER OVERRIDE — Smart Rip post-move size warning for {title} ({year})"
                 )
             if ok and (not self._verify_container_integrity(moved_paths)):
                 self.report(
@@ -2445,8 +2461,8 @@ class RipperController:
         self._init_session_paths(path_overrides)
         self._ensure_session_paths()
         self._log_session_paths()
-        # Always derive all folder roots from session_paths â€” never from cfg
-        # directly â€” so run-time path overrides are always honored.
+        # Always derive all folder roots from session_paths — never from cfg
+        # directly — so run-time path overrides are always honored.
         tv_root    = self.get_path("tv")
         movie_root = self.get_path("movies")
         temp_root  = self.get_path("temp")
@@ -2454,8 +2470,16 @@ class RipperController:
         title = self.gui.ask_input("Title", "Exact title:")
         if not title:
             title = self._fallback_title_from_mode()
-            self.log(f"WARNING: No title â€” using: {title}")
+            self.log(f"WARNING: No title — using: {title}")
         self.log(f"Title: {title}")
+
+        metadata_id = self.gui.ask_input(
+            "Metadata ID",
+            "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+            "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+        )
+        if metadata_id:
+            self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
         if is_tv:
             season_str = self.gui.ask_input(
@@ -2465,9 +2489,11 @@ class RipperController:
                 season_str and season_str.isdigit()
             ) else 0
             if season == 0:
-                self.log("WARNING: No season number â€” using 00")
+                self.log("WARNING: No season number — using 00")
             season_folder = os.path.join(
-                tv_root, clean_name(title), f"Season {season:02d}"
+                tv_root,
+                build_tv_folder_name(clean_name(title), metadata_id),
+                f"Season {season:02d}",
             )
             extras_folder = os.path.join(season_folder, "Extras")
             os.makedirs(season_folder, exist_ok=True)
@@ -2478,9 +2504,10 @@ class RipperController:
             year = self.gui.ask_input("Year", "Release year:")
             if not year:
                 year = "0000"
-                self.log("WARNING: No year â€” using 0000")
+                self.log("WARNING: No year — using 0000")
             movie_folder = os.path.join(
-                movie_root, f"{clean_name(title)} ({year})"
+                movie_root,
+                build_movie_folder_name(clean_name(title), year, metadata_id),
             )
             extras_folder = os.path.join(movie_folder, "Extras")
             os.makedirs(movie_folder, exist_ok=True)
@@ -2524,7 +2551,7 @@ class RipperController:
                     )
         elif self.engine.abort_event.is_set():
             self.log(
-                "Move stopped before completion â€” "
+                "Move stopped before completion — "
                 "some files may not have moved."
             )
 
@@ -2683,7 +2710,7 @@ class RipperController:
             # a previous session or another tool), they can point
             # JellyRip at the show root and it will infer title,
             # detect what episodes exist, and pick up exactly where
-            # the library left off â€” including filling gaps.
+            # the library left off — including filling gaps.
             # -------------------------------------------------------
             library_root: str | None = None
             library_state: dict = {}   # {season_num: [ep, ...]}
@@ -2713,11 +2740,11 @@ class RipperController:
                         )
                     else:
                         self.log(
-                            f"No season folders found in {library_root} â€” "
+                            f"No season folders found in {library_root} — "
                             f"will create them as needed."
                         )
                 else:
-                    self.log("No folder selected â€” starting fresh.")
+                    self.log("No folder selected — starting fresh.")
                     library_root = None
 
             title = self.gui.ask_input(
@@ -2730,8 +2757,17 @@ class RipperController:
             )
             if not title:
                 title = self._fallback_title_from_mode()
-                self.log(f"WARNING: No title â€” using: {title}")
+                self.log(f"WARNING: No title — using: {title}")
             self.log(f"Title: {title}")
+
+            metadata_id = self.gui.ask_input(
+                "Metadata ID",
+                "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+                "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+            )
+            if metadata_id:
+                self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
+
             if resume_path:
                 series_root = os.path.dirname(
                     os.path.dirname(resume_path)
@@ -2763,7 +2799,7 @@ class RipperController:
             auto_title_pending = False
 
             if is_tv:
-                # Build the season prompt â€” when in library mode, show
+                # Build the season prompt — when in library mode, show
                 # the user which seasons already exist and default to the
                 # season most likely to need more episodes (incomplete
                 # season with the highest number, or the next one after
@@ -2792,7 +2828,7 @@ class RipperController:
                     season_str and season_str.isdigit()
                 ) else 0
                 if season == 0:
-                    self.log("WARNING: No season number â€” using 00")
+                    self.log("WARNING: No season number — using 00")
 
                 season_temp = os.path.join(
                     series_root, f"Season {season:02d}"
@@ -2807,8 +2843,9 @@ class RipperController:
                     )
                 else:
                     season_folder = os.path.join(
-                        tv_root, clean_name(title),
-                        f"Season {season:02d}"
+                        tv_root,
+                        build_tv_folder_name(clean_name(title), metadata_id),
+                        f"Season {season:02d}",
                     )
                 extras_folder = os.path.join(season_folder, "Extras")
                 os.makedirs(season_folder, exist_ok=True)
@@ -2828,7 +2865,7 @@ class RipperController:
                     auto_title_pending = True
                     title = make_temp_title()
                     self.log(
-                        "WARNING: No title entered â€” using fallback naming "
+                        "WARNING: No title entered — using fallback naming "
                         "mode after scan when possible."
                     )
                 year = self.gui.ask_input(
@@ -2839,9 +2876,17 @@ class RipperController:
                 )
                 if not year:
                     year = "0000"
-                    self.log("WARNING: No year â€” using 0000")
+                    self.log("WARNING: No year — using 0000")
+                mid = self.gui.ask_input(
+                    "Metadata ID",
+                    "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+                    "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+                )
+                if mid:
+                    self.log(f"Metadata ID: {parse_metadata_id(mid)}")
                 movie_folder = os.path.join(
-                    movie_root, f"{clean_name(title)} ({year})"
+                    movie_root,
+                    build_movie_folder_name(clean_name(title), year, mid),
                 )
                 extras_folder = os.path.join(movie_folder, "Extras")
                 os.makedirs(movie_folder, exist_ok=True)
@@ -2920,7 +2965,10 @@ class RipperController:
                 if auto_title and auto_title != title:
                     title = auto_title
                     movie_folder = os.path.join(
-                        movie_root, f"{clean_name(title)} ({year})"
+                        movie_root,
+                        build_movie_folder_name(
+                            clean_name(title), year, mid,
+                        ),
                     )
                     extras_folder = os.path.join(movie_folder, "Extras")
                     os.makedirs(movie_folder, exist_ok=True)
@@ -3055,7 +3103,7 @@ class RipperController:
 
             if cfg.get("opt_confirm_before_rip", True):
                 if not self.gui.ask_yesno(
-                    f"Rip {len(selected_ids)} title(s) â€” "
+                    f"Rip {len(selected_ids)} title(s) — "
                     f"~{selected_size / (1024**3):.1f} GB. Continue?"
                 ):
                     self.log("Rip cancelled by user.")
@@ -3064,7 +3112,7 @@ class RipperController:
                     continue
 
             self.log(
-                f"Selected {len(selected_ids)} title(s) â€” "
+                f"Selected {len(selected_ids)} title(s) — "
                 f"~{selected_size / (1024**3):.1f} GB"
             )
 
@@ -3099,7 +3147,7 @@ class RipperController:
 
             if failed_titles:
                 self.report(
-                    f"Disc {disc_number}: titles failed â€” "
+                    f"Disc {disc_number}: titles failed — "
                     f"{failed_titles}"
                 )
 
@@ -3190,7 +3238,7 @@ class RipperController:
                     )
                     self.gui.show_error(
                         "Rip Failed",
-                        "Rip incomplete â€” file too small.\n\n"
+                        "Rip incomplete — file too small.\n\n"
                         "Automatic retry was attempted once and still failed."
                     )
                     if not self.gui.ask_yesno("Try another disc?"):
@@ -3206,7 +3254,7 @@ class RipperController:
                         break
                     continue
                 self.report(
-                    f"USER OVERRIDE â€” Disc {disc_number} size warning"
+                    f"USER OVERRIDE — Disc {disc_number} size warning"
                 )
 
             # Analyze files once; reuse for both integrity check and move step.
@@ -3230,7 +3278,7 @@ class RipperController:
                     break
                 continue
 
-            # Integrity check uses pre-analyzed data â€” no extra ffprobe pass.
+            # Integrity check uses pre-analyzed data — no extra ffprobe pass.
             # Build expected-duration/size maps from disc scan + rip tracking.
             _dur_by_id_d = {
                 int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
@@ -3299,7 +3347,7 @@ class RipperController:
             else:
                 if self.engine.abort_event.is_set():
                     self.log(
-                        "Move stopped before completion â€” "
+                        "Move stopped before completion — "
                         "some files may not have moved."
                     )
                 self.log(f"Temp folder preserved at: {rip_path}")
@@ -3383,7 +3431,7 @@ class RipperController:
                     verb = "gap-filling from" if gap_fill else "continuing from"
                     self.log(
                         f"Detected {len(existing_eps)} existing episode(s) in "
-                        f"Season {season:02d} â€” {verb} "
+                        f"Season {season:02d} — {verb} "
                         f"episode(s) {suggested[0]}â€“{suggested[-1]}."
                     )
 
@@ -3427,7 +3475,7 @@ class RipperController:
                     ):
                         if not self.gui.ask_yesno(
                             f"Episode numbers not in order: "
-                            f"{episode_numbers} â€” continue anyway?"
+                            f"{episode_numbers} — continue anyway?"
                         ):
                             continue
 
@@ -3496,7 +3544,7 @@ class RipperController:
 
             if self.engine.cfg.get("opt_confirm_before_move", True):
                 if not self.gui.ask_yesno(
-                    "Confirm â€” move these files?"
+                    "Confirm — move these files?"
                 ):
                     self.log("Cancelled by user.")
                     return False
@@ -3537,7 +3585,7 @@ class RipperController:
 
             if self.engine.cfg.get("opt_confirm_before_move", True):
                 if not self.gui.ask_yesno(
-                    "Confirm â€” move this file?"
+                    "Confirm — move this file?"
                 ):
                     self.log("Cancelled by user.")
                     return False
@@ -3573,7 +3621,7 @@ class RipperController:
                 )
                 success = False
             elif post_status == "warn":
-                self.report("USER OVERRIDE â€” post-move size warning")
+                self.report("USER OVERRIDE — post-move size warning")
         if success and moved_paths and (not self._verify_container_integrity(moved_paths)):
             self.report("Post-move ffprobe integrity check failed")
             self.gui.show_error(
@@ -3599,7 +3647,7 @@ class RipperController:
 
 
 # ==========================================
-# LAYER 3 â€” GUI
+# LAYER 3 — GUI
 # ==========================================
 
 

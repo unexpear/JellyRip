@@ -111,6 +111,7 @@ DEFAULTS = {
     "opt_naming_mode": "timestamp",
     "opt_extras_folder_mode": "single",
     "opt_bonus_folder_name": "featurettes",
+    "opt_minlength_seconds": 0,
     "opt_makemkv_global_args": "",
     "opt_makemkv_info_args": "",
     "opt_makemkv_rip_args": "",

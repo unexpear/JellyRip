@@ -60,6 +60,7 @@ class RipperEngine:
         self._last_scan_total_bytes = None
         self._last_scan_timestamp = 0.0
         self._last_scan_target = None
+        self.last_disc_info = {}
 
     @staticmethod
     def _io_path(path):
@@ -335,13 +336,17 @@ class RipperEngine:
             on_log,
             "MakeMKV info args"
         )
+        minlength = int(self.cfg.get("opt_minlength_seconds", 0) or 0)
+        minlength_args = [f"--minlength={minlength}"] if minlength > 0 else []
+
         on_log(f"Scanning disc ({disc_target})...")
+        disc_info   = {}
         titles      = {}
         title_count = 0
         try:
             proc = subprocess.Popen(
                 [makemkvcon] + global_args +
-                ["-r", "info", disc_target] + info_args,
+                ["-r", "info", disc_target] + minlength_args + info_args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -355,7 +360,24 @@ class RipperEngine:
                 line = line.strip()
                 if not line:
                     continue
-                if line.startswith("TINFO:"):
+                if line.startswith("CINFO:"):
+                    parts = line[6:].split(",", 2)
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        attr = int(parts[0])
+                        val  = parts[2].strip().strip('"')
+                    except (ValueError, IndexError):
+                        continue
+                    if attr == 2:
+                        disc_info["title"] = val
+                    elif attr == 28:
+                        disc_info["lang_code"] = val
+                    elif attr == 29:
+                        disc_info["lang_name"] = val
+                    elif attr == 32:
+                        disc_info["volume_id"] = val
+                elif line.startswith("TINFO:"):
                     parts = line[6:].split(",", 3)
                     if len(parts) < 4:
                         continue
@@ -524,6 +546,14 @@ class RipperEngine:
         )
         self._last_scan_timestamp = time.time()
         self._last_scan_target = disc_target
+        self.last_disc_info = disc_info
+
+        if disc_info.get("title"):
+            on_log(f"Disc title (CINFO): {disc_info['title']}")
+        if disc_info.get("lang_name"):
+            on_log(f"Disc language: {disc_info['lang_name']}")
+        if minlength > 0:
+            on_log(f"--minlength={minlength}s applied (titles shorter than {minlength}s excluded)")
 
         on_progress(100)
         on_log(f"Disc scan complete. Found {len(result)} title(s).")
