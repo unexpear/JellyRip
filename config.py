@@ -171,10 +171,132 @@ def resolve_ffprobe(configured_path):
         return found, f"PATH ({found})"
     return configured_path or "", "not found"
 
+
+def _locate_makemkvcon_registry():
+    """Check Windows registry for a MakeMKV installation directory.
+
+    MakeMKV's Windows installer writes to:
+      HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MakeMKV
+    with a 'DisplayIcon' value pointing directly to MakeMKVcon.exe and an
+    'UninstallString' value pointing to uninst.exe in the same folder.
+    There is NO InstallLocation value written by the official installer.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        import winreg
+        reg_paths = [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
+            # Kept as fallbacks for non-standard or future installs
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\MakeMKV"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\MakeMKV"),
+        ]
+        for hive, subkey in reg_paths:
+            try:
+                key = winreg.OpenKey(hive, subkey)
+                # DisplayIcon is the value the real installer writes — check it first
+                for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
+                    try:
+                        val, _ = winreg.QueryValueEx(key, value_name)
+                        if not val:
+                            continue
+                        # Value may point directly to the exe
+                        if val.lower().endswith(".exe") and os.path.isfile(val):
+                            return val
+                        # Or it may be an install directory
+                        candidate = os.path.join(val, "makemkvcon.exe")
+                        if os.path.isfile(candidate):
+                            return candidate
+                    except OSError:
+                        continue
+                # Last resort: derive install dir from UninstallString
+                try:
+                    uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
+                    if uninstall:
+                        install_dir = os.path.dirname(uninstall)
+                        candidate = os.path.join(install_dir, "makemkvcon.exe")
+                        if os.path.isfile(candidate):
+                            return candidate
+                except OSError:
+                    pass
+                winreg.CloseKey(key)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _locate_ffprobe_registry():
+    """Check Windows registry and known package-manager paths for ffprobe."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import winreg
+        reg_paths = [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
+        ]
+        for hive, subkey in reg_paths:
+            try:
+                key = winreg.OpenKey(hive, subkey)
+                for value_name in ("InstallLocation", "InstallDir"):
+                    try:
+                        val, _ = winreg.QueryValueEx(key, value_name)
+                        if val:
+                            found = _resolve_ffprobe_from_dir(val)
+                            if found:
+                                return found
+                    except OSError:
+                        continue
+                winreg.CloseKey(key)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    # Chocolatey default path
+    choco = r"C:\tools\ffmpeg"
+    found = _resolve_ffprobe_from_dir(choco)
+    if found:
+        return found
+    return None
+
+
+def auto_locate_tools():
+    """Find MakeMKV and ffprobe using Windows registry, common paths, and PATH.
+
+    Returns:
+        (makemkvcon_path, ffprobe_path) — empty string for any tool not found.
+    """
+    makemkvcon = _locate_makemkvcon_registry() or resolve_makemkvcon("")
+    # resolve_makemkvcon returns the configured_path arg when nothing is found,
+    # so filter out the empty-string fallback.
+    if not makemkvcon or not os.path.isfile(makemkvcon):
+        makemkvcon = ""
+
+    ffprobe = _locate_ffprobe_registry()
+    if not ffprobe:
+        ffprobe, _ = resolve_ffprobe("")
+    if not ffprobe or not os.path.isfile(ffprobe):
+        ffprobe = ""
+
+    return makemkvcon, ffprobe
+
+
 __all__ = [
     "CONFIG_FILE",
     "DEFAULTS",
     "get_config_dir",
+    "auto_locate_tools",
     "load_config",
     "resolve_makemkvcon",
     "resolve_tool",
