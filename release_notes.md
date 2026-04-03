@@ -1,39 +1,35 @@
-﻿# JellyRip v1.0.10 Release Notes
+﻿# JellyRip v1.0.11 Release Notes
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.10/JellyRipInstaller.exe)
-- Release page: [v1.0.10 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.10)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.11/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.11/JellyRipInstaller.exe)
+- Release page: [v1.0.11 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.11)
 - All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
-## What's New in 1.0.10
+## What's New in 1.0.11
 
-### Tool discovery and validation
+### Disc-level metadata (CINFO parsing)
 
-- Unified tool resolver for MakeMKV and ffprobe: checks saved config → common install paths → PATH environment variable.
-- `validate_makemkvcon` and `validate_ffprobe` run a real probe command before accepting a tool path.
-- Settings save now refuses to overwrite a working tool path with an unvalidated replacement.
-- Engine `validate_tools` routes both dependencies through the resolver layer so PATH-only installs and custom locations are found automatically.
+- Scan now extracts disc title, language code, language name, and volume ID from MakeMKV `CINFO:` output.
+- `build_fallback_title()` prefers CINFO disc name over per-title TINFO name when the disc name is available and non-generic.
 
-### Multi-disc and extras workflow
+### MakeMKV `--minlength` filter
 
-- Multi-disc dump mode renamed from "Unattended" to "Dump All" in UI labels and logs.
-- Multi-disc dump flow now pauses with an explicit between-disc confirmation prompt (no default timeout).
-- Unrecognized discs during multi-disc dump can now be bypassed or stopped instead of retry-only.
-- Extras selection changed from yes/no keep-all to a multi-select picker for individual titles.
-- Configurable prompt auto-timeouts and disc-swap timeouts in Settings → Advanced.
+- New setting: minimum title length in seconds (Settings → Advanced → MakeMKV, default off).
+- Titles shorter than the threshold are excluded during scan, reducing noise from menus and trailers.
 
-### Settings crash hardening
+### Jellyfin metadata ID support
 
-- Settings open callback is now wrapped in a safety handler so an exception during settings initialization shows an error dialog instead of crashing the app.
+- Smart Rip, Manual Disc, and Organize flows now prompt for an optional TMDB/IMDB/TVDB ID.
+- Folder names get Jellyfin-compatible tags like `Movie (2024) [tmdbid-12345]` or `Show [tvdbid-79168]`.
+- `parse_metadata_id()` accepts flexible input: `tmdb:12345`, `tmdb-12345`, `tt1234567`, `tvdb:79168`, or bare integers (assumed TMDB).
+- Centralized via `build_movie_folder_name()` and `build_tv_folder_name()`.
 
-### Project and documentation
+### Build and encoding fixes
 
-- Added `CONTRIBUTING.md`, `SECURITY.md`, `pyproject.toml`, and a GitHub Actions CI workflow.
-- Added `docs/architecture.md` and `docs/repository-layout.md`.
-- Version strings synchronized across `shared/runtime.py`, `pyproject.toml`, `installer/JellyRip.iss`, and CHANGELOG.
-- Fixed Unicode mojibake in controller (corrupted arrow character).
+- Fixed 73 mojibake em dashes in controller.py (triple-encoded UTF-8 bytes replaced with proper U+2014).
+- 34 new tests for the naming module (180 total passing).
 
 ## Previous versions
 
