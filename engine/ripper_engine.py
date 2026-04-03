@@ -901,6 +901,15 @@ class RipperEngine:
         except queue_module.Empty:
             pass
 
+        # Warn if MakeMKV exited successfully but we got stall warnings
+        # during the rip — this can indicate disc read/write problems that
+        # might prevent file creation even though the process succeeded.
+        if rc == 0 and stall_warned:
+            on_log(
+                "Warning: MakeMKV exited successfully but had long I/O pauses. "
+                "Files may be incomplete or missing; validation will follow."
+            )
+
         return rc == 0
 
     def _run_preview_process(self, cmd, preview_seconds, on_log):
@@ -1063,7 +1072,19 @@ class RipperEngine:
             if self.abort_event.is_set():
                 return False
             if success:
-                return True
+                # Verify that files were actually created (MakeMKV can exit 0
+                # without producing output due to disc errors, permission issues, etc.)
+                after = self._snapshot_mkv_files(rip_path)
+                new_files = after - before
+                if new_files:
+                    return True
+                else:
+                    on_log(
+                        "ERROR: MakeMKV reported success (exit code 0), "
+                        "but no MKV files were produced. "
+                        "This may indicate a disc read/write error."
+                    )
+                    success = False
             self._log_forced_failure_with_outputs(
                 rip_path, before, on_log
             )
@@ -1147,8 +1168,15 @@ class RipperEngine:
                 if success:
                     if new_files:
                         self.last_title_file_map[int(tid)] = list(new_files)
-                    title_success = True
-                    break
+                        title_success = True
+                        break
+                    else:
+                        on_log(
+                            f"ERROR: MakeMKV reported success (exit code 0) "
+                            f"for title {tid+1}, but no MKV file was produced. "
+                            f"This may indicate a disc read/write error."
+                        )
+                        success = False
                 if new_files:
                     # MakeMKV exited non-zero but produced output.
                     # Downstream stabilization and ffprobe will validate
