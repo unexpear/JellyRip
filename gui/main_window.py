@@ -2414,6 +2414,8 @@ class JellyRipperGUI(tk.Tk):
             self.settings_btn.config(state="disabled")
         if hasattr(self, "update_btn"):
             self.update_btn.config(state="disabled")
+        if hasattr(self, "abort_btn"):
+            self.abort_btn.config(state="normal")  # Keep abort enabled during tasks
 
     def enable_buttons(self):
         for btn in self.mode_buttons.values():
@@ -2422,6 +2424,8 @@ class JellyRipperGUI(tk.Tk):
             self.settings_btn.config(state="normal")
         if hasattr(self, "update_btn"):
             self.update_btn.config(state="normal")
+        if hasattr(self, "abort_btn"):
+            self.abort_btn.config(state="disabled")  # Disable abort when idle
 
     def request_abort(self):
         """Abort immediately — no confirmation dialog required."""
@@ -2501,7 +2505,6 @@ class JellyRipperGUI(tk.Tk):
             save_config(self.cfg)
 
         self.engine.reset_abort()
-        self.abort_btn.config(state="normal")
         self.controller.session_log          = []
         self.controller.session_report       = []
         self.controller.start_time           = datetime.now()
@@ -2541,10 +2544,6 @@ class JellyRipperGUI(tk.Tk):
             finally:
                 self.stop_indeterminate()
                 self.after(0, self.enable_buttons)
-                self.after(
-                    0,
-                    lambda: self.abort_btn.config(state="normal")
-                )
                 self.set_status("Ready")
                 if _success and not self.engine.abort_event.is_set():
                     self.after(0, lambda: self._notify_complete(
