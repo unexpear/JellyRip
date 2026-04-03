@@ -14,9 +14,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
-
 from controller.naming import (
     build_fallback_title,
     build_naming_preview_text,
@@ -115,7 +112,7 @@ DEFAULTS = {
     "opt_makemkv_global_args": "",
     "opt_makemkv_info_args": "",
     "opt_makemkv_rip_args": "",
-    "opt_update_require_signature": False,
+    "opt_update_require_signature": True,
     "opt_update_signer_thumbprint": "",
 }
 

@@ -1,4 +1,10 @@
-"""Compatibility shim exposing the split JellyRip modules through the legacy import path."""
+"""Compatibility shim exposing the split JellyRip modules through the legacy import path.
+
+⚠️  DEPRECATED: This module is maintained only for backward compatibility.
+    Direct imports from the subpackages (config, controller, engine, utils, shared) are preferred.
+    New code should use main.py as the entry point, not this shim.
+    This module will be removed in a future version.
+"""
 
 from shared.runtime import (
     CONFIG_FILE,

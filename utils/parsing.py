@@ -9,6 +9,12 @@ from shared.runtime import (  # pyright: ignore[reportMissingImports]
     _safe_int_debug_warn,
 )
 
+# Whitelist of MakeMKV flags that are allowed in user-configurable args.
+# This prevents command injection via opt_makemkv_global_args, opt_makemkv_info_args, opt_makemkv_rip_args.
+_ALLOWED_MAKEMKV_FLAGS = {
+    "--cache", "--noscan", "--directio", "--minlength", "--help", "--version",
+}
+
 
 def parse_episode_names(name_input):
     if not name_input:
@@ -211,7 +217,11 @@ def parse_size_to_bytes(val):
 
 
 def parse_cli_args(raw, on_log=None, label="args"):
-    """Parse a CLI argument string into argv tokens."""
+    """Parse a CLI argument string into argv tokens, restricted to whitelisted flags.
+
+    To prevent command injection attacks, only MakeMKV flags in the whitelist are allowed.
+    Flag values (e.g., --cache=1024) are OK; tokens starting with unknown flags are dropped.
+    """
     s = (raw or "").strip()
     if not s:
         return []
@@ -229,14 +239,24 @@ def parse_cli_args(raw, on_log=None, label="args"):
     dropped = []
     for tok in tokens:
         low = tok.lower()
+        # Remove unsupported MakeMKV profile tokens
         if low.startswith(("+sel:", "-sel:")):
+            dropped.append(tok)
+            continue
+        # Whitelist check: allow flag if it matches or starts with allowed flag + "="
+        is_allowed = False
+        for allowed in _ALLOWED_MAKEMKV_FLAGS:
+            if low == allowed or low.startswith(allowed + "="):
+                is_allowed = True
+                break
+        if not is_allowed:
             dropped.append(tok)
             continue
         filtered.append(tok)
 
     if dropped and on_log:
         on_log(
-            f"Warning: removed unsupported MakeMKV profile token(s) in {label}: "
+            f"Warning: removed disallowed token(s) in {label}: "
             + ", ".join(dropped)
         )
 

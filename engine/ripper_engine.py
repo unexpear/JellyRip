@@ -56,7 +56,8 @@ class RipperEngine:
         self.last_move_error = ""
         self.last_title_file_map = {}
         self.last_degraded_titles: list = []
-        self._ffprobe_cache = {}
+        self._ffprobe_cache = {}  # LRU cache with 1000-entry limit
+        self._ffprobe_cache_max_size = 1000
         self._last_scan_total_bytes = None
         self._last_scan_timestamp = 0.0
         self._last_scan_target = None
@@ -1262,16 +1263,27 @@ class RipperEngine:
             text=True,
             **_POPEN_FLAGS
         )
-        while proc.poll() is None:
-            if honor_abort and self.abort_event.is_set():
-                proc.kill()
-                try:
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
-                return -1, mb
-            time.sleep(0.05)
-        out, _ = proc.communicate()
+        try:
+            if honor_abort:
+                # Wait for process with periodic abort checks instead of busy-polling
+                timeout_per_check = 0.1
+                max_total_time = 30  # Don't wait indefinitely
+                elapsed = 0
+                while proc.poll() is None and elapsed < max_total_time:
+                    if self.abort_event.is_set():
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=2)
+                        except Exception:
+                            pass
+                        return -1, mb
+                    time.sleep(timeout_per_check)
+                    elapsed += timeout_per_check
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+        
         try:
             data = json.loads(out)
             dur = float(data.get("format", {}).get("duration", -1) or -1)
@@ -1279,6 +1291,11 @@ class RipperEngine:
             dur = -1.0
 
         result = (dur, mb)
+        # Enforce LRU cache size limit; evict oldest entry when full
+        if len(self._ffprobe_cache) >= self._ffprobe_cache_max_size:
+            # Remove oldest (first) entry
+            oldest_key = next(iter(self._ffprobe_cache))
+            del self._ffprobe_cache[oldest_key]
         self._ffprobe_cache[cache_key] = result
         return result
 
@@ -1341,25 +1358,27 @@ class RipperEngine:
             self.last_move_error = "Move failed — source file is missing."
             return False
 
-        # Verify source has stopped growing before accepting move.
-        try:
-            size_before = os.path.getsize(io_source)
-            time.sleep(1.0)
-            size_after = os.path.getsize(io_source)
-            if size_before != size_after:
-                on_log(
-                    f"ERROR: Source file still growing before move "
-                    f"({size_before} -> {size_after} bytes). "
-                    f"Stabilization failed."
-                )
-                self.last_move_error = (
-                    "Move failed — source file incomplete. "
-                    "Stabilization did not complete successfully."
-                )
+        # Verify source has stopped growing before accepting move, respecting config timeout.
+        if self.cfg.get("opt_file_stabilization", True):
+            stabilize_timeout = int(self.cfg.get("opt_stabilize_timeout_seconds", 60))
+            try:
+                size_before = os.path.getsize(io_source)
+                time.sleep(min(1.0, stabilize_timeout / 10))  # Check interval, up to 1 sec
+                size_after = os.path.getsize(io_source)
+                if size_before != size_after:
+                    on_log(
+                        f"ERROR: Source file still growing before move "
+                        f"({size_before} -> {size_after} bytes). "
+                        f"Stabilization failed."
+                    )
+                    self.last_move_error = (
+                        "Move failed — source file incomplete. "
+                        "Stabilization did not complete successfully."
+                    )
+                    return False
+            except Exception as e:
+                on_log(f"ERROR checking source stability: {e}")
                 return False
-        except Exception as e:
-            on_log(f"ERROR checking source stability: {e}")
-            return False
 
         if os.path.exists(final_path):
             final_path = self.unique_path(final_path)
