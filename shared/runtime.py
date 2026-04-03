@@ -109,6 +109,8 @@ DEFAULTS = {
     "opt_smart_rip_mode": False,
     "opt_smart_min_minutes": 20,
     "opt_naming_mode": "timestamp",
+    "opt_extras_folder_mode": "single",
+    "opt_bonus_folder_name": "featurettes",
     "opt_makemkv_global_args": "",
     "opt_makemkv_info_args": "",
     "opt_makemkv_rip_args": "",

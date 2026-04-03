@@ -2042,6 +2042,16 @@ class JellyRipperGUI(tk.Tk):
             toggle_row(everyday_tab, "opt_session_failure_report",
                        "Show a failure report at the end")
 
+            section(everyday_tab, "Extras")
+            choice_row(everyday_tab, "opt_extras_folder_mode",
+                       "Extras folder layout:",
+                       ["single", "split"])
+            choice_row(everyday_tab, "opt_bonus_folder_name",
+                       "Bonus folder name (Jellyfin):",
+                       ["behind the scenes", "deleted scenes",
+                        "featurettes", "interviews", "scenes",
+                        "shorts", "clips", "other", "trailers"])
+
             section(validation_tab, "Rip Validation")
             toggle_row(validation_tab, "opt_scan_disc_size",
                        "Check disc size before ripping")

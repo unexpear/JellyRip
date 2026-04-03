@@ -1464,12 +1464,15 @@ class RipperEngine:
     def move_files(self, titles_list, main_indices, episode_numbers,
                    real_names, extra_indices, is_tv, title, dest_folder,
                    extras_folder, season, year, extra_counter,
-                   on_progress, on_log):
-        """Move selected main/extras files into final library structure.
+                   on_progress, on_log,
+                   bonus_indices=None, bonus_folder=None):
+        """Move selected main/extras/bonus files into final library structure.
 
         extra_indices: None = keep all non-main as extras,
                        []   = keep no extras,
                        [i]  = keep only those absolute indices as extras.
+        bonus_indices: None = no bonus category, [] = none,
+                       [i]  = absolute indices to move into bonus_folder.
         """
         _main_set    = set(main_indices)
         _extras_list = (
@@ -1477,7 +1480,8 @@ class RipperEngine:
             if extra_indices is None
             else list(extra_indices)
         )
-        total_to_move = len(main_indices) + len(_extras_list)
+        _bonus_list = list(bonus_indices) if bonus_indices else []
+        total_to_move = len(main_indices) + len(_extras_list) + len(_bonus_list)
         moved = 0
         moved_paths = []
 
@@ -1487,6 +1491,10 @@ class RipperEngine:
         if _extras_list:
             selected_size += sum(
                 os.path.getsize(titles_list[i][0]) for i in _extras_list
+            )
+        if _bonus_list:
+            selected_size += sum(
+                os.path.getsize(titles_list[i][0]) for i in _bonus_list
             )
 
         if self.cfg.get("opt_check_dest_space", True):
@@ -1563,6 +1571,46 @@ class RipperEngine:
                 extra_counter += 1
                 on_log(
                     f"Moving extra: "
+                    f"{os.path.basename(old_file)}"
+                )
+                ok = self.move_file_atomic(
+                    old_file, final_path, on_log
+                )
+                if not ok:
+                    return False, extra_counter, moved_paths
+                moved += 1
+                moved_paths.append(final_path)
+                on_progress(
+                    int(moved / total_to_move * 100)
+                )
+                on_log(
+                    f"Done: {os.path.basename(final_path)}"
+                )
+
+            bonus_counter = 1
+            for i in _bonus_list:
+                if self.abort_event.is_set():
+                    on_log("Move aborted by user.")
+                    return False, extra_counter, moved_paths
+                old_file, dur, mb = titles_list[i]
+                if is_tv:
+                    name = (
+                        f"{clean_name(title)} - "
+                        f"S{season:02d}E00 - "
+                        f"Bonus{bonus_counter}.mkv"
+                    )
+                else:
+                    name = (
+                        f"{clean_name(title)} ({year}) "
+                        f"- Bonus{bonus_counter}.mkv"
+                    )
+                target_dir = bonus_folder or extras_folder
+                final_path = self.unique_path(
+                    os.path.join(target_dir, name)
+                )
+                bonus_counter += 1
+                on_log(
+                    f"Moving bonus: "
                     f"{os.path.basename(old_file)}"
                 )
                 ok = self.move_file_atomic(
