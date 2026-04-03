@@ -844,18 +844,26 @@ class JellyRipperGUI(tk.Tk):
             btn_frame = tk.Frame(self.log_text, bg="#161b22")
 
             def choose_retry():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
                 result[0] = "retry"
                 _finish(f"→ {retry_text}")
 
             def choose_bypass():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
                 result[0] = "bypass"
                 _finish(f"→ {bypass_text}")
 
             def choose_stop():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
                 result[0] = "stop"
                 _finish(f"→ {stop_text}")
 
             def _finish(answer_text):
+                if done.is_set():
+                    return
                 try:
                     btn_frame.destroy()
                 except Exception:
@@ -901,6 +909,8 @@ class JellyRipperGUI(tk.Tk):
                 while not done.is_set():
                     if self.engine.abort_event.is_set():
                         def _cleanup():
+                            if done.is_set():
+                                return
                             try:
                                 btn_frame.destroy()
                             except Exception:
