@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.11] - 2026-04-03
+
+### Added
+
+- CINFO disc-level parsing: scan now extracts disc title, language code, language name, and volume ID from MakeMKV output.
+- `--minlength` scan filter: new `opt_minlength_seconds` setting (Advanced → MakeMKV) tells MakeMKV to skip titles shorter than the configured threshold during scan.
+- Jellyfin metadata ID prompts: Smart Rip, Manual Disc, and Organize flows now ask for an optional TMDB/IMDB/TVDB ID. Folder names get Jellyfin-compatible tags like `[tmdbid-603]` or `[imdbid-tt1375666]`.
+- `parse_metadata_id()` accepts flexible input formats: `tmdb:12345`, `tmdb-12345`, `tt1234567`, `tvdb:79168`, or bare integers (assumed TMDB).
+- `build_movie_folder_name()` and `build_tv_folder_name()` centralize Jellyfin-style folder naming with optional metadata tags.
+- 34 new tests for the naming module (180 total tests passing).
+
+### Changed
+
+- `build_fallback_title()` now prefers CINFO disc name over per-title TINFO name when the disc name is available and non-generic.
+- Generic disc name detection expanded to catch both "Title NN" and "Title_NN" patterns plus "Disc"-prefixed names.
+
+### Fixed
+
+- Fixed 73 mojibake em dashes in controller.py (triple-encoded UTF-8 bytes replaced with proper U+2014).
+
 ## [1.0.10] - 2026-04-02
 
 ### Added
