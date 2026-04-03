@@ -740,10 +740,21 @@ class RipperController:
 
         return True
 
-    def _normalize_rip_result(self, rip_path, success, failed_titles):
-        """Collapse rip outcomes into one all-or-nothing success state."""
+    def _normalize_rip_result(self, rip_path, success, failed_titles,
+                               pre_existing_files=None):
+        """Collapse rip outcomes into one all-or-nothing success state.
+
+        pre_existing_files: optional frozenset of MKV paths that existed in
+        rip_path before this rip started.  Files in this set are excluded from
+        the validity check so a leftover invalid partial from a prior session
+        cannot cause the current rip to fail.
+        """
+        _excluded = frozenset(pre_existing_files or [])
         mkv_files = sorted(
-            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            f for f in glob.glob(
+                os.path.join(rip_path, "**", "*.mkv"), recursive=True
+            )
+            if f not in _excluded
         )
 
         valid_files = [
@@ -1045,6 +1056,9 @@ class RipperController:
                     pass
 
         self.gui.set_status("Ripping... (this may take 20-60 min)")
+        _pre_rip_mkvs = frozenset(
+            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+        )
         success, failed_titles = self.engine.rip_selected_titles(
             rip_path, selected_ids,
             on_progress=self.gui.set_progress,
@@ -1056,7 +1070,7 @@ class RipperController:
                 f"Retry: titles failed — {failed_titles}"
             )
         success, mkv_files = self._normalize_rip_result(
-            rip_path, success, failed_titles
+            rip_path, success, failed_titles, _pre_rip_mkvs
         )
         if not success:
             return False
@@ -1490,6 +1504,9 @@ class RipperController:
             "Ripping main feature..."
         )
         self.gui.set_status("Ripping... (this may take 20-60 min)")
+        _pre_rip_mkvs = frozenset(
+            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+        )
         success, failed_titles = self.engine.rip_selected_titles(
             rip_path, selected_ids,
             on_progress=self.gui.set_progress,
@@ -1497,7 +1514,7 @@ class RipperController:
         )
         self._warn_degraded_rips()
         success, mkv_files = self._normalize_rip_result(
-            rip_path, success, failed_titles
+            rip_path, success, failed_titles, _pre_rip_mkvs
         )
 
         if not success:
@@ -1872,13 +1889,16 @@ class RipperController:
                         return
 
         self.gui.set_status("Ripping all titles...")
+        _pre_rip_mkvs = frozenset(
+            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+        )
         success = self.engine.rip_all_titles(
             rip_path,
             on_progress=self.gui.set_progress,
             on_log=self.log
         )
         success, mkv_files = self._normalize_rip_result(
-            rip_path, success, []
+            rip_path, success, [], _pre_rip_mkvs
         )
 
         if not success:
@@ -2339,13 +2359,16 @@ class RipperController:
                             break
 
             self.gui.set_status("Ripping... (this may take 20-60 min)")
+            _pre_rip_mkvs = frozenset(
+                glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            )
             success = self.engine.rip_all_titles(
                 rip_path,
                 on_progress=self.gui.set_progress,
                 on_log=self.log
             )
             success, mkv_files = self._normalize_rip_result(
-                rip_path, success, []
+                rip_path, success, [], _pre_rip_mkvs
             )
 
             if not success:
@@ -3138,6 +3161,9 @@ class RipperController:
                         break
 
             self.gui.set_status("Ripping... (this may take 20-60 min)")
+            _pre_rip_mkvs = frozenset(
+                glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            )
             success, failed_titles = self.engine.rip_selected_titles(
                 rip_path, selected_ids,
                 on_progress=self.gui.set_progress,
@@ -3152,7 +3178,7 @@ class RipperController:
                 )
 
             success, mkv_files = self._normalize_rip_result(
-                rip_path, success, failed_titles
+                rip_path, success, failed_titles, _pre_rip_mkvs
             )
 
             if not success:

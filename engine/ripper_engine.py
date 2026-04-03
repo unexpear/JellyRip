@@ -85,7 +85,7 @@ class RipperEngine:
             if self.abort_event.is_set():
                 return
             self.abort_event.set()
-        proc = self.current_process
+            proc = self.current_process  # read inside lock — avoids race with rip thread
         if proc is not None:
             try:
                 if proc.poll() is None:
@@ -870,6 +870,12 @@ class RipperEngine:
 
         try:
             proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -1492,13 +1498,13 @@ class RipperEngine:
                 )
                 final_path = new_final
                 io_final_path = self._io_path(final_path)
+            src_size = os.path.getsize(io_source)  # read before replace — source may vanish after
             try:
                 os.replace(io_temp_dest, io_final_path)
             except OSError:
                 # Cross-volume fallback when atomic rename is unavailable.
                 shutil.move(io_temp_dest, io_final_path)
             if os.path.exists(io_final_path):
-                src_size = os.path.getsize(io_source)
                 size_ok, dst_size = wait_for_size_match(
                     src_size, io_final_path
                 )
