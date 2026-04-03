@@ -2,8 +2,42 @@
 
 import sys
 
-from config import load_config
+from config import (
+    auto_locate_tools,
+    load_config,
+    save_config,
+    validate_ffprobe,
+    validate_makemkvcon,
+)
 from gui.main_window import JellyRipperGUI
+
+
+def _autofill_tool_paths(cfg):
+    """Auto-populate missing/invalid tool paths without overwriting working ones."""
+    found_mkv, found_ffp = auto_locate_tools()
+    updates = {
+        "makemkvcon_path": (found_mkv, validate_makemkvcon),
+        "ffprobe_path": (found_ffp, validate_ffprobe),
+    }
+
+    changed = False
+    for key, (found, validator) in updates.items():
+        current = str(cfg.get(key, "") or "").strip()
+        current_ok = False
+        if current:
+            current_ok, _ = validator(current)
+        if current_ok:
+            continue
+        if not found:
+            continue
+        candidate = str(found).strip()
+        candidate_ok, _ = validator(candidate)
+        if candidate_ok and candidate != current:
+            cfg[key] = candidate
+            changed = True
+
+    if changed:
+        save_config(cfg)
 
 
 def main():
@@ -17,6 +51,11 @@ def main():
             pass
 
     cfg = load_config()
+    try:
+        _autofill_tool_paths(cfg)
+    except Exception:
+        # Startup must remain resilient even if auto-locate fails.
+        pass
     app = JellyRipperGUI(cfg)
     app.mainloop()
 
