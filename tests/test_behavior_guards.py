@@ -138,7 +138,7 @@ def test_ffprobe_cache_accumulates_entries(tmp_path, monkeypatch):
         def poll(self):
             return 0
 
-        def communicate(self):
+        def communicate(self, timeout=None):
             return ('{"format": {"duration": "60"}}', "")
 
     monkeypatch.setattr(
@@ -371,7 +371,11 @@ def test_retry_stops_on_success(tmp_path, monkeypatch):
 
     def fake_run(_cmd, _on_progress, _on_log):
         calls.append("run")
-        return next(outcomes)
+        success = next(outcomes)
+        # When successful, create a dummy MKV file so file validation passes
+        if success:
+            Path(tmp_path, "output.mkv").write_text("dummy")
+        return success
 
     monkeypatch.setattr(engine, "_run_rip_process", fake_run)
 
