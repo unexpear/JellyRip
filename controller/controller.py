@@ -1323,6 +1323,9 @@ class RipperController:
         if metadata_id:
             self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
+        if self.engine.abort_event.is_set():
+            return
+
         time.sleep(2)  # drive spin-up / mount stabilization
         disc_titles = self.scan_with_retry()
 
@@ -1841,6 +1844,10 @@ class RipperController:
         self.gui.show_info(
             "Insert Disc", "Insert disc and click OK when ready."
         )
+
+        if self.engine.abort_event.is_set():
+            return
+
         time.sleep(2)  # drive spin-up / mount stabilization
 
         title = self.gui.ask_input(
