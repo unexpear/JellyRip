@@ -100,13 +100,9 @@ from shared.runtime import (
     __version__,
     _duration_debug_warn,
     _safe_int_debug_warn,
-    build_fallback_title,
-    build_naming_preview_text,
     configure_duration_debug,
     configure_safe_int_debug,
     get_config_dir,
-    normalize_naming_mode,
-    resolve_naming_mode,
 )
 
 from config import (
@@ -118,6 +114,12 @@ from config import (
     validate_makemkvcon,
 )
 from controller.controller import RipperController
+from controller.naming import (
+    build_fallback_title,
+    build_naming_preview_text,
+    normalize_naming_mode,
+    resolve_naming_mode,
+)
 from engine.ripper_engine import RipperEngine
 from utils.helpers import (
     get_available_drives,
@@ -579,7 +581,7 @@ class JellyRipperGUI(tk.Tk):
                 self.controller.log(f"Could not compute update SHA256: {e}")
 
             require_sig = bool(
-                self.cfg.get("opt_update_require_signature", False)
+                self.cfg.get("opt_update_require_signature", True)
             )
             pinned_thumbprint = str(
                 self.cfg.get("opt_update_signer_thumbprint", "")
