@@ -1304,7 +1304,7 @@ class JellyRipperGUI(tk.Tk):
 
             def _update_size_label():
                 total = sum(
-                    id_map[int(iid.split("_")[1])]["size_bytes"]
+                    id_map[int(iid.split("_")[1])].get("size_bytes", 0)
                     for iid, checked in check_vars.items()
                     if checked
                 )
@@ -2342,30 +2342,30 @@ class JellyRipperGUI(tk.Tk):
         except Exception:
             pass
         try:
-            # Escape for safe PS string interpolation.
-            safe_title = title.replace('"', '`"').replace("'", "''")
-            safe_msg = message.replace('"', '`"').replace("'", "''")
+            # Pass title and message as process arguments ($args[0], $args[1])
+            # so no string escaping is needed and disc metadata cannot inject PS code.
             ps = (
                 "[Windows.UI.Notifications.ToastNotificationManager,"
                 " Windows.UI.Notifications, ContentType=WindowsRuntime]"
                 " | Out-Null;"
-                "$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02;"
+                "$tpl = [Windows.UI.Notifications.ToastTemplateType]::ToastText02;"
                 "$x = [Windows.UI.Notifications.ToastNotificationManager]"
-                "::GetTemplateContent($t);"
-                f'$x.GetElementsByTagName("text")[0].AppendChild('
-                f'$x.CreateTextNode("{safe_title}")) | Out-Null;'
-                f'$x.GetElementsByTagName("text")[1].AppendChild('
-                f'$x.CreateTextNode("{safe_msg}")) | Out-Null;'
+                "::GetTemplateContent($tpl);"
+                "$x.GetElementsByTagName('text')[0].AppendChild("
+                "$x.CreateTextNode($args[0])) | Out-Null;"
+                "$x.GetElementsByTagName('text')[1].AppendChild("
+                "$x.CreateTextNode($args[1])) | Out-Null;"
                 "$n = [Windows.UI.Notifications.ToastNotification]::new($x);"
-                '[Windows.UI.Notifications.ToastNotificationManager]'
-                '::CreateToastNotifier("JellyRip.App.1").Show($n);'
+                "[Windows.UI.Notifications.ToastNotificationManager]"
+                "::CreateToastNotifier('JellyRip.App.1').Show($n);"
             )
             _ps = (
                 shutil.which("powershell")
                 or r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
             )
             subprocess.Popen(
-                [_ps, "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+                [_ps, "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps,
+                 title, message],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=0x08000000,
@@ -2485,6 +2485,14 @@ class JellyRipperGUI(tk.Tk):
         temp_folder = os.path.normpath(
             self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
         )
+        _safe_mode_keys = (
+            "opt_file_stabilization",
+            "opt_stabilize_required_polls",
+            "opt_stabilize_timeout_seconds",
+            "opt_move_verify_retries",
+            "opt_expected_size_ratio_pct",
+        )
+        _safe_mode_snapshot = {k: self.cfg.get(k) for k in _safe_mode_keys}
         if self.cfg.get("opt_safe_mode", True):
             self.cfg["opt_file_stabilization"] = True
             self.cfg["opt_stabilize_required_polls"] = max(
@@ -2554,6 +2562,13 @@ class JellyRipperGUI(tk.Tk):
                     "JellyRip — Error", f"Rip failed: {msg}"
                 ))
             finally:
+                # Restore safe-mode-overridden config keys so Settings shows
+                # the user's actual values, not the enforced minimums.
+                for k, v in _safe_mode_snapshot.items():
+                    if v is None:
+                        self.cfg.pop(k, None)
+                    else:
+                        self.cfg[k] = v
                 self.stop_indeterminate()
                 self.after(0, self.enable_buttons)
                 self.set_status("Ready")

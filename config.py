@@ -36,8 +36,10 @@ def load_config():
 
 def save_config(cfg):
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
     except Exception as exc:
         raise RuntimeError(f"Could not save config: {exc}") from exc
 
@@ -196,33 +198,32 @@ def _locate_makemkvcon_registry():
         ]
         for hive, subkey in reg_paths:
             try:
-                key = winreg.OpenKey(hive, subkey)
-                # DisplayIcon is the value the real installer writes — check it first
-                for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
-                    try:
-                        val, _ = winreg.QueryValueEx(key, value_name)
-                        if not val:
+                with winreg.OpenKey(hive, subkey) as key:
+                    # DisplayIcon is the value the real installer writes — check it first
+                    for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
+                        try:
+                            val, _ = winreg.QueryValueEx(key, value_name)
+                            if not val:
+                                continue
+                            # Value may point directly to the exe
+                            if val.lower().endswith(".exe") and os.path.isfile(val):
+                                return val
+                            # Or it may be an install directory
+                            candidate = os.path.join(val, "makemkvcon.exe")
+                            if os.path.isfile(candidate):
+                                return candidate
+                        except OSError:
                             continue
-                        # Value may point directly to the exe
-                        if val.lower().endswith(".exe") and os.path.isfile(val):
-                            return val
-                        # Or it may be an install directory
-                        candidate = os.path.join(val, "makemkvcon.exe")
-                        if os.path.isfile(candidate):
-                            return candidate
+                    # Last resort: derive install dir from UninstallString
+                    try:
+                        uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
+                        if uninstall:
+                            install_dir = os.path.dirname(uninstall)
+                            candidate = os.path.join(install_dir, "makemkvcon.exe")
+                            if os.path.isfile(candidate):
+                                return candidate
                     except OSError:
-                        continue
-                # Last resort: derive install dir from UninstallString
-                try:
-                    uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
-                    if uninstall:
-                        install_dir = os.path.dirname(uninstall)
-                        candidate = os.path.join(install_dir, "makemkvcon.exe")
-                        if os.path.isfile(candidate):
-                            return candidate
-                except OSError:
-                    pass
-                winreg.CloseKey(key)
+                        pass
             except OSError:
                 continue
     except Exception:
@@ -248,17 +249,16 @@ def _locate_ffprobe_registry():
         ]
         for hive, subkey in reg_paths:
             try:
-                key = winreg.OpenKey(hive, subkey)
-                for value_name in ("InstallLocation", "InstallDir"):
-                    try:
-                        val, _ = winreg.QueryValueEx(key, value_name)
-                        if val:
-                            found = _resolve_ffprobe_from_dir(val)
-                            if found:
-                                return found
-                    except OSError:
-                        continue
-                winreg.CloseKey(key)
+                with winreg.OpenKey(hive, subkey) as key:
+                    for value_name in ("InstallLocation", "InstallDir"):
+                        try:
+                            val, _ = winreg.QueryValueEx(key, value_name)
+                            if val:
+                                found = _resolve_ffprobe_from_dir(val)
+                                if found:
+                                    return found
+                        except OSError:
+                            continue
             except OSError:
                 continue
     except Exception:
