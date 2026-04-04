@@ -341,8 +341,44 @@ class RipperController:
         ):
             return resolved
 
+        self.log("Custom run-folder override selected — collecting paths.")
+
         for key, label in path_fields:
             default_path = resolved[key]
+            used_picker = callable(getattr(self.gui, "ask_directory", None))
+
+            if used_picker:
+                chosen = self.gui.ask_directory(
+                    f"{label} (Run Override)",
+                    "Choose folder (Cancel = keep default)",
+                    initialdir=default_path,
+                )
+                if chosen is None:
+                    resolved[key] = default_path
+                    self.log(
+                        f"Run override cancelled — {label}: using default {default_path}"
+                    )
+                    continue
+                chosen = os.path.normpath(str(chosen).strip())
+                if os.path.isdir(chosen):
+                    resolved[key] = chosen
+                    self.log(f"Run override — {label}: {chosen}")
+                    continue
+                try:
+                    os.makedirs(chosen, exist_ok=True)
+                    resolved[key] = chosen
+                    self.log(f"Run override — {label}: {chosen}")
+                    continue
+                except Exception as e:
+                    self.log(
+                        f"Could not create folder '{chosen}': {e}"
+                    )
+                    resolved[key] = default_path
+                    self.log(
+                        f"Falling back to default {label}: {default_path}"
+                    )
+                    continue
+
             while True:
                 entered = self.gui.ask_input(
                     f"{label} (Run Override)",
@@ -350,7 +386,11 @@ class RipperController:
                     default_value=default_path,
                 )
                 if entered is None:
-                    return None
+                    resolved[key] = default_path
+                    self.log(
+                        f"Run override cancelled — {label}: using default {default_path}"
+                    )
+                    break
 
                 chosen = default_path if entered == "" else str(entered).strip()
                 if not chosen:
@@ -388,6 +428,8 @@ class RipperController:
             self.log(f"ERROR: {error}")
             self.gui.show_error("Invalid Run Paths", error)
             return None
+
+        self.log("Custom folders set, continuing...")
 
         return resolved
 
@@ -2446,10 +2488,17 @@ class RipperController:
     def run_organize(self):
         cfg = self.engine.cfg
 
-        folder_path = self.gui.ask_input(
-            "Organize",
-            "Enter path to folder with raw .mkv files:",
-        )
+        if callable(getattr(self.gui, "ask_directory", None)):
+            folder_path = self.gui.ask_directory(
+                "Organize",
+                "Choose folder with raw .mkv files",
+                initialdir=self.engine.cfg.get("temp_folder", ""),
+            )
+        else:
+            folder_path = self.gui.ask_input(
+                "Organize",
+                "Enter path to folder with raw .mkv files:",
+            )
         if not folder_path:
             self.log("Cancelled.")
             return
@@ -2471,13 +2520,21 @@ class RipperController:
 
         self.log(f"Found {len(mkv_files)} files in: {folder_path}")
 
-        media_type = self.gui.ask_input(
-            "Media Type", "TV or Movie? Enter t or m:"
-        )
-        if not media_type:
-            self.log("Cancelled.")
-            return
-        is_tv = media_type.strip().lower() == "t"
+        while True:
+            media_type = self.gui.ask_input(
+                "Media Type", "TV or Movie? Enter t or m:"
+            )
+            if not media_type:
+                self.log("Cancelled.")
+                return
+
+            media_type = media_type.strip().lower()
+            if media_type in {"t", "tv", "m", "movie"}:
+                break
+
+            self.log("Invalid media type. Enter 't' for TV or 'm' for Movie.")
+
+        is_tv = media_type in {"t", "tv"}
 
         path_fields = [
             ("tv_folder", "TV Folder"),
@@ -2661,6 +2718,8 @@ class RipperController:
             "(Deselect any you don't want as extras.)",
             opts,
         )
+        if extras_chosen is None:
+            return [], []
         extras_abs = (
             [_non_main[c] for c in extras_chosen]
             if extras_chosen else []
@@ -2684,6 +2743,8 @@ class RipperController:
                 f"(Deselect any you don't want.)",
                 remaining_opts,
             )
+            if bonus_chosen is None:
+                return extras_abs, []
             if bonus_chosen:
                 bonus_abs = [remaining[c] for c in bonus_chosen]
 
@@ -2758,10 +2819,17 @@ class RipperController:
                 "already there and suggest the next episode(s).\n\n"
                 "Choose NO to start a new folder from scratch."
             ):
-                chosen = self.gui.ask_input(
-                    "Library Folder",
-                    "Enter path to existing show folder (e.g. TV/Breaking Bad):",
-                )
+                if callable(getattr(self.gui, "ask_directory", None)):
+                    chosen = self.gui.ask_directory(
+                        "Library Folder",
+                        "Choose existing show folder",
+                        initialdir=tv_root,
+                    )
+                else:
+                    chosen = self.gui.ask_input(
+                        "Library Folder",
+                        "Enter path to existing show folder (e.g. TV/Breaking Bad):",
+                    )
                 if chosen and os.path.isdir(chosen):
                     library_root = os.path.normpath(chosen)
                     library_state = self._scan_library_folder(library_root)

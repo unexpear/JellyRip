@@ -1,6 +1,8 @@
 """Main entrypoint for the split package layout."""
 
+import os
 import sys
+from pathlib import Path
 
 from config import (
     auto_locate_tools,
@@ -9,6 +11,45 @@ from config import (
     validate_ffprobe,
     validate_makemkvcon,
 )
+
+def _bootstrap_tk_paths():
+    """Set Tcl/Tk library paths when Python's auto-discovery is broken."""
+    if sys.platform != "win32":
+        return
+    if os.environ.get("TCL_LIBRARY") and os.environ.get("TK_LIBRARY"):
+        return
+
+    candidate_roots = []
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        candidate_roots.append(meipass)
+        candidate_roots.append(meipass / "tcl")
+
+    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix))
+    candidate_roots.append(base_prefix / "tcl")
+
+    for root in candidate_roots:
+        if root.name == "tcl":
+            tcl_dir = root / "tcl8.6"
+            tk_dir = root / "tk8.6"
+        else:
+            tcl_dir = root / "_tcl_data"
+            tk_dir = root / "_tk_data"
+        if (tcl_dir / "init.tcl").is_file() and tk_dir.is_dir():
+            os.environ.setdefault("TCL_LIBRARY", str(tcl_dir))
+            os.environ.setdefault("TK_LIBRARY", str(tk_dir))
+            return
+
+        tcl_dir = root / "tcl8.6"
+        tk_dir = root / "tk8.6"
+        if (tcl_dir / "init.tcl").is_file() and tk_dir.is_dir():
+            os.environ.setdefault("TCL_LIBRARY", str(tcl_dir))
+            os.environ.setdefault("TK_LIBRARY", str(tk_dir))
+            return
+
+
+_bootstrap_tk_paths()
+
 from gui.main_window import JellyRipperGUI
 
 

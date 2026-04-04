@@ -1,11 +1,14 @@
 @echo off
 REM Build JellyRip.exe from source using PyInstaller
 
+set "PYTHON_EXE=.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
 echo Building JellyRip.exe...
 echo.
 
 REM Check if PyInstaller is installed
-python -m PyInstaller --version >nul 2>&1
+%PYTHON_EXE% -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
     echo Error: PyInstaller not installed
     echo Run: pip install pyinstaller
@@ -18,11 +21,7 @@ if exist dist rmdir /s /q dist >nul 2>&1
 if exist build rmdir /s /q build >nul 2>&1
 
 REM Build the exe
-python -m PyInstaller ^
-    --onefile ^
-    --windowed ^
-    --name JellyRip ^
-    main.py
+%PYTHON_EXE% -m PyInstaller JellyRip.spec
 
 if errorlevel 1 (
     echo Build failed!

@@ -812,6 +812,28 @@ def test_prompt_run_path_overrides_accepts_custom_existing_path(tmp_path):
     assert resolved["temp_folder"] == os.path.normpath(custom_temp)
 
 
+def test_prompt_run_path_overrides_directory_picker_cancel_keeps_default(tmp_path):
+    controller, engine = _controller_with_engine()
+    default_temp = str(tmp_path / "default-temp")
+    os.makedirs(default_temp, exist_ok=True)
+    engine.cfg["temp_folder"] = default_temp
+
+    controller.gui.ask_yesno = lambda _prompt: True
+    controller.gui.ask_directory = (
+        lambda _title, _prompt, initialdir="": None
+    )
+
+    resolved = controller._prompt_run_path_overrides([
+        ("temp_folder", "Temp Folder"),
+    ])
+
+    assert resolved["temp_folder"] == os.path.normpath(default_temp)
+    assert any(
+        "Custom folders set, continuing..." in m
+        for m in controller.gui.messages
+    )
+
+
 def test_validate_paths_blocks_temp_equals_movies(tmp_path):
     controller, _engine = _controller_with_engine()
     same = str(tmp_path / "same")
@@ -820,6 +842,32 @@ def test_validate_paths_blocks_temp_equals_movies(tmp_path):
 
     assert err is not None
     assert "cannot be the same" in err.lower()
+
+
+def test_split_extras_picker_cancel_returns_no_extras(monkeypatch):
+    controller, engine = _controller_with_engine()
+    engine.cfg["opt_extras_folder_mode"] = "split"
+
+    monkeypatch.setattr(
+        controller.gui,
+        "show_extras_picker",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+    titles_list = [
+        ("main.mkv", 3600, 5000),
+        ("extra1.mkv", 600, 500),
+        ("extra2.mkv", 700, 600),
+    ]
+
+    extra_indices, bonus_indices = controller._ask_extras_selection(
+        titles_list,
+        main_indices=[0],
+    )
+
+    assert extra_indices == []
+    assert bonus_indices == []
 
 
 def test_validate_paths_blocks_non_writable(monkeypatch, tmp_path):
