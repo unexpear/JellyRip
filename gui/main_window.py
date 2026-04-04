@@ -2460,13 +2460,15 @@ class JellyRipperGUI(tk.Tk):
                 "Use Smart Rip for this movie disc?\n\n"
                 "Yes = auto-pick main feature\n"
                 "No = manual title selection\n"
-                "Cancel = do nothing",
+                "Cancel = manual title selection",
                 parent=self,
             )
         )
         if choice is None:
-            self.controller.log("Movie mode selection cancelled.")
-            return None
+            self.controller.log(
+                "Movie mode prompt closed — defaulting to manual selection."
+            )
+            return self.controller.run_movie_disc
         if choice:
             return self.controller.run_smart_rip
         return self.controller.run_movie_disc
