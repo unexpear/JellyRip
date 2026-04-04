@@ -2930,6 +2930,18 @@ class RipperController:
                     )
                 if chosen and os.path.isdir(chosen):
                     library_root = os.path.normpath(chosen)
+                    # Guard: if the user accidentally selected a Season folder
+                    # (e.g. "Season 01") instead of the show root, auto-correct
+                    # to its parent so season_folder is computed correctly later.
+                    if re.match(r"^Season\s+\d{1,3}$",
+                                os.path.basename(library_root),
+                                re.IGNORECASE):
+                        parent = os.path.dirname(library_root)
+                        self.log(
+                            f"Selected folder looks like a Season folder; "
+                            f"auto-correcting library root to parent: {parent}"
+                        )
+                        library_root = parent
                     library_state = self._scan_library_folder(library_root)
                     if library_state:
                         season_summary = "  ".join(
