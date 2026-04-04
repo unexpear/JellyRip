@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.12] - 2026-04-04
+
+### Changed
+
+- In-app updater now launches `JellyRipInstaller.exe` in silent in-place update mode (`/VERYSILENT /CLOSEAPPLICATIONS /NORESTART`) and falls back to normal launch if silent invocation fails.
+- Inno Setup installer is now explicitly configured for update flows (`UsePreviousAppDir`, `CloseApplications`, `CloseApplicationsFilter`, `RestartApplications=no`) so reinstalling acts as an updater.
+- Build and release scripts now build via `JellyRip.spec` instead of ad-hoc CLI flags, ensuring release artifacts consistently include the same runtime hooks and bundled dependencies as tested builds.
+
+### Fixed
+
+- Movie resume path now always uses a fresh temp rip folder instead of reusing the previous session folder, preventing `_purge_rip_target_files` from deleting previously successful MKVs during a retry.
+- Smart Rip now exits immediately when abort is triggered during metadata prompts (title/year/metadata), avoiding fallback-name/0000-year continuation after user abort.
+- Auto-title fallback is now informational log output only and no longer appears as a session warning/failure summary line.
+
 ## [1.0.11] - 2026-04-03
 
 ### Added

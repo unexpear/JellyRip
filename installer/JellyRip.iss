@@ -2,7 +2,7 @@
 ; Compile with: ISCC installer\JellyRip.iss
 
 #define MyAppName "JellyRip"
-#define MyAppVersion "1.0.11"
+#define MyAppVersion "1.0.12"
 #define MyAppPublisher "unexpear"
 #define MyAppURL "https://github.com/unexpear/JellyRip"
 #define MyAppExeName "JellyRip.exe"
@@ -17,6 +17,10 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={localappdata}\Programs\JellyRip
 DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
+CloseApplications=yes
+CloseApplicationsFilter={#MyAppExeName}
+RestartApplications=no
 OutputDir=..\dist
 OutputBaseFilename=JellyRipInstaller
 Compression=lzma

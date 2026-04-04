@@ -14,7 +14,8 @@ if "%VERSION%"=="" (
     exit /b 1
 )
 
-set PYTHON_EXE=C:/Users/micha/AppData/Local/Programs/Python/Python313/python.exe
+set "PYTHON_EXE=.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 set ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe
 if not exist "%ISCC_EXE%" set ISCC_EXE=C:\Program Files\Inno Setup 6\ISCC.exe
 if not exist "%ISCC_EXE%" set ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe
@@ -68,7 +69,7 @@ echo.
 
 REM ---- Step 3: Build exe ----
 echo [3/7] Building JellyRip.exe...
-%PYTHON_EXE% -m PyInstaller --onefile --windowed --name JellyRip main.py >nul 2>&1
+%PYTHON_EXE% -m PyInstaller JellyRip.spec >nul 2>&1
 if errorlevel 1 (
     echo ABORT: PyInstaller build failed.
     exit /b 1

@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.11"
+__version__ = "1.0.12"
 
 
 def get_config_dir():
