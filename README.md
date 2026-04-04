@@ -1,8 +1,12 @@
 # JellyRip
 
-JellyRip is a Windows-first desktop app that uses MakeMKV and ffprobe to rip discs, validate output, and organize media into a Jellyfin-friendly library structure.
+JellyRip is a Windows-first desktop app that uses MakeMKV and ffprobe
+to rip discs, validate output, and organize media into a
+Jellyfin-friendly library structure.
 
-The project is currently pre-alpha. The codebase is actively tested and being hardened, but live disc workflows can still change quickly and should be treated as non-final.
+The project is currently pre-alpha. The codebase is actively tested and
+being hardened, but live disc workflows can still change quickly and
+should be treated as non-final.
 
 ## Project Status
 
@@ -10,7 +14,8 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
-- Quality target: practical and safe for testing, not yet stable enough to treat as finished software
+- Quality target: practical and safe for testing,
+  not yet stable enough to treat as finished software
 
 ## What JellyRip Does
 
@@ -22,11 +27,14 @@ The project is currently pre-alpha. The codebase is actively tested and being ha
 
 ## Quick Start
 
-### From GitHub release (recommended, currently `v1.0.12` unstable pre-release)
+### From GitHub release
+
+(recommended, currently `v1.0.12` unstable pre-release)
 
 1. Go to the [latest release page](https://github.com/unexpear/JellyRip/releases/latest).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
-3. If SmartScreen/Defender flags the file, whitelist the download folder first (common PyInstaller false positive).
+3. If SmartScreen/Defender flags the file, whitelist the download folder
+   first (common PyInstaller false positive).
 4. Run and open **Settings** to confirm MakeMKV and ffprobe paths before first rip.
 
 ### From source (git clone)
@@ -38,7 +46,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-First launch tip: open **Settings** and confirm MakeMKV and ffprobe paths before the first rip.
+First launch tip: open **Settings** and confirm MakeMKV and ffprobe
+paths before the first rip.
 
 ## Requirements
 
@@ -54,7 +63,8 @@ First launch tip: open **Settings** and confirm MakeMKV and ffprobe paths before
 - **Smart Rip**: auto-pick the best main feature
 - **Dump All**: raw dump mode for all titles
 - **Organize Existing MKVs**: move and sort already-ripped files
-- **Unattended Modes**: operator-assisted multi-disc flows with blocking confirmations and safety checks
+- **Unattended Modes**: operator-assisted multi-disc flows with
+  blocking confirmations and safety checks
 
 ## Configuration
 
@@ -120,7 +130,8 @@ Expected outputs:
 - `dist/JellyRip.exe`
 - `dist/JellyRipInstaller.exe`
 
-Build output is intentionally git-ignored and should be published through GitHub Releases rather than committed to the repository.
+Build output is intentionally git-ignored and should be published
+through GitHub Releases rather than committed to the repository.
 
 ### Full release pipeline
 
@@ -128,7 +139,9 @@ Build output is intentionally git-ignored and should be published through GitHub
 release.bat 1.0.12
 ```
 
-This runs tests, checks version consistency, builds both executables, pushes code, and publishes a GitHub release with assets attached — in the correct order. Never create a release without assets.
+This runs tests, checks version consistency, builds both executables,
+pushes code, and publishes a GitHub release with assets attached in the
+correct order. Never create a release without assets.
 
 ## Support and Reporting
 
@@ -137,7 +150,9 @@ This runs tests, checks version consistency, builds both executables, pushes cod
 - Release post text: [release_notes.md](release_notes.md)
 - Tester worksheet: [TESTERS.md](TESTERS.md)
 
-If Windows Defender flags the executable, whitelist the download folder before retrying. This is a known false-positive pattern for PyInstaller-built Windows executables.
+If Windows Defender flags the executable, whitelist the download folder
+before retrying. This is a known false-positive pattern for
+PyInstaller-built Windows executables.
 
 ## License
 
