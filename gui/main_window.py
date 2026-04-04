@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 
 if sys.platform == "win32":
@@ -648,7 +648,7 @@ class JellyRipperGUI(tk.Tk):
         if not self._input_active:
             return
         val = self.input_var.get().strip()
-        self._input_result = val if val else None
+        self._input_result = val
         self._input_event.set()
 
     def _skip_input(self):
@@ -708,7 +708,13 @@ class JellyRipperGUI(tk.Tk):
                     return None
                 if (timeout_seconds is not None and
                     time.time() - start >= timeout_seconds):
-                    self.after(0, self._hide_input_bar)
+                    def _timeout_cleanup():
+                        self._input_result = None
+                        self._hide_input_bar()
+                        self._input_event.set()
+
+                    self.after(0, _timeout_cleanup)
+                    done.wait(timeout=1.0)
                     return None
             return result[0]
 
@@ -725,6 +731,7 @@ class JellyRipperGUI(tk.Tk):
 
         result = [None]
         done   = threading.Event()
+        finish_holder = {"fn": None}
         timeout_seconds = self._get_user_prompt_timeout_seconds()
         start = time.time()
 
@@ -734,33 +741,32 @@ class JellyRipperGUI(tk.Tk):
 
             btn_frame = tk.Frame(self.log_text, bg="#161b22")
 
-            def yes():
-                if done.is_set() or self.engine.abort_event.is_set():
+            def finish(answer, answer_text=None):
+                if done.is_set():
                     return
-                result[0] = True
+                result[0] = answer
                 try:
                     btn_frame.destroy()
                 except Exception:
                     pass
-                self._append_log_text_main(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] → Yes",
-                    "answer",
-                )
+                if answer_text:
+                    self._append_log_text_main(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] {answer_text}",
+                        "answer",
+                    )
                 done.set()
+
+            finish_holder["fn"] = finish
+
+            def yes():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
+                finish(True, "→ Yes")
 
             def no():
                 if done.is_set() or self.engine.abort_event.is_set():
                     return
-                result[0] = False
-                try:
-                    btn_frame.destroy()
-                except Exception:
-                    pass
-                self._append_log_text_main(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] → No",
-                    "answer",
-                )
-                done.set()
+                finish(False, "→ No")
 
             tk.Button(
                 btn_frame, text="  Yes  ",
@@ -787,16 +793,7 @@ class JellyRipperGUI(tk.Tk):
             def _abort_watch():
                 while not done.is_set():
                     if self.engine.abort_event.is_set():
-                        def _cleanup():
-                            if done.is_set():
-                                return
-                            try:
-                                btn_frame.destroy()
-                            except Exception:
-                                pass
-                            result[0] = False
-                            done.set()
-                        self.after(0, _cleanup)
+                        self.after(0, lambda: finish(False))
                         return
                     time.sleep(0.1)
 
@@ -812,8 +809,24 @@ class JellyRipperGUI(tk.Tk):
                 return False
             if (timeout_seconds is not None and
                     time.time() - start >= timeout_seconds):
+                if finish_holder["fn"] is not None:
+                    self.after(0, lambda: finish_holder["fn"](False))
+                    done.wait(timeout=1.0)
                 return False
         return result[0] if result[0] is not None else False
+
+    def ask_directory(self, title, prompt, initialdir=""):
+        """Open a native folder picker and return selected path or None."""
+        def _pick():
+            chosen = filedialog.askdirectory(
+                title=f"{title}: {prompt}",
+                initialdir=initialdir or os.path.expanduser("~"),
+                mustexist=False,
+                parent=self,
+            )
+            return chosen if chosen else None
+
+        return self._run_on_main(_pick)
 
     def ask_duplicate_resolution(self, prompt,
                                  retry_text="Swap and Retry",
@@ -833,6 +846,7 @@ class JellyRipperGUI(tk.Tk):
 
         result = ["stop"]
         done   = threading.Event()
+        finish_holder = {"fn": None}
         timeout_seconds = self._get_user_prompt_timeout_seconds()
         start = time.time()
 
@@ -845,41 +859,42 @@ class JellyRipperGUI(tk.Tk):
 
             btn_frame = tk.Frame(self.log_text, bg="#161b22")
 
-            def choose_retry():
-                if done.is_set() or self.engine.abort_event.is_set():
-                    return
-                result[0] = "retry"
-                _finish(f"→ {retry_text}")
-
-            def choose_bypass():
-                if done.is_set() or self.engine.abort_event.is_set():
-                    return
-                result[0] = "bypass"
-                _finish(f"→ {bypass_text}")
-
-            def choose_stop():
-                if done.is_set() or self.engine.abort_event.is_set():
-                    return
-                result[0] = "stop"
-                _finish(f"→ {stop_text}")
-
-            def _finish(answer_text):
+            def finish(value, answer_text=None):
                 if done.is_set():
                     return
+                result[0] = value
                 try:
                     btn_frame.destroy()
                 except Exception:
                     pass
-                self.log_text.config(state="normal")
-                self.log_text.insert(
-                    "end",
-                    f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    f"{answer_text}\n",
-                    "answer"
-                )
-                self.log_text.see("end")
-                self.log_text.config(state="disabled")
+                if answer_text:
+                    self.log_text.config(state="normal")
+                    self.log_text.insert(
+                        "end",
+                        f"[{datetime.now().strftime('%H:%M:%S')}] "
+                        f"{answer_text}\n",
+                        "answer"
+                    )
+                    self.log_text.see("end")
+                    self.log_text.config(state="disabled")
                 done.set()
+
+            finish_holder["fn"] = finish
+
+            def choose_retry():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
+                finish("retry", f"→ {retry_text}")
+
+            def choose_bypass():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
+                finish("bypass", f"→ {bypass_text}")
+
+            def choose_stop():
+                if done.is_set() or self.engine.abort_event.is_set():
+                    return
+                finish("stop", f"→ {stop_text}")
 
             tk.Button(
                 btn_frame, text=f"  {retry_text}  ",
@@ -910,16 +925,7 @@ class JellyRipperGUI(tk.Tk):
             def _abort_watch():
                 while not done.is_set():
                     if self.engine.abort_event.is_set():
-                        def _cleanup():
-                            if done.is_set():
-                                return
-                            try:
-                                btn_frame.destroy()
-                            except Exception:
-                                pass
-                            result[0] = "stop"
-                            done.set()
-                        self.after(0, _cleanup)
+                        self.after(0, lambda: finish("stop"))
                         return
                     time.sleep(0.1)
 
@@ -933,6 +939,9 @@ class JellyRipperGUI(tk.Tk):
                 return "stop"
             if (timeout_seconds is not None and
                     time.time() - start >= timeout_seconds):
+                if finish_holder["fn"] is not None:
+                    self.after(0, lambda: finish_holder["fn"]("stop"))
+                    done.wait(timeout=1.0)
                 return "stop"
         return result[0]
 

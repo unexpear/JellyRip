@@ -1,4 +1,5 @@
 """Import smoke tests to guard module boundary regressions."""
+import threading
 import unittest.mock
 
 
@@ -64,3 +65,23 @@ def test_ask_space_override_uses_modal_fallback_on_main_thread():
 
     assert result is True
     gui._ask_space_override_modal.assert_called_once_with(10.0, 5.0)
+
+
+def test_confirm_input_preserves_empty_string():
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
+        from gui.main_window import JellyRipperGUI
+
+    class _Var:
+        def get(self):
+            return "   "
+
+    gui = object.__new__(JellyRipperGUI)
+    gui._input_active = True
+    gui.input_var = _Var()
+    gui._input_event = threading.Event()
+    gui._input_result = object()
+
+    gui._confirm_input()
+
+    assert gui._input_result == ""
+    assert gui._input_event.is_set()
