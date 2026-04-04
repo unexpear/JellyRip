@@ -1170,8 +1170,8 @@ def test_session_summary_clean_when_no_warnings():
 
 # ── Fallback logging ──────────────────────────────────────────────────────────
 
-def test_fallback_title_from_mode_logs_to_session_report(monkeypatch):
-    """_fallback_title_from_mode must emit a session report entry."""
+def test_fallback_title_from_mode_logs_but_does_not_report(monkeypatch):
+    """Auto-title fallback is informational and must not pollute session summary."""
     controller, _engine = _controller_with_engine()
 
     monkeypatch.setattr(
@@ -1182,7 +1182,41 @@ def test_fallback_title_from_mode_logs_to_session_report(monkeypatch):
     result = controller._fallback_title_from_mode()
 
     assert result == "Auto-Title-2026"
-    assert any("Auto-Title-2026" in line for line in controller.session_report)
+    assert any("Auto-Title-2026" in line for line in controller.gui.messages)
+    assert controller.session_report == []
+
+
+def test_run_smart_rip_abort_after_title_prompt_stops_before_fallback_logs(monkeypatch):
+    controller, engine = _controller_with_engine()
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["movies_folder"] = r"C:\Movies"
+    engine.cfg["temp_folder"] = r"C:\Temp"
+
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+
+    def ask_input(label, _prompt, default_value=""):
+        _ = default_value
+        if label == "Title":
+            engine.abort()
+            return ""
+        raise AssertionError(f"Unexpected prompt after abort: {label}")
+
+    controller.gui.ask_input = ask_input
+
+    scan_called = {"value": False}
+
+    def fail_scan(*_args, **_kwargs):
+        scan_called["value"] = True
+        raise AssertionError("scan_with_retry should not run after abort")
+
+    controller.scan_with_retry = fail_scan
+
+    controller.run_smart_rip()
+
+    assert scan_called["value"] is False
+    assert not any("No title entered" in line for line in controller.gui.messages)
+    assert not any("No year — using 0000" in line for line in controller.gui.messages)
 
 
 # ── Duration sanity check (tiered + aggregation + clamping) ──────────────────
