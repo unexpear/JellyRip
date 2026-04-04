@@ -493,7 +493,7 @@ class RipperController:
             disc_titles=disc_titles,
             disc_name=disc_name,
         )
-        self.report(f"Auto-title fallback used: '{title}'")
+        self.log(f"Auto-title fallback used: '{title}'")
         return title
 
     def _log_ripped_file_sizes(self, mkv_files):
@@ -1396,7 +1396,12 @@ class RipperController:
             "Smart Rip will automatically select the main feature."
         )
 
+        if self.engine.abort_event.is_set():
+            return
+
         title = self.gui.ask_input("Title", "Movie title:")
+        if self.engine.abort_event.is_set():
+            return
         auto_title_pending = not bool(title)
         if auto_title_pending:
             self.log(
@@ -1405,6 +1410,8 @@ class RipperController:
             )
 
         year = self.gui.ask_input("Year", "Release year:")
+        if self.engine.abort_event.is_set():
+            return
         if not year:
             year = "0000"
             self.log("WARNING: No year — using 0000")
@@ -1414,6 +1421,8 @@ class RipperController:
             "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
             "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
         )
+        if self.engine.abort_event.is_set():
+            return
         if metadata_id:
             self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
