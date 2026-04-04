@@ -157,25 +157,38 @@ class RipperEngine:
         """Return MakeMKV disc selector for the configured drive index."""
         return f"disc:{self.cfg.get('opt_drive_index', 0)}"
 
-    def cleanup_partial_files(self, temp_root, on_log):
-        """Remove stale `.partial` files left by interrupted move/rip operations."""
+    def cleanup_partial_files(self, temp_root, on_log, timeout=8.0):
+        """Remove stale `.partial` files left by interrupted move/rip operations.
+
+        Runs in a daemon thread so an offline network share cannot block the
+        caller.  Files found after *timeout* seconds are silently skipped.
+        """
         if not self.cfg.get("opt_clean_partials_startup", True):
             return
         if not os.path.isdir(temp_root):
             return
-        for root_dir, dirs, files in os.walk(temp_root):
-            for f in files:
-                if f.endswith(".partial"):
-                    full = os.path.join(root_dir, f)
-                    try:
-                        os.remove(full)
-                        on_log(
-                            f"Cleaned up leftover partial file: {f}"
-                        )
-                    except Exception as e:
-                        on_log(
-                            f"Warning: could not remove {f}: {e}"
-                        )
+
+        def _clean():
+            try:
+                for root_dir, dirs, files in os.walk(temp_root):
+                    for f in files:
+                        if f.endswith(".partial"):
+                            full = os.path.join(root_dir, f)
+                            try:
+                                os.remove(full)
+                                on_log(
+                                    f"Cleaned up leftover partial file: {f}"
+                                )
+                            except Exception as e:
+                                on_log(
+                                    f"Warning: could not remove {f}: {e}"
+                                )
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_clean, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
 
     def find_old_temp_folders(self, temp_root, timeout=8.0):
         """Enumerate temp rip folders with aggregate file count and size metadata.
@@ -479,7 +492,11 @@ class RipperEngine:
                         stream["channels"] = val
                     elif attr == 21:
                         stream["lang_name"] = val
-            proc.wait()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
         except Exception as e:
             on_log(f"Error scanning disc: {e}")
             return None
@@ -638,7 +655,11 @@ class RipperEngine:
                             total_bytes += parse_size_to_bytes(size_str)
                         except IndexError:
                             pass
-            proc.wait()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
         except Exception as e:
             on_log(f"Warning: could not read disc size: {e}")
             return None
@@ -649,7 +670,7 @@ class RipperEngine:
             return total_bytes
         return None
 
-    def check_disk_space(self, path, required_bytes, on_log):
+    def check_disk_space(self, path, required_bytes, on_log, timeout=8.0):
         hard_floor = int(
             self.cfg.get("opt_hard_block_gb", 20)
         ) * (1024**3)
@@ -657,7 +678,27 @@ class RipperEngine:
             if not os.path.exists(path):
                 on_log(f"Warning: disk-space path does not exist: {path}")
                 return "ok", 0, required_bytes
-            free = shutil.disk_usage(path).free
+            # Run in a daemon thread — shutil.disk_usage() can hang indefinitely
+            # on an offline or slow network share.
+            _free = [None]
+            _err  = [None]
+
+            def _query():
+                try:
+                    _free[0] = shutil.disk_usage(path).free
+                except Exception as e:
+                    _err[0] = e
+
+            t = threading.Thread(target=_query, daemon=True)
+            t.start()
+            t.join(timeout=timeout)
+
+            if _free[0] is None:
+                msg = str(_err[0]) if _err[0] else "timeout"
+                on_log(f"Warning: could not check disk space: {msg}")
+                return "ok", 0, required_bytes
+
+            free = _free[0]
             on_log(
                 f"Disk space — "
                 f"Required: {required_bytes / (1024**3):.1f} GB  "
