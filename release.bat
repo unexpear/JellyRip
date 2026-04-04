@@ -128,7 +128,7 @@ echo.
 
 REM ---- Step 7: Create release with assets ----
 echo [7/7] Publishing release v%VERSION% with assets...
-gh release create v%VERSION% dist\JellyRip.exe dist\JellyRipInstaller.exe --title "JellyRip v%VERSION%" --notes-file release_notes.txt
+gh release create v%VERSION% dist\JellyRip.exe dist\JellyRipInstaller.exe --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
 if errorlevel 1 (
     echo ABORT: gh release create failed.
     exit /b 1
