@@ -348,6 +348,9 @@ class RipperController:
             used_picker = callable(getattr(self.gui, "ask_directory", None))
 
             if used_picker:
+                self.log(
+                    f"Opening folder picker — {label} (default: {default_path})"
+                )
                 chosen = self.gui.ask_directory(
                     f"{label} (Run Override)",
                     "Choose folder (Cancel = keep default)",
@@ -356,9 +359,10 @@ class RipperController:
                 if chosen is None:
                     resolved[key] = default_path
                     self.log(
-                        f"Run override cancelled — {label}: using default {default_path}"
+                        f"Folder picker closed/cancelled — {label}: using default {default_path}"
                     )
                     continue
+                self.log(f"Folder picker result — {label}: {chosen}")
                 chosen = os.path.normpath(str(chosen).strip())
                 if os.path.isdir(chosen):
                     resolved[key] = chosen
@@ -2489,10 +2493,15 @@ class RipperController:
         cfg = self.engine.cfg
 
         if callable(getattr(self.gui, "ask_directory", None)):
+            self.log("Opening folder picker — Organize source folder")
             folder_path = self.gui.ask_directory(
                 "Organize",
                 "Choose folder with raw .mkv files",
                 initialdir=self.engine.cfg.get("temp_folder", ""),
+            )
+            self.log(
+                "Folder picker result — Organize source folder: "
+                f"{folder_path if folder_path else '<cancelled>'}"
             )
         else:
             folder_path = self.gui.ask_input(
@@ -2500,7 +2509,7 @@ class RipperController:
                 "Enter path to folder with raw .mkv files:",
             )
         if not folder_path:
-            self.log("Cancelled.")
+            self.log("Folder selection cancelled — aborting organize.")
             return
 
         recursive = self.gui.ask_yesno("Scan subfolders too?")

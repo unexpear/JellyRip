@@ -829,6 +829,14 @@ def test_prompt_run_path_overrides_directory_picker_cancel_keeps_default(tmp_pat
 
     assert resolved["temp_folder"] == os.path.normpath(default_temp)
     assert any(
+        "Opening folder picker" in m
+        for m in controller.gui.messages
+    )
+    assert any(
+        "Folder picker closed/cancelled" in m
+        for m in controller.gui.messages
+    )
+    assert any(
         "Custom folders set, continuing..." in m
         for m in controller.gui.messages
     )
