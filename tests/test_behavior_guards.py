@@ -936,6 +936,91 @@ def test_safe_glob_timeout_returns_empty_and_logs_warning(monkeypatch):
     assert any("test glob timed out" in m.lower() for m in controller.gui.messages)
 
 
+def test_movie_resume_uses_fresh_rip_folder_and_marks_old_resume(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    movies_root = tmp_path / "movies"
+    resume_path = temp_root / "old_resume"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+    resume_path.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+
+    resume_meta = {
+        "disc_number": 1,
+        "title": "Resume Movie",
+        "year": "2001",
+        "media_type": "movie",
+    }
+
+    monkeypatch.setattr(
+        controller,
+        "check_resume",
+        lambda *_args, **_kwargs: {
+            "path": str(resume_path),
+            "meta": dict(resume_meta),
+        },
+    )
+
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+
+    prompts = iter([
+        "Resume Movie",  # Title
+        "2001",          # Year
+        "",              # Metadata ID
+    ])
+
+    def ask_input(label, _prompt, default_value=""):
+        _ = default_value
+        value = next(prompts)
+        if label == "Metadata ID":
+            engine.abort()
+        return value
+
+    controller.gui.ask_input = ask_input
+
+    writes = []
+    updates = []
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        engine,
+        "write_temp_metadata",
+        lambda path, title, disc_number, **kwargs: writes.append(
+            (path, title, disc_number, kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "update_temp_metadata",
+        lambda path, **kwargs: updates.append((path, kwargs)),
+    )
+
+    monkeypatch.setattr(
+        controller,
+        "scan_with_retry",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("scan_with_retry should not run after abort")
+        ),
+    )
+
+    controller.run_movie_disc()
+
+    assert updates
+    assert os.path.normpath(updates[0][0]) == os.path.normpath(str(resume_path))
+    assert updates[0][1].get("phase") == "organized"
+
+    assert writes
+    new_rip_path = os.path.normpath(writes[0][0])
+    assert new_rip_path != os.path.normpath(str(resume_path))
+    assert new_rip_path.startswith(os.path.normpath(str(temp_root)))
+
+
 def test_ensure_session_paths_raises_before_init():
     """_ensure_session_paths() must raise RuntimeError if called before init."""
     controller, _engine = _controller_with_engine()

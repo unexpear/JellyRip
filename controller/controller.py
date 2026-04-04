@@ -3107,35 +3107,29 @@ class RipperController:
                 os.makedirs(extras_folder, exist_ok=True)
                 dest_folder = movie_folder
                 self.log(f"Movie folder: {movie_folder}")
+                # Always create a new rip folder — even on resume — so that
+                # _purge_rip_target_files never deletes the previously ripped
+                # files that are still sitting in the old resume folder.
+                rip_path = os.path.join(temp_root, make_rip_folder_name())
                 if active_resume and resume_path:
-                    rip_path = resume_path
-                else:
-                    rip_path = os.path.join(
-                        temp_root, make_rip_folder_name()
+                    # Mark the old session folder as superseded so it is not
+                    # offered for resume again in subsequent sessions.
+                    self.engine.update_temp_metadata(
+                        resume_path, phase="organized"
                     )
 
             os.makedirs(rip_path, exist_ok=True)
-            if active_resume and resume_path:
-                self.engine.update_temp_metadata(
-                    rip_path,
-                    status="ripping",
-                    title=title,
-                    year=year if not is_tv else None,
-                    media_type="tv" if is_tv else "movie",
-                    season=season if is_tv else None,
-                    dest_folder=dest_folder,
-                    phase="setup",
-                    disc_number=disc_number,
-                )
-            else:
-                self.engine.write_temp_metadata(
-                    rip_path, title, disc_number,
-                    season=season if is_tv else None,
-                    year=year if not is_tv else None,
-                    media_type="tv" if is_tv else "movie",
-                    dest_folder=dest_folder,
-                    phase="setup"
-                )
+            # rip_path is always a new folder (even on resume), so always
+            # write fresh metadata rather than trying to update a file that
+            # does not exist yet.
+            self.engine.write_temp_metadata(
+                rip_path, title, disc_number,
+                season=season if is_tv else None,
+                year=year if not is_tv else None,
+                media_type="tv" if is_tv else "movie",
+                dest_folder=dest_folder,
+                phase="setup"
+            )
             self.log(f"Temp folder: {rip_path}")
 
             if self.engine.abort_event.is_set():
@@ -3562,6 +3556,13 @@ class RipperController:
                 shutil.rmtree(rip_path, ignore_errors=True)
                 if os.path.exists(rip_path):
                     self.log(f"Warning: could not delete {rip_path}")
+                # Also remove the original resume folder if it differs from
+                # the fresh rip folder (it was superseded by this session).
+                if (active_resume and resume_path
+                        and os.path.normpath(resume_path) !=
+                            os.path.normpath(rip_path)
+                        and os.path.isdir(resume_path)):
+                    shutil.rmtree(resume_path, ignore_errors=True)
                 self.log("Temp folder cleaned up.")
                 if cfg.get("opt_show_temp_manager", True):
                     self._offer_temp_manager(temp_root)
