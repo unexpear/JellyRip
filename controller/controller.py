@@ -1296,6 +1296,8 @@ class RipperController:
         if self.engine.abort_event.is_set():
             return
 
+        self.log("Flow: Smart Rip session initialized -> collecting disc metadata.")
+
         self.gui.show_info(
             "Smart Rip",
             "Insert disc and click OK.\n\n"
@@ -2720,6 +2722,10 @@ class RipperController:
             self._offer_temp_manager(temp_root)
         if self.engine.abort_event.is_set():
             return
+
+        self.log(
+            "Flow: session initialized -> waiting for disc + metadata input."
+        )
 
         resume_session = self.check_resume(
             temp_root, media_type="tv" if is_tv else "movie"

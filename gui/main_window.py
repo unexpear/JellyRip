@@ -2454,11 +2454,20 @@ class JellyRipperGUI(tk.Tk):
             self.destroy()
 
     def _pick_movie_mode(self):
-        if self.ask_yesno(
-            "Use Smart Rip for this movie disc?\n\n"
-            "Yes = auto-pick main feature\n"
-            "No = manual title selection"
-        ):
+        choice = self._run_on_main(
+            lambda: messagebox.askyesnocancel(
+                "Movie Mode",
+                "Use Smart Rip for this movie disc?\n\n"
+                "Yes = auto-pick main feature\n"
+                "No = manual title selection\n"
+                "Cancel = do nothing",
+                parent=self,
+            )
+        )
+        if choice is None:
+            self.controller.log("Movie mode selection cancelled.")
+            return None
+        if choice:
             return self.controller.run_smart_rip
         return self.controller.run_movie_disc
 
@@ -2553,6 +2562,9 @@ class JellyRipperGUI(tk.Tk):
                 # If abort was requested during the mode picker prompt,
                 # don't start the rip — just bail out cleanly.
                 if self.engine.abort_event.is_set():
+                    return
+                if fn is None:
+                    self.set_status("Ready")
                     return
                 fn()
                 _success = True
