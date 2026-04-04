@@ -1,6 +1,7 @@
 """High-value behavior guard tests for the ripping pipeline."""
 
 import os
+import queue
 import sys
 from pathlib import Path
 
@@ -778,6 +779,68 @@ def test_select_largest_file_prefers_biggest(tmp_path):
     selected = select_largest_file([str(a), str(b)])
 
     assert selected == str(b)
+
+
+def test_get_disc_size_silent_process_times_out(monkeypatch):
+    _controller, engine = _controller_with_engine()
+    engine.cfg["opt_disc_info_timeout_seconds"] = 30
+    engine.cfg["opt_stall_timeout_seconds"] = 10
+
+    class _SilentStdout:
+        def readline(self):
+            return ""
+
+        def close(self):
+            pass
+
+    class _SilentProc:
+        def __init__(self):
+            self.stdout = _SilentStdout()
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            _ = timeout
+            return 0
+
+    class _EmptyQueue:
+        def get(self, timeout=None):
+            _ = timeout
+            raise queue.Empty
+
+    proc = _SilentProc()
+    monkeypatch.setattr(
+        "engine.ripper_engine.subprocess.Popen",
+        lambda *args, **kwargs: proc,
+    )
+    monkeypatch.setattr(
+        "engine.ripper_engine.queue_module.Queue",
+        lambda: _EmptyQueue(),
+    )
+
+    tick = {"t": 0.0}
+
+    def _fake_time():
+        tick["t"] += 11.0
+        return tick["t"]
+
+    monkeypatch.setattr("engine.ripper_engine.time.time", _fake_time)
+
+    logs = []
+    result = engine.get_disc_size(logs.append)
+
+    assert result is None
+    assert proc.terminated or proc.killed
+    assert any("disc-size scan timed out" in m.lower() for m in logs)
 
 
 def test_prompt_run_path_overrides_uses_defaults_when_declined():

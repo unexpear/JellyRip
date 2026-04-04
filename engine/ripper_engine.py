@@ -634,6 +634,9 @@ class RipperEngine:
             "MakeMKV info args"
         )
         total_bytes = 0
+        proc = None
+        reader = None
+        line_queue = None
         try:
             proc = subprocess.Popen(
                 [makemkvcon] + global_args +
@@ -644,10 +647,75 @@ class RipperEngine:
                 bufsize=1,
                 **_POPEN_FLAGS
             )
-            for line in iter(proc.stdout.readline, ""):
+            self.current_process = proc
+
+            line_queue = queue_module.Queue()
+            reader = threading.Thread(
+                target=self._stdout_reader,
+                args=(proc.stdout, line_queue),
+                daemon=True,
+            )
+            reader.start()
+
+            scan_start = time.time()
+            last_output = scan_start
+            stall_warned = False
+            stall_timeout = max(
+                10, int(self.cfg.get("opt_stall_timeout_seconds", 120))
+            )
+            info_timeout = max(
+                30, int(self.cfg.get("opt_disc_info_timeout_seconds", 180))
+            )
+
+            while True:
                 if self.abort_event.is_set():
-                    proc.kill()
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    on_log("Disc-size scan aborted.")
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
                     return None
+
+                try:
+                    line = line_queue.get(timeout=0.5)
+                except queue_module.Empty:
+                    now = time.time()
+                    if proc.poll() is not None:
+                        break
+
+                    if now - scan_start > info_timeout:
+                        on_log(
+                            "Warning: disc-size scan timed out; "
+                            "continuing without pre-rip size check."
+                        )
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                        return None
+
+                    if (not stall_warned and
+                            now - last_output > stall_timeout):
+                        on_log(
+                            f"No output from disc-size scan for {stall_timeout}s; "
+                            "still waiting..."
+                        )
+                        stall_warned = True
+                    continue
+
+                last_output = time.time()
+                stall_warned = False
                 if line.startswith("TINFO:"):
                     parts = line[6:].split(",", 3)
                     if len(parts) >= 4 and parts[1] == "11":
@@ -656,6 +724,7 @@ class RipperEngine:
                             total_bytes += parse_size_to_bytes(size_str)
                         except IndexError:
                             pass
+
             try:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
@@ -664,6 +733,13 @@ class RipperEngine:
         except Exception as e:
             on_log(f"Warning: could not read disc size: {e}")
             return None
+        finally:
+            self.current_process = None
+            if reader is not None:
+                try:
+                    reader.join(timeout=1)
+                except Exception:
+                    pass
         if total_bytes > 0:
             self._last_scan_total_bytes = int(total_bytes)
             self._last_scan_timestamp = time.time()
