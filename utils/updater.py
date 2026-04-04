@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys as _sys
+import time
 import urllib.error
 import urllib.request
 
@@ -75,7 +76,8 @@ def fetch_latest_release(repo="unexpear/JellyRip", timeout=8):
 
 
 def download_asset(url, destination_path, progress_callback=None, timeout=15,
-                   abort_event=None):
+                   abort_event=None, max_total_seconds=1800,
+                   stall_window_seconds=120, min_window_bytes=64 * 1024):
     """Download a release asset to destination_path."""
     req = urllib.request.Request(
         url,
@@ -84,15 +86,31 @@ def download_asset(url, destination_path, progress_callback=None, timeout=15,
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         written = 0
+        start_time = time.time()
+        window_start = start_time
+        window_bytes = 0
         with open(destination_path, "wb") as out:
             while True:
                 if abort_event and abort_event.is_set():
                     raise InterruptedError("Download aborted by user")
+                now = time.time()
+                if max_total_seconds and now - start_time > max_total_seconds:
+                    raise TimeoutError(
+                        "Download exceeded maximum allowed duration"
+                    )
                 chunk = resp.read(1024 * 256)
                 if not chunk:
                     break
                 out.write(chunk)
                 written += len(chunk)
+                window_bytes += len(chunk)
+                if stall_window_seconds and (now - window_start) >= stall_window_seconds:
+                    if window_bytes < min_window_bytes:
+                        raise TimeoutError(
+                            "Download stalled (throughput below minimum threshold)"
+                        )
+                    window_start = now
+                    window_bytes = 0
                 if progress_callback:
                     progress_callback(written, total)
 

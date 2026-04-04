@@ -425,6 +425,7 @@ class JellyRipperGUI(tk.Tk):
     def _launch_downloaded_update(self, downloaded_path):
         """Launch downloaded update package and close app for file replacement."""
         try:
+            update_dir = os.path.dirname(os.path.normpath(downloaded_path))
             self.controller.log(
                 "Launching installer — a UAC permission prompt may appear."
             )
@@ -437,6 +438,30 @@ class JellyRipperGUI(tk.Tk):
             self.engine.abort()
             self.after(500, self.destroy)
             os.startfile(downloaded_path)
+            # Best-effort cleanup after launch. Run detached so cleanup can
+            # continue after JellyRip exits.
+            if update_dir and os.path.basename(update_dir).startswith("JellyRipUpdate_"):
+                safe_dir = update_dir.replace("'", "''")
+                cleanup_cmd = (
+                    f"for($i=0;$i -lt 120;$i++){{"
+                    f"try{{Remove-Item -LiteralPath '{safe_dir}' -Recurse -Force -ErrorAction Stop;break}}"
+                    f"catch{{Start-Sleep -Seconds 2}}"
+                    f"}}"
+                )
+                try:
+                    subprocess.Popen(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-WindowStyle",
+                            "Hidden",
+                            "-Command",
+                            cleanup_cmd,
+                        ],
+                        **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             self.controller.log(f"Could not launch update package: {e}")
             self.show_error(

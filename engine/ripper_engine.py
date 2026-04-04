@@ -57,6 +57,7 @@ class RipperEngine:
         self.last_title_file_map = {}
         self.last_degraded_titles: list = []
         self._ffprobe_cache = {}  # LRU cache with 1000-entry limit
+        self._ffprobe_cache_lock = threading.Lock()
         self._ffprobe_cache_max_size = 1000
         self._last_scan_total_bytes = None
         self._last_scan_timestamp = 0.0
@@ -1311,7 +1312,7 @@ class RipperEngine:
                 return None
             try:
                 dur, mb = self._probe_file_duration_and_size(
-                    f, ffprobe=ffprobe, honor_abort=True
+                    f, ffprobe=ffprobe, honor_abort=True, on_log=on_log
                 )
                 return (f, dur, mb)
             except Exception:
@@ -1345,19 +1346,49 @@ class RipperEngine:
         known.sort(key=lambda x: x[1], reverse=True)
         return known + unknown
 
-    def _probe_file_duration_and_size(self, path, ffprobe=None, honor_abort=False):
+    def _probe_file_duration_and_size(self, path, ffprobe=None, honor_abort=False,
+                                      on_log=None):
         """Return (duration_seconds, size_mb) with metadata cache by mtime/size."""
-        stat = os.stat(path)
+        stat_result = [None]
+        stat_error = [None]
+
+        def _do_stat():
+            try:
+                stat_result[0] = os.stat(path)
+            except Exception as e:
+                stat_error[0] = e
+
+        stat_thread = threading.Thread(target=_do_stat, daemon=True)
+        stat_thread.start()
+        stat_thread.join(timeout=8.0)
+        if stat_thread.is_alive():
+            if on_log:
+                on_log(
+                    f"WARNING: ffprobe stat timed out for {os.path.basename(path)}"
+                )
+            return -1.0, 0
+        if stat_error[0] is not None or stat_result[0] is None:
+            if on_log and stat_error[0] is not None:
+                on_log(
+                    "WARNING: ffprobe stat failed for "
+                    f"{os.path.basename(path)}: {stat_error[0]}"
+                )
+            return -1.0, 0
+
+        stat = stat_result[0]
         cache_key = (os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
-        cached = self._ffprobe_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._ffprobe_cache_lock:
+            cached = self._ffprobe_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         ffprobe_exe = ffprobe or resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
         )[0]
         mb = stat.st_size // (1024**2)
         dur = -1.0
+        out = ""
+        timed_out = False
         proc = subprocess.Popen(
             [ffprobe_exe, "-v", "error", "-show_entries",
              "format=duration", "-of", "json", path],
@@ -1368,10 +1399,9 @@ class RipperEngine:
         )
         try:
             if honor_abort:
-                # Wait for process with periodic abort checks instead of busy-polling
                 timeout_per_check = 0.1
-                max_total_time = 30  # Don't wait indefinitely
-                elapsed = 0
+                max_total_time = 30
+                elapsed = 0.0
                 while proc.poll() is None and elapsed < max_total_time:
                     if self.abort_event.is_set():
                         proc.kill()
@@ -1382,24 +1412,40 @@ class RipperEngine:
                         return -1, mb
                     time.sleep(timeout_per_check)
                     elapsed += timeout_per_check
+                if proc.poll() is None:
+                    timed_out = True
+                    proc.kill()
             out, _ = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
+            timed_out = True
             proc.kill()
-            out, _ = proc.communicate()
-        
+            try:
+                out, _ = proc.communicate(timeout=2)
+            except Exception:
+                out = ""
+
+        if timed_out and on_log:
+            on_log(
+                f"WARNING: ffprobe timed out for {os.path.basename(path)}"
+            )
+
         try:
             data = json.loads(out)
             dur = float(data.get("format", {}).get("duration", -1) or -1)
-        except Exception:
+        except Exception as e:
+            if on_log:
+                on_log(
+                    f"WARNING: ffprobe parse failed for {os.path.basename(path)}: {e}"
+                )
             dur = -1.0
 
         result = (dur, mb)
-        # Enforce LRU cache size limit; evict oldest entry when full
-        if len(self._ffprobe_cache) >= self._ffprobe_cache_max_size:
-            # Remove oldest (first) entry
-            oldest_key = next(iter(self._ffprobe_cache))
-            del self._ffprobe_cache[oldest_key]
-        self._ffprobe_cache[cache_key] = result
+        with self._ffprobe_cache_lock:
+            if len(self._ffprobe_cache) >= self._ffprobe_cache_max_size:
+                oldest_key = next(iter(self._ffprobe_cache), None)
+                if oldest_key is not None:
+                    self._ffprobe_cache.pop(oldest_key, None)
+            self._ffprobe_cache[cache_key] = result
         return result
 
     def copy_with_abort(self, src, dst, buf_size=8 * 1024 * 1024):
@@ -1429,7 +1475,7 @@ class RipperEngine:
                 os.path.normpath(self.cfg["ffprobe_path"])
             )[0]
             duration, _mb = self._probe_file_duration_and_size(
-                path, ffprobe=ffprobe, honor_abort=False
+                path, ffprobe=ffprobe, honor_abort=False, on_log=on_log
             )
             if duration <= 0:
                 on_log(
@@ -1570,9 +1616,20 @@ class RipperEngine:
             src_size = os.path.getsize(io_source)  # read before replace — source may vanish after
             try:
                 os.replace(io_temp_dest, io_final_path)
-            except OSError:
+            except OSError as e:
                 # Cross-volume fallback when atomic rename is unavailable.
-                shutil.move(io_temp_dest, io_final_path)
+                on_log(
+                    f"Atomic rename failed ({e}); falling back to shutil.move for "
+                    f"{os.path.basename(source)}"
+                )
+                try:
+                    shutil.move(io_temp_dest, io_final_path)
+                except Exception as move_err:
+                    on_log(
+                        f"ERROR: fallback move failed for {os.path.basename(source)}: {move_err}"
+                    )
+                    self.last_move_error = f"Move failed — fallback move error: {move_err}"
+                    return False
             if os.path.exists(io_final_path):
                 size_ok, dst_size = wait_for_size_match(
                     src_size, io_final_path
@@ -1595,7 +1652,13 @@ class RipperEngine:
                         "probe (ffprobe)."
                     )
                     return False
-                os.remove(io_source)
+                try:
+                    os.remove(io_source)
+                except Exception as remove_err:
+                    on_log(
+                        f"WARNING: moved file but could not remove source "
+                        f"{os.path.basename(source)}: {remove_err}"
+                    )
             else:
                 on_log("ERROR: destination missing after move.")
                 self.last_move_error = (

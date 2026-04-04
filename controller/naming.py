@@ -134,7 +134,7 @@ def build_naming_preview_text(mode_label_value, sample_title, sample_suffix):
     """Build a human-readable naming preview example for settings UI."""
     mode = normalize_naming_mode(mode_label_value)
     if mode == "disc-title":
-        return f"Example: {sample_title} [{sample_title}]"
+        return f"Example: {sample_title}"
     if mode == "disc-title+timestamp":
         return f"Example: {sample_title} [{sample_title}_{sample_suffix}]"
     return f"Example: {sample_title} [{sample_suffix}]"

@@ -807,8 +807,10 @@ class RipperController:
         """
         _excluded = frozenset(pre_existing_files or [])
         mkv_files = sorted(
-            f for f in glob.glob(
-                os.path.join(rip_path, "**", "*.mkv"), recursive=True
+            f for f in self._safe_glob(
+                os.path.join(rip_path, "**", "*.mkv"),
+                recursive=True,
+                context="Enumerating rip outputs",
             )
             if f not in _excluded
         )
@@ -995,6 +997,28 @@ class RipperController:
             self.engine.wipe_session_outputs(rip_path, self.log)
             self._wiped_session_paths.add(rip_path)
 
+    def _safe_glob(self, pattern, recursive=False, timeout=8.0, context="glob"):
+        """Run glob with timeout so slow/offline shares do not block flow."""
+        matches = []
+        err = [None]
+
+        def _scan():
+            try:
+                matches.extend(glob.glob(pattern, recursive=recursive))
+            except Exception as e:
+                err[0] = e
+
+        t = threading.Thread(target=_scan, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            self.log(f"WARNING: {context} timed out; continuing.")
+            return []
+        if err[0] is not None:
+            self.log(f"WARNING: {context} failed: {err[0]}")
+            return []
+        return matches
+
     def preview_title(self, title_id):
         """Rip a short preview clip for one title and open it in VLC."""
         temp_root = (
@@ -1014,10 +1038,12 @@ class RipperController:
             return
 
         def run_preview():
+            lock_acquired = False
             try:
                 if not self._preview_lock.acquire(blocking=False):
                     self.log("Preview already running. Wait for it to finish.")
                     return
+                lock_acquired = True
 
                 if self.engine.abort_event.is_set():
                     self.log("Preview skipped: abort requested.")
@@ -1026,7 +1052,6 @@ class RipperController:
                 self.gui.set_status(
                     f"Previewing Title {title_id + 1}... (40s sample)"
                 )
-                self.engine.reset_abort()
                 preview_ok = self.engine.rip_preview_title(
                     preview_dir, title_id, 40, self.log
                 )
@@ -1035,9 +1060,10 @@ class RipperController:
                 # metadata flush shortly after process stop. Poll briefly.
                 files = []
                 for _ in range(8):
-                    files = glob.glob(
+                    files = self._safe_glob(
                         os.path.join(preview_dir, "**", "*.mkv"),
                         recursive=True,
+                        context="Scanning preview outputs",
                     )
                     if files:
                         break
@@ -1094,7 +1120,7 @@ class RipperController:
                 if not (rip and rip.is_alive()):
                     self.engine.reset_abort()
                 self.gui.set_status("Ready")
-                if self._preview_lock.locked():
+                if lock_acquired:
                     self._preview_lock.release()
 
         threading.Thread(target=run_preview, daemon=True).start()
@@ -1107,8 +1133,10 @@ class RipperController:
         )
         self.engine.cleanup_partial_files(rip_path, self.log)
         for pattern in ("**/*.mkv", "**/*.partial"):
-            for f in glob.glob(
-                os.path.join(rip_path, pattern), recursive=True
+            for f in self._safe_glob(
+                os.path.join(rip_path, pattern),
+                recursive=True,
+                context="Cleaning retry artifacts",
             ):
                 try:
                     os.remove(f)
@@ -1117,7 +1145,11 @@ class RipperController:
 
         self.gui.set_status("Ripping... (this may take 20-60 min)")
         _pre_rip_mkvs = frozenset(
-            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            self._safe_glob(
+                os.path.join(rip_path, "**", "*.mkv"),
+                recursive=True,
+                context="Snapshotting pre-rip MKVs",
+            )
         )
         success, failed_titles = self.engine.rip_selected_titles(
             rip_path, selected_ids,
@@ -1570,7 +1602,11 @@ class RipperController:
         )
         self.gui.set_status("Ripping... (this may take 20-60 min)")
         _pre_rip_mkvs = frozenset(
-            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            self._safe_glob(
+                os.path.join(rip_path, "**", "*.mkv"),
+                recursive=True,
+                context="Snapshotting pre-rip MKVs",
+            )
         )
         success, failed_titles = self.engine.rip_selected_titles(
             rip_path, selected_ids,
@@ -1959,7 +1995,11 @@ class RipperController:
 
         self.gui.set_status("Ripping all titles...")
         _pre_rip_mkvs = frozenset(
-            glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+            self._safe_glob(
+                os.path.join(rip_path, "**", "*.mkv"),
+                recursive=True,
+                context="Snapshotting pre-rip MKVs",
+            )
         )
         success = self.engine.rip_all_titles(
             rip_path,
@@ -2014,12 +2054,29 @@ class RipperController:
 
     def _disc_present(self):
         """Best-effort check: True when a readable disc appears present."""
+        result = [None]
+
+        def _probe():
+            try:
+                result[0] = self.engine.get_disc_size(
+                    lambda _m: None,
+                    prefer_cached=False,
+                )
+            except Exception:
+                result[0] = None
+
         try:
-            size = self.engine.get_disc_size(
-                lambda _m: None,
-                prefer_cached=False,
-            )
-            return size is not None
+            t = threading.Thread(target=_probe, daemon=True)
+            t.start()
+            for _ in range(30):
+                if self.engine.abort_event.is_set():
+                    return False
+                if not t.is_alive():
+                    break
+                time.sleep(0.1)
+            if t.is_alive():
+                return False
+            return result[0] is not None
         except Exception:
             return False
 
@@ -2429,7 +2486,11 @@ class RipperController:
 
             self.gui.set_status("Ripping... (this may take 20-60 min)")
             _pre_rip_mkvs = frozenset(
-                glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+                self._safe_glob(
+                    os.path.join(rip_path, "**", "*.mkv"),
+                    recursive=True,
+                    context="Snapshotting pre-rip MKVs",
+                )
             )
             success = self.engine.rip_all_titles(
                 rip_path,
@@ -2528,13 +2589,18 @@ class RipperController:
 
         recursive = self.gui.ask_yesno("Scan subfolders too?")
         if recursive:
-            mkv_files = sorted(glob.glob(
+            mkv_files = sorted(self._safe_glob(
                 os.path.join(folder_path, "**", "*.mkv"),
-                recursive=True
+                recursive=True,
+                context="Scanning organize source recursively",
             ))
         else:
             mkv_files = sorted(
-                glob.glob(os.path.join(folder_path, "*.mkv"))
+                self._safe_glob(
+                    os.path.join(folder_path, "*.mkv"),
+                    recursive=False,
+                    context="Scanning organize source",
+                )
             )
 
         if not mkv_files:
@@ -3266,7 +3332,11 @@ class RipperController:
 
             self.gui.set_status("Ripping... (this may take 20-60 min)")
             _pre_rip_mkvs = frozenset(
-                glob.glob(os.path.join(rip_path, "**", "*.mkv"), recursive=True)
+                self._safe_glob(
+                    os.path.join(rip_path, "**", "*.mkv"),
+                    recursive=True,
+                    context="Snapshotting pre-rip MKVs",
+                )
             )
             success, failed_titles = self.engine.rip_selected_titles(
                 rip_path, selected_ids,
