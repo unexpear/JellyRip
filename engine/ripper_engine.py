@@ -177,59 +177,87 @@ class RipperEngine:
                             f"Warning: could not remove {f}: {e}"
                         )
 
-    def find_old_temp_folders(self, temp_root):
-        """Enumerate temp rip folders with aggregate file count and size metadata."""
-        if not os.path.isdir(temp_root):
-            return []
-        folders = []
-        for name in os.listdir(temp_root):
-            full = os.path.join(temp_root, name)
-            if os.path.isdir(full) and (
-                name.startswith("Disc_") or
-                name.startswith("TEMP_") or
-                name.startswith("Unattended_")
-            ):
-                # Single pass: count MKVs and calculate size together
-                mkv_count = 0
-                total_size = 0
-                try:
-                    for dp, dn, fns in os.walk(full):
-                        for f in fns:
-                            if f.endswith(".mkv"):
-                                mkv_count += 1
-                            try:
-                                total_size += os.path.getsize(
-                                    os.path.join(dp, f)
-                                )
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-                folders.append((full, name, mkv_count, total_size))
-        folders.sort(key=lambda x: x[1])
-        return folders
+    def find_old_temp_folders(self, temp_root, timeout=8.0):
+        """Enumerate temp rip folders with aggregate file count and size metadata.
 
-    def find_resumable_sessions(self, temp_root):
-        """Find temp sessions with saved workflow metadata that can be resumed."""
+        Runs in a daemon thread so a slow or unreachable network share cannot
+        block the caller indefinitely.  Returns [] if the scan takes longer
+        than *timeout* seconds.
+        """
+        result = []
+
+        def _scan():
+            if not os.path.isdir(temp_root):
+                return
+            try:
+                names = os.listdir(temp_root)
+            except Exception:
+                return
+            for name in names:
+                full = os.path.join(temp_root, name)
+                if os.path.isdir(full) and (
+                    name.startswith("Disc_") or
+                    name.startswith("TEMP_") or
+                    name.startswith("Unattended_")
+                ):
+                    mkv_count = 0
+                    total_size = 0
+                    try:
+                        for dp, dn, fns in os.walk(full):
+                            for f in fns:
+                                if f.endswith(".mkv"):
+                                    mkv_count += 1
+                                try:
+                                    total_size += os.path.getsize(
+                                        os.path.join(dp, f)
+                                    )
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    result.append((full, name, mkv_count, total_size))
+            result.sort(key=lambda x: x[1])
+
+        t = threading.Thread(target=_scan, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        return result
+
+    def find_resumable_sessions(self, temp_root, timeout=8.0):
+        """Find temp sessions with saved workflow metadata that can be resumed.
+
+        Runs in a daemon thread so a slow or unreachable network share cannot
+        block the caller indefinitely.  Returns [] if the scan takes longer
+        than *timeout* seconds.
+        """
         resumable = []
-        if not os.path.isdir(temp_root):
-            return resumable
-        for name in os.listdir(temp_root):
-            full = os.path.join(temp_root, name)
-            if not os.path.isdir(full):
-                continue
-            meta = self.read_temp_metadata(full)
-            if meta and meta.get("phase") not in {"complete", "organized"}:
-                # Count MKV files efficiently: one pass
-                mkv_count = 0
-                try:
-                    for dp, dn, fns in os.walk(full):
-                        mkv_count += sum(
-                            1 for f in fns if f.endswith(".mkv")
-                        )
-                except Exception:
-                    pass
-                resumable.append((full, name, meta, mkv_count))
+
+        def _scan():
+            if not os.path.isdir(temp_root):
+                return
+            try:
+                names = os.listdir(temp_root)
+            except Exception:
+                return
+            for name in names:
+                full = os.path.join(temp_root, name)
+                if not os.path.isdir(full):
+                    continue
+                meta = self.read_temp_metadata(full)
+                if meta and meta.get("phase") not in {"complete", "organized"}:
+                    mkv_count = 0
+                    try:
+                        for dp, dn, fns in os.walk(full):
+                            mkv_count += sum(
+                                1 for f in fns if f.endswith(".mkv")
+                            )
+                    except Exception:
+                        pass
+                    resumable.append((full, name, meta, mkv_count))
+
+        t = threading.Thread(target=_scan, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
         return resumable
 
     def _atomic_write_json(self, path, data):
