@@ -818,12 +818,29 @@ class JellyRipperGUI(tk.Tk):
     def ask_directory(self, title, prompt, initialdir=""):
         """Open a native folder picker and return selected path or None."""
         def _pick():
+            # Bring the app window to the foreground first so the native dialog
+            # is less likely to appear behind other windows.
+            try:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.update_idletasks()
+            except Exception:
+                pass
+
             chosen = filedialog.askdirectory(
                 title=f"{title}: {prompt}",
                 initialdir=initialdir or os.path.expanduser("~"),
                 mustexist=False,
                 parent=self,
             )
+
+            try:
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
+
             return chosen if chosen else None
 
         return self._run_on_main(_pick)
