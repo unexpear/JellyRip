@@ -720,9 +720,18 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         def __init__(self, target, daemon=True):
             self._target = target
             self._daemon = daemon
+            self._alive = False
 
         def start(self):
+            self._alive = True
             self._target()
+            self._alive = False
+
+        def join(self, timeout=None):
+            _ = timeout
+
+        def is_alive(self):
+            return self._alive
 
     monkeypatch.setattr("controller.controller.threading.Thread", _ImmediateThread)
 
@@ -909,6 +918,22 @@ def test_session_paths_initialized_and_accessible(tmp_path):
     controller._init_session_paths({"temp_folder": custom_temp})
 
     assert controller.get_path("temp") == os.path.normpath(custom_temp)
+
+
+def test_safe_glob_timeout_returns_empty_and_logs_warning(monkeypatch):
+    controller, _engine = _controller_with_engine()
+
+    def slow_glob(*_args, **_kwargs):
+        import time
+        time.sleep(0.2)
+        return ["x.mkv"]
+
+    monkeypatch.setattr("controller.controller.glob.glob", slow_glob)
+
+    matches = controller._safe_glob("*.mkv", recursive=False, timeout=0.01, context="test glob")
+
+    assert matches == []
+    assert any("test glob timed out" in m.lower() for m in controller.gui.messages)
 
 
 def test_ensure_session_paths_raises_before_init():

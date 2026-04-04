@@ -125,7 +125,10 @@ def get_available_drives(makemkvcon_path):
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
     except Exception:
         pass
     if not drives:

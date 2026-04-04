@@ -6,6 +6,7 @@ from controller.naming import (
     build_movie_folder_name,
     build_tv_folder_name,
     build_fallback_title,
+    build_naming_preview_text,
     normalize_naming_mode,
 )
 
@@ -145,3 +146,19 @@ class TestBuildFallbackTitleDiscName:
             disc_name="MY_DISC"
         )
         assert result == "TEMP_TITLE"
+
+
+def test_build_naming_preview_disc_title_not_duplicated():
+    preview = build_naming_preview_text("disc-title", "MyMovie", "2026-04-04_12-00-00")
+    assert preview == "Example: MyMovie"
+
+
+def test_build_naming_preview_disc_title_timestamp_and_timestamp_modes():
+    with_suffix = build_naming_preview_text(
+        "disc-title+timestamp", "MyMovie", "2026-04-04_12-00-00"
+    )
+    timestamp_only = build_naming_preview_text(
+        "timestamp", "MyMovie", "2026-04-04_12-00-00"
+    )
+    assert with_suffix == "Example: MyMovie [MyMovie_2026-04-04_12-00-00]"
+    assert timestamp_only == "Example: MyMovie [2026-04-04_12-00-00]"
