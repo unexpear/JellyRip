@@ -2335,7 +2335,9 @@ class JellyRipperGUI(tk.Tk):
             _safe_show()
         else:
             self.after(0, _safe_show)
-            done.wait()
+            while not done.wait(timeout=0.1):
+                if self.engine.abort_event.is_set():
+                    return
 
     def start_indeterminate(self):
         def _start():

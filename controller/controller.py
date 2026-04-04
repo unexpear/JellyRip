@@ -288,14 +288,24 @@ class RipperController:
             # Fast pre-check keeps behavior explicit and testable on all OSes.
             if not os.access(path, os.W_OK):
                 return False
+            # Write a probe file in a daemon thread — on a slow/offline network
+            # share, open() and os.remove() can block for 60-120 s.
             probe = os.path.join(path, f".jellyrip_probe_{os.getpid()}")
-            try:
-                with open(probe, "w") as f:
-                    f.write("")
-                os.remove(probe)
-                return True
-            except OSError:
-                return False
+            _result = [False]
+
+            def _probe():
+                try:
+                    with open(probe, "w") as f:
+                        f.write("")
+                    os.remove(probe)
+                    _result[0] = True
+                except OSError:
+                    pass
+
+            t = threading.Thread(target=_probe, daemon=True)
+            t.start()
+            t.join(timeout=8.0)
+            return _result[0]
 
         _SYSTEM_PATH_RE = re.compile(
             r'^[A-Za-z]:\\(Windows|Program Files|Program Files \(x86\))(\\|$)',
@@ -1062,7 +1072,11 @@ class RipperController:
                             vlc = candidate
                             break
                 if vlc:
-                    subprocess.Popen([vlc, latest])
+                    subprocess.Popen(
+                        [vlc, latest],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                     self.log(
                         f"Preview opened in VLC: {os.path.basename(latest)}"
                     )
