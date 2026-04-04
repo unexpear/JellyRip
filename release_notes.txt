@@ -1,4 +1,6 @@
-﻿## JellyRip v1.0.12 Release Notes
+﻿## JellyRip v1.0.12 Release Notes (UNSTABLE)
+
+Release channel: unstable pre-release.
 
 ### Download
 - Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.12/JellyRip.exe
