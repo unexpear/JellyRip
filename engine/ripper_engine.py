@@ -606,7 +606,7 @@ class RipperEngine:
         on_log(f"Disc scan complete. Found {len(result)} title(s).")
         return result
 
-    def get_disc_size(self, on_log, prefer_cached=False):
+    def get_disc_size(self, on_log, prefer_cached=False, timeout_seconds=None):
         """
         Lightweight disc size query used only by dump/multi-disc modes.
         TV/Movie disc flows use size_bytes from scan_disc() instead,
@@ -663,9 +663,12 @@ class RipperEngine:
             stall_timeout = max(
                 10, int(self.cfg.get("opt_stall_timeout_seconds", 120))
             )
-            info_timeout = max(
-                30, int(self.cfg.get("opt_disc_info_timeout_seconds", 180))
-            )
+            if timeout_seconds is None:
+                info_timeout = max(
+                    30, int(self.cfg.get("opt_disc_info_timeout_seconds", 180))
+                )
+            else:
+                info_timeout = max(5, int(timeout_seconds))
 
             while True:
                 if self.abort_event.is_set():
