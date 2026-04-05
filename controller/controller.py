@@ -2065,9 +2065,12 @@ class RipperController:
         """Best-effort check: True when a readable disc appears present."""
         result = [None]
         cfg = getattr(self.engine, "cfg", {}) or {}
+        # 45 s default: slow/encrypted discs can take 20-40 s to spin up and
+        # produce the first TINFO line.  12 s was too short and caused every
+        # probe to time out, leaving freshly inserted discs "never detected".
         probe_timeout = max(
             5,
-            int(cfg.get("opt_disc_presence_probe_seconds", 12))
+            int(cfg.get("opt_disc_presence_probe_seconds", 45))
         )
 
         def _probe():

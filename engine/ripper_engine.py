@@ -634,6 +634,7 @@ class RipperEngine:
             "MakeMKV info args"
         )
         total_bytes = 0
+        seen_any_tinfo = False   # True once any TINFO: line is received
         proc = None
         reader = None
         line_queue = None
@@ -720,6 +721,7 @@ class RipperEngine:
                 last_output = time.time()
                 stall_warned = False
                 if line.startswith("TINFO:"):
+                    seen_any_tinfo = True
                     parts = line[6:].split(",", 3)
                     if len(parts) >= 4 and parts[1] == "11":
                         try:
@@ -748,6 +750,12 @@ class RipperEngine:
             self._last_scan_timestamp = time.time()
             self._last_scan_target = disc_target
             return total_bytes
+        # Disc is present (TINFO lines seen) but sizes are all zero — return 0
+        # so callers that distinguish None ("no disc") from 0 ("disc, no size")
+        # still get a truthy-enough signal.  Returning None here would cause
+        # _disc_present() to permanently report False for such discs.
+        if seen_any_tinfo:
+            return 0
         return None
 
     def check_disk_space(self, path, required_bytes, on_log, timeout=8.0):
