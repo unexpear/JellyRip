@@ -2064,12 +2064,18 @@ class RipperController:
     def _disc_present(self):
         """Best-effort check: True when a readable disc appears present."""
         result = [None]
+        cfg = getattr(self.engine, "cfg", {}) or {}
+        probe_timeout = max(
+            5,
+            int(cfg.get("opt_disc_presence_probe_seconds", 12))
+        )
 
         def _probe():
             try:
                 result[0] = self.engine.get_disc_size(
                     lambda _m: None,
                     prefer_cached=False,
+                    timeout_seconds=probe_timeout,
                 )
             except Exception:
                 result[0] = None
@@ -2077,7 +2083,8 @@ class RipperController:
         try:
             t = threading.Thread(target=_probe, daemon=True)
             t.start()
-            for _ in range(30):
+            checks = int((probe_timeout + 1) * 10)
+            for _ in range(max(10, checks)):
                 if self.engine.abort_event.is_set():
                     return False
                 if not t.is_alive():
@@ -2230,12 +2237,14 @@ class RipperController:
             )
 
             # After explicit user acknowledgment, allow pre-swapped insertion
-            # to proceed immediately when a unique disc is already mounted.
-            quick_fp = self._build_disc_fingerprint()
-            if quick_fp and quick_fp not in seen_fingerprints:
-                seen_fingerprints.add(quick_fp)
-                self.log("Detected new disc already inserted.")
-                return quick_fp
+            # to proceed immediately only when a readable disc is already
+            # present, avoiding empty-drive scans that add noise and delay.
+            if self._disc_present():
+                quick_fp = self._build_disc_fingerprint()
+                if quick_fp and quick_fp not in seen_fingerprints:
+                    seen_fingerprints.add(quick_fp)
+                    self.log("Detected new disc already inserted.")
+                    return quick_fp
 
             self.log("Waiting for disc removal...")
             removed = self._wait_for_disc_state(
