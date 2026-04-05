@@ -372,6 +372,13 @@ class JellyRipperGUI(tk.Tk):
         )
         self.abort_btn.pack(side="right")
 
+        # Keep bottom interaction controls clear of the Windows taskbar area
+        # on machines where the app window can overlap shell-reserved space.
+        safe_margin_px = int(self.cfg.get("opt_bottom_safe_margin_px", 144))
+        self._bottom_safe_spacer = tk.Frame(self, bg=BG, height=safe_margin_px)
+        self._bottom_safe_spacer.pack(fill="x")
+        self._bottom_safe_spacer.pack_propagate(False)
+
         # Do not auto-probe optical drives on startup; probing can spin up
         # physical media drives and stall on some systems. Users can refresh
         # explicitly with the Refresh button.
