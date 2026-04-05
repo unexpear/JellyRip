@@ -2898,17 +2898,11 @@ class RipperController:
             "Flow: session initialized -> waiting for disc + metadata input."
         )
 
-        resume_session = self.check_resume(
-            temp_root, media_type="tv" if is_tv else "movie"
-        )
-        resume_meta = resume_session["meta"] if resume_session else {}
-        resume_path = resume_session["path"] if resume_session else None
-        if resume_meta:
-            disc_number = max(
-                0,
-                (safe_int(resume_meta.get("disc_number", 1)) or 1) - 1
-            )
-            year = str(resume_meta.get("year") or year)
+        # Resume-from-old-session is intentionally disabled. We still keep
+        # writing per-run JSON metadata for logs/debug context, but new runs
+        # always start fresh instead of offering chained resume prompts.
+        resume_meta = {}
+        resume_path = None
 
         if is_tv:
             # -------------------------------------------------------

@@ -999,7 +999,7 @@ def test_safe_glob_timeout_returns_empty_and_logs_warning(monkeypatch):
     assert any("test glob timed out" in m.lower() for m in controller.gui.messages)
 
 
-def test_movie_resume_uses_fresh_rip_folder_and_marks_old_resume(tmp_path, monkeypatch):
+def test_movie_run_ignores_resume_metadata_and_starts_fresh(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine()
 
     temp_root = tmp_path / "temp"
@@ -1020,14 +1020,16 @@ def test_movie_resume_uses_fresh_rip_folder_and_marks_old_resume(tmp_path, monke
         "media_type": "movie",
     }
 
-    monkeypatch.setattr(
-        controller,
-        "check_resume",
-        lambda *_args, **_kwargs: {
+    check_resume_called = {"value": False}
+
+    def _fake_check_resume(*_args, **_kwargs):
+        check_resume_called["value"] = True
+        return {
             "path": str(resume_path),
             "meta": dict(resume_meta),
-        },
-    )
+        }
+
+    monkeypatch.setattr(controller, "check_resume", _fake_check_resume)
 
     controller.gui.ask_yesno = lambda _prompt: False
     controller.gui.show_info = lambda *_args, **_kwargs: None
@@ -1074,9 +1076,8 @@ def test_movie_resume_uses_fresh_rip_folder_and_marks_old_resume(tmp_path, monke
 
     controller.run_movie_disc()
 
-    assert updates
-    assert os.path.normpath(updates[0][0]) == os.path.normpath(str(resume_path))
-    assert updates[0][1].get("phase") == "organized"
+    assert check_resume_called["value"] is False
+    assert updates == []
 
     assert writes
     new_rip_path = os.path.normpath(writes[0][0])
