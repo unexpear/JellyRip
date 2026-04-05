@@ -374,7 +374,7 @@ class JellyRipperGUI(tk.Tk):
 
         # Keep bottom interaction controls clear of the Windows taskbar area
         # on machines where the app window can overlap shell-reserved space.
-        safe_margin_px = int(self.cfg.get("opt_bottom_safe_margin_px", 144))
+        safe_margin_px = int(self.cfg.get("opt_bottom_safe_margin_px", 72))
         self._bottom_safe_spacer = tk.Frame(self, bg=BG, height=safe_margin_px)
         self._bottom_safe_spacer.pack(fill="x")
         self._bottom_safe_spacer.pack_propagate(False)
