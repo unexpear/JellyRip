@@ -3764,6 +3764,7 @@ class RipperController:
             preview_lines = [
                 f"  {os.path.basename(titles_list[i][0])}  ->  "
                 f"S{season:02d}E{episode_numbers[idx]:02d}"
+                + (f" - {real_names[idx]}" if idx < len(real_names) and real_names[idx] else "")
                 for idx, i in enumerate(main_indices)
             ]
             self.log("Move preview:")
