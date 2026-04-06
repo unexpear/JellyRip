@@ -137,6 +137,45 @@ from utils.updater import (
 
 
 class JellyRipperGUI(tk.Tk):
+    def ask_accept_partial(self):
+        result = [None]
+        done = threading.Event()
+        def _show():
+            win = tk.Toplevel(self)
+            win.title("Partial Success — Accept or Delete?")
+            win.configure(bg="#161b22")
+            win.grab_set()
+            win.lift()
+            win.focus_force()
+            win.resizable(False, False)
+            tk.Label(
+                win, text="Some titles failed to rip.\n\nDo you want to accept the partial result, or delete the session and all files?",
+                bg="#161b22", fg="#c9d1d9", font=("Segoe UI", 11), wraplength=420
+            ).pack(padx=24, pady=(18, 10))
+            btn_row = tk.Frame(win, bg="#161b22")
+            btn_row.pack(padx=18, pady=(0, 18))
+            def accept():
+                result[0] = True
+                win.destroy()
+                done.set()
+            def delete():
+                result[0] = False
+                win.destroy()
+                done.set()
+            tk.Button(
+                btn_row, text="Accept Partial", bg="#238636", fg="white",
+                font=("Segoe UI", 10, "bold"), command=accept, relief="flat", width=18
+            ).pack(side="left", padx=8)
+            tk.Button(
+                btn_row, text="Delete Session & All Files", bg="#c94b4b", fg="white",
+                font=("Segoe UI", 10, "bold"), command=delete, relief="flat", width=22
+            ).pack(side="left", padx=8)
+            win.protocol("WM_DELETE_WINDOW", delete)
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return False
+        return result[0]
     def __init__(self, cfg):
         """
         LAYER 3 — GUI
@@ -324,6 +363,7 @@ class JellyRipperGUI(tk.Tk):
         self.log_text.tag_configure("prompt", foreground="#f0e68c")
         self.log_text.tag_configure("answer", foreground="#90ee90")
 
+
         self.input_bar = tk.Frame(self, bg="#21262d")
         self.input_bar.pack(fill="x", padx=20, pady=4)
         self.input_bar.pack_forget()
@@ -362,15 +402,14 @@ class JellyRipperGUI(tk.Tk):
             command=self._skip_input, relief="flat"
         ).pack(side="left", padx=4, pady=8)
 
-        bottom = tk.Frame(self, bg="#161b22")
-        bottom.pack(fill="x", pady=8, padx=20)
+        # Add abort button to the right side of the input bar
         self.abort_btn = tk.Button(
-            bottom, text="ABORT SESSION",
+            self.input_bar, text="ABORT SESSION",
             bg="#c94b4b", fg="white",
             font=("Segoe UI", 12, "bold"),
             width=20, command=self.request_abort, relief="flat"
         )
-        self.abort_btn.pack(side="right")
+        self.abort_btn.pack(side="right", padx=(10, 0), pady=8)
 
         # Keep bottom interaction controls clear of the Windows taskbar area
         # on machines where the app window can overlap shell-reserved space.
@@ -2666,10 +2705,49 @@ class JellyRipperGUI(tk.Tk):
                 self.stop_indeterminate()
                 self.after(0, self.enable_buttons)
                 self.set_status("Ready")
-                if _success and not self.engine.abort_event.is_set():
-                    self.after(0, lambda: self._notify_complete(
-                        "JellyRip", "Rip complete!"
-                    ))
+                if not self.engine.abort_event.is_set():
+                    # Determine session result
+                    from utils.session_result import normalize_session_result
+                    abort = self.engine.abort_event.is_set()
+                    failed_titles = getattr(self.controller, "failed_titles", [])
+                    files = getattr(self.controller, "session_files", [])
+                    valid_files = getattr(self.controller, "valid_files", files)
+                    is_full_success = normalize_session_result(abort, failed_titles, files, valid_files)
+                    is_partial = (not is_full_success) and bool(files)
+                    if is_full_success:
+                        self.after(0, lambda: self._notify_complete(
+                            "JellyRip", "Rip complete!"
+                        ))
+                    elif is_partial:
+                        def handle_partial():
+                            accept = self.ask_accept_partial()
+                            if accept:
+                                self._notify_complete(
+                                    "JellyRip", "Partial rip accepted. Files and metadata kept."
+                                )
+                            else:
+                                # Delete session folder and metadata
+                                session_dir = getattr(self.controller, "session_dir", None)
+                                if session_dir and os.path.exists(session_dir):
+                                    import shutil
+                                    try:
+                                        shutil.rmtree(session_dir)
+                                        self._notify_complete(
+                                            "JellyRip", "Partial rip deleted. Session and files removed."
+                                        )
+                                    except Exception as e:
+                                        self._notify_complete(
+                                            "JellyRip", f"Error deleting session: {e}"
+                                        )
+                                else:
+                                    self._notify_complete(
+                                        "JellyRip", "Session directory not found. Nothing deleted."
+                                    )
+                        self.after(0, handle_partial)
+                    else:
+                        self.after(0, lambda: self._notify_complete(
+                            "JellyRip", "Rip failed. No files kept."
+                        ))
 
         self.rip_thread = threading.Thread(
             target=task_wrapper, daemon=True
