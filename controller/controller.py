@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime
+from controller.session import SessionHelpers
 
 from controller.naming import (
     build_fallback_title,

@@ -1,0 +1,197 @@
+"""
+Rip subprocess lifecycle logic for RipperEngine.
+"""
+import os
+from utils.parsing import parse_cli_args
+from shared.runtime import RIP_ATTEMPT_FLAGS
+
+# The following functions are extracted from RipperEngine for modularization.
+# They require the RipperEngine instance (self) to be passed as the first argument.
+
+def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
+    makemkvcon  = self._get_makemkvcon()
+    disc_target = self.get_disc_target()
+    global_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_global_args", ""),
+        on_log,
+        "MakeMKV global args"
+    )
+    rip_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_rip_args", ""),
+        on_log,
+        "MakeMKV rip args"
+    )
+    os.makedirs(rip_path, exist_ok=True)
+    self._purge_rip_target_files(rip_path, on_log)
+    cmd = (
+        [makemkvcon] + global_args +
+        ["mkv", disc_target, str(title_id), rip_path] +
+        RIP_ATTEMPT_FLAGS[0] + rip_args
+    )
+    return self._run_preview_process(cmd, preview_seconds, on_log)
+
+def rip_all_titles(self, rip_path, on_progress, on_log):
+    makemkvcon  = self._get_makemkvcon()
+    disc_target = self.get_disc_target()
+    global_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_global_args", ""),
+        on_log,
+        "MakeMKV global args"
+    )
+    rip_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_rip_args", ""),
+        on_log,
+        "MakeMKV rip args"
+    )
+    os.makedirs(rip_path, exist_ok=True)
+    self._purge_rip_target_files(rip_path, on_log)
+    attempts = self._get_rip_attempts()
+    before   = self._snapshot_mkv_files(rip_path)
+
+    for attempt_num, flags in enumerate(attempts, start=1):
+        if self.abort_event.is_set():
+            return False
+        if attempt_num > 1:
+            self._clean_new_mkv_files(rip_path, before, on_log)
+            before = self._snapshot_mkv_files(rip_path)
+        on_log(
+            f"Rip attempt {attempt_num}/{len(attempts)} "
+            f"(flags: {' '.join(flags)})"
+        )
+        cmd = (
+            [makemkvcon] + global_args +
+            ["mkv", disc_target, "all", rip_path] +
+            flags + rip_args
+        )
+        success = self._run_rip_process(
+            cmd, on_progress, on_log
+        )
+        if self.abort_event.is_set():
+            return False
+        if success:
+            after = self._snapshot_mkv_files(rip_path)
+            new_files = after - before
+            if new_files:
+                return True
+            else:
+                on_log(
+                    "ERROR: MakeMKV reported success (exit code 0), "
+                    "but no MKV files were produced. "
+                    "This may indicate a disc read/write error."
+                )
+                success = False
+        self._log_forced_failure_with_outputs(
+            rip_path, before, on_log
+        )
+        on_log(f"Attempt {attempt_num} failed.")
+        if attempt_num < len(attempts):
+            on_log("Retrying with different settings...")
+
+    on_log("All rip attempts failed.")
+    return False
+
+def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
+    makemkvcon  = self._get_makemkvcon()
+    disc_target = self.get_disc_target()
+    global_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_global_args", ""),
+        on_log,
+        "MakeMKV global args"
+    )
+    rip_args = parse_cli_args(
+        self.cfg.get("opt_makemkv_rip_args", ""),
+        on_log,
+        "MakeMKV rip args"
+    )
+    os.makedirs(rip_path, exist_ok=True)
+    self._purge_rip_target_files(rip_path, on_log)
+    on_log(
+        f"Ripping {len(title_ids)} selected title(s) "
+        f"to: {rip_path}"
+    )
+    attempts      = self._get_rip_attempts()
+    failed_titles = []
+    self.last_title_file_map = {}
+    self.last_degraded_titles = []
+
+    for idx, tid in enumerate(title_ids):
+        if self.abort_event.is_set():
+            on_log("Rip aborted.")
+            return False, failed_titles
+
+        on_log(
+            f"Ripping title {tid+1} "
+            f"({idx+1}/{len(title_ids)})..."
+        )
+        title_success = False
+        before        = self._snapshot_mkv_files(rip_path)
+
+        for attempt_num, flags in enumerate(attempts, start=1):
+            if self.abort_event.is_set():
+                return False, failed_titles
+            if attempt_num > 1:
+                self._clean_new_mkv_files(
+                    rip_path, before, on_log
+                )
+                before = self._snapshot_mkv_files(rip_path)
+                on_log(
+                    f"Retry attempt {attempt_num}/{len(attempts)}"
+                    f" for title {tid+1} "
+                    f"(flags: {' '.join(flags)})"
+                )
+            cmd = (
+                [makemkvcon] + global_args +
+                ["mkv", disc_target, str(tid), rip_path] +
+                flags + rip_args
+            )
+
+            def scaled_progress(pct, _idx=idx):
+                overall = ((_idx + pct / 100) / len(title_ids)) * 100
+                on_progress(int(overall))
+
+            success = self._run_rip_process(
+                cmd, scaled_progress, on_log
+            )
+            if self.abort_event.is_set():
+                return False, failed_titles
+            after = self._snapshot_mkv_files(rip_path)
+            new_files = sorted(after - before)
+            if success:
+                if new_files:
+                    self.last_title_file_map[int(tid)] = list(new_files)
+                    title_success = True
+                    break
+                else:
+                    on_log(
+                        f"ERROR: MakeMKV reported success (exit code 0) "
+                        f"for title {tid+1}, but no MKV file was produced. "
+                        f"This may indicate a disc read/write error."
+                    )
+                    success = False
+            if new_files:
+                on_log(
+                    f"Warning: MakeMKV reported errors for title "
+                    f"{tid+1} but produced {len(new_files)} "
+                    f"output file(s) — treating as degraded success."
+                )
+                self.last_title_file_map[int(tid)] = list(new_files)
+                self.last_degraded_titles.append(int(tid) + 1)
+                title_success = True
+                break
+            on_log(
+                f"Attempt {attempt_num} failed "
+                f"for title {tid+1}."
+            )
+            if attempt_num < len(attempts):
+                on_log("Retrying with different settings...")
+
+        if not title_success:
+            on_log(
+                f"All attempts failed for title {tid+1}. "
+                f"Skipping."
+            )
+            failed_titles.append(tid + 1)
+
+    on_progress(100)
+    all_ok = not self.abort_event.is_set() and not bool(failed_titles)
+    return all_ok, failed_titles

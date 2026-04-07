@@ -87,6 +87,7 @@ class RipperEngine:
                 return
             self.abort_event.set()
             proc = self.current_process  # read inside lock — avoids race with rip thread
+
         if proc is not None:
             try:
                 if proc.poll() is None:
@@ -96,19 +97,14 @@ class RipperEngine:
                     except subprocess.TimeoutExpired:
                         try:
                             proc.kill()
-                        def scan_disc(self, on_log, on_progress):
-                            from engine import scan_ops
-                            return scan_ops.scan_disc(self, on_log, on_progress)
-                                    logging.warning("_find_mkv_files inner failed: %s", e)
-                    except Exception:
-                        pass
-                    result.append((full, name, mkv_count, total_size))
-            result.sort(key=lambda x: x[1])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
-        t = threading.Thread(target=_scan, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-        return result
+    def scan_disc(self, on_log, on_progress):
+        from engine import scan_ops
+        return scan_ops.scan_disc(self, on_log, on_progress)
 
     def find_resumable_sessions(self, temp_root, timeout=8.0):
         """Find temp sessions with saved workflow metadata that can be resumed.
@@ -776,11 +772,6 @@ class RipperEngine:
             except Exception as e:
                 import logging
                 logging.warning("pipe.close failed: %s", e)
-        finally:
-            try:
-                pipe.close()
-            except Exception:
-                pass
 
     def _run_rip_process(self, cmd, on_progress, on_log):
         """
@@ -1044,28 +1035,11 @@ class RipperEngine:
 
         return timed_out or proc.returncode == 0
 
+
     def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
-        """Rip a short disposable preview clip for a single title."""
-        makemkvcon  = self._get_makemkvcon()
-        disc_target = self.get_disc_target()
-        global_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_global_args", ""),
-            on_log,
-            "MakeMKV global args"
-        )
-        rip_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_rip_args", ""),
-            on_log,
-            "MakeMKV rip args"
-        )
-        os.makedirs(rip_path, exist_ok=True)
-        self._purge_rip_target_files(rip_path, on_log)
-        cmd = (
-            [makemkvcon] + global_args +
-            ["mkv", disc_target, str(title_id), rip_path] +
-            RIP_ATTEMPT_FLAGS[0] + rip_args
-        )
-        return self._run_preview_process(cmd, preview_seconds, on_log)
+        """Rip a short disposable preview clip for a single title (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_preview_title(self, rip_path, title_id, preview_seconds, on_log)
 
     def _get_rip_attempts(self):
         """Resolve retry strategy flags based on config toggles."""
@@ -1076,184 +1050,17 @@ class RipperEngine:
             :max(1, min(count, len(RIP_ATTEMPT_FLAGS)))
         ]
 
+
     def rip_all_titles(self, rip_path, on_progress, on_log):
-        """Rip all disc titles with retry flags and stall-aware process handling."""
-        makemkvcon  = self._get_makemkvcon()
-        disc_target = self.get_disc_target()
-        global_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_global_args", ""),
-            on_log,
-            "MakeMKV global args"
-        )
-        rip_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_rip_args", ""),
-            on_log,
-            "MakeMKV rip args"
-        )
-        os.makedirs(rip_path, exist_ok=True)
-        self._purge_rip_target_files(rip_path, on_log)
-        attempts = self._get_rip_attempts()
-        before   = self._snapshot_mkv_files(rip_path)
+        """Rip all disc titles with retry flags and stall-aware process handling (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_all_titles(self, rip_path, on_progress, on_log)
 
-        for attempt_num, flags in enumerate(attempts, start=1):
-            if self.abort_event.is_set():
-                return False
-            if attempt_num > 1:
-                self._clean_new_mkv_files(rip_path, before, on_log)
-                before = self._snapshot_mkv_files(rip_path)
-            on_log(
-                f"Rip attempt {attempt_num}/{len(attempts)} "
-                f"(flags: {' '.join(flags)})"
-            )
-            cmd = (
-                [makemkvcon] + global_args +
-                ["mkv", disc_target, "all", rip_path] +
-                flags + rip_args
-            )
-            success = self._run_rip_process(
-                cmd, on_progress, on_log
-            )
-            if self.abort_event.is_set():
-                return False
-            if success:
-                # Verify that files were actually created (MakeMKV can exit 0
-                # without producing output due to disc errors, permission issues, etc.)
-                after = self._snapshot_mkv_files(rip_path)
-                new_files = after - before
-                if new_files:
-                    return True
-                else:
-                    on_log(
-                        "ERROR: MakeMKV reported success (exit code 0), "
-                        "but no MKV files were produced. "
-                        "This may indicate a disc read/write error."
-                    )
-                    success = False
-            self._log_forced_failure_with_outputs(
-                rip_path, before, on_log
-            )
-            on_log(f"Attempt {attempt_num} failed.")
-            if attempt_num < len(attempts):
-                on_log("Retrying with different settings...")
 
-        on_log("All rip attempts failed.")
-        return False
-
-    def rip_selected_titles(self, rip_path, title_ids,
-                            on_progress, on_log):
-        """Rip selected title IDs with per-title retries and aggregated progress."""
-        makemkvcon  = self._get_makemkvcon()
-        disc_target = self.get_disc_target()
-        global_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_global_args", ""),
-            on_log,
-            "MakeMKV global args"
-        )
-        rip_args = parse_cli_args(
-            self.cfg.get("opt_makemkv_rip_args", ""),
-            on_log,
-            "MakeMKV rip args"
-        )
-        os.makedirs(rip_path, exist_ok=True)
-        self._purge_rip_target_files(rip_path, on_log)
-        on_log(
-            f"Ripping {len(title_ids)} selected title(s) "
-            f"to: {rip_path}"
-        )
-        attempts      = self._get_rip_attempts()
-        failed_titles = []
-        self.last_title_file_map = {}
-        self.last_degraded_titles = []
-
-        for idx, tid in enumerate(title_ids):
-            if self.abort_event.is_set():
-                on_log("Rip aborted.")
-                return False, failed_titles
-
-            on_log(
-                f"Ripping title {tid+1} "
-                f"({idx+1}/{len(title_ids)})..."
-            )
-            title_success = False
-            before        = self._snapshot_mkv_files(rip_path)
-
-            for attempt_num, flags in enumerate(attempts, start=1):
-                if self.abort_event.is_set():
-                    return False, failed_titles
-                if attempt_num > 1:
-                    self._clean_new_mkv_files(
-                        rip_path, before, on_log
-                    )
-                    before = self._snapshot_mkv_files(rip_path)
-                    on_log(
-                        f"Retry attempt {attempt_num}/{len(attempts)}"
-                        f" for title {tid+1} "
-                        f"(flags: {' '.join(flags)})"
-                    )
-                cmd = (
-                    [makemkvcon] + global_args +
-                    ["mkv", disc_target, str(tid), rip_path] +
-                    flags + rip_args
-                )
-
-                def scaled_progress(pct, _idx=idx):
-                    overall = (
-                        (_idx + pct / 100) / len(title_ids)
-                    ) * 100
-                    on_progress(int(overall))
-
-                success = self._run_rip_process(
-                    cmd, scaled_progress, on_log
-                )
-                if self.abort_event.is_set():
-                    return False, failed_titles
-                after = self._snapshot_mkv_files(rip_path)
-                new_files = sorted(after - before)
-                if success:
-                    if new_files:
-                        self.last_title_file_map[int(tid)] = list(new_files)
-                        title_success = True
-                        break
-                    else:
-                        on_log(
-                            f"ERROR: MakeMKV reported success (exit code 0) "
-                            f"for title {tid+1}, but no MKV file was produced. "
-                            f"This may indicate a disc read/write error."
-                        )
-                        success = False
-                if new_files:
-                    # MakeMKV exited non-zero but produced output.
-                    # Downstream stabilization and ffprobe will validate
-                    # the actual file — classify as degraded here.
-                    on_log(
-                        f"Warning: MakeMKV reported errors for title "
-                        f"{tid+1} but produced {len(new_files)} "
-                        f"output file(s) — treating as degraded success."
-                    )
-                    self.last_title_file_map[int(tid)] = list(new_files)
-                    self.last_degraded_titles.append(int(tid) + 1)
-                    title_success = True
-                    break
-                on_log(
-                    f"Attempt {attempt_num} failed "
-                    f"for title {tid+1}."
-                )
-                if attempt_num < len(attempts):
-                    on_log("Retrying with different settings...")
-
-            if not title_success:
-                on_log(
-                    f"All attempts failed for title {tid+1}. "
-                    f"Skipping."
-                )
-                failed_titles.append(tid + 1)
-
-        on_progress(100)
-        # Return True only when no abort AND every selected title succeeded.
-        # Callers also run _normalize_rip_result (file-presence + ffprobe check)
-        # as the authoritative gate, so this accurately reflects title-level success.
-        all_ok = not self.abort_event.is_set() and not bool(failed_titles)
-        return all_ok, failed_titles
+    def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
+        """Rip selected title IDs with per-title retries and aggregated progress (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_selected_titles(self, rip_path, title_ids, on_progress, on_log)
 
     def analyze_files(self, mkv_files, on_log):
         """
