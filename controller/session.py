@@ -2,7 +2,7 @@ import os
 import json
 import time
 from datetime import datetime
-from .controller import SessionState
+from utils.state_machine import SessionState
 
 class SessionHelpers:
     def __init__(self, controller):

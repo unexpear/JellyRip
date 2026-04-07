@@ -131,60 +131,23 @@ from utils.scoring import choose_best_title, format_audio_summary
 from gui import update_ui
 
 
+
 class JellyRipperGUI(tk.Tk):
-        def auto_detect_existing_folder_mode(self, folder_path):
-            """
-            Auto-detect mode for an existing folder:
-            - If folder is under tv_folder, default to 'no' for order prompt.
-            - If folder is under movies_folder, default to 'main'.
-            """
-            tv_folder = self.cfg.get('tv_folder', '').lower()
-            movies_folder = self.cfg.get('movies_folder', '').lower()
-            folder_path_l = folder_path.lower()
-            if tv_folder and folder_path_l.startswith(tv_folder):
-                return 'tv_no_order'  # TV: quick no for order
-            if movies_folder and folder_path_l.startswith(movies_folder):
-                return 'movie_main'   # Movie: main
-            return None
-    def ask_accept_partial(self):
-        result = [None]
-        done = threading.Event()
-        def _show():
-            win = tk.Toplevel(self)
-            win.title("Partial Success — Accept or Delete?")
-            win.configure(bg="#161b22")
-            win.grab_set()
-            win.lift()
-            win.focus_force()
-            win.resizable(False, False)
-            tk.Label(
-                win, text="Some titles failed to rip.\n\nDo you want to accept the partial result, or delete the session and all files?",
-                bg="#161b22", fg="#c9d1d9", font=("Segoe UI", 11), wraplength=420
-            ).pack(padx=24, pady=(18, 10))
-            btn_row = tk.Frame(win, bg="#161b22")
-            btn_row.pack(padx=18, pady=(0, 18))
-            def accept():
-                result[0] = True
-                win.destroy()
-                done.set()
-            def delete():
-                result[0] = False
-                win.destroy()
-                done.set()
-            tk.Button(
-                btn_row, text="Accept Partial", bg="#238636", fg="white",
-                font=("Segoe UI", 10, "bold"), command=accept, relief="flat", width=18
-            ).pack(side="left", padx=8)
-            tk.Button(
-                btn_row, text="Delete Session & All Files", bg="#c94b4b", fg="white",
-                font=("Segoe UI", 10, "bold"), command=delete, relief="flat", width=22
-            ).pack(side="left", padx=8)
-            win.protocol("WM_DELETE_WINDOW", delete)
-        self.after(0, _show)
-        while not done.wait(timeout=0.1):
-            if self.engine.abort_event.is_set():
-                return False
-        return result[0]
+    def auto_detect_existing_folder_mode(self, folder_path):
+        """
+        Auto-detect mode for an existing folder:
+        - If folder is under tv_folder, default to 'no' for order prompt.
+        - If folder is under movies_folder, default to 'main'.
+        """
+        tv_folder = self.cfg.get('tv_folder', '').lower()
+        movies_folder = self.cfg.get('movies_folder', '').lower()
+        folder_path_l = folder_path.lower()
+        if tv_folder and folder_path_l.startswith(tv_folder):
+            return 'tv_no_order'  # TV: quick no for order
+        if movies_folder and folder_path_l.startswith(movies_folder):
+            return 'movie_main'   # Movie: main
+        return None
+
     def __init__(self, cfg):
         """
         LAYER 3 — GUI
@@ -1629,18 +1592,19 @@ class JellyRipperGUI(tk.Tk):
                     parent=self,
                 )
 
+
     def open_settings(self):
-                # Expert Mode toggle (persistent in config)
-                expert_mode_var = tk.BooleanVar(value=cfg.get('opt_expert_mode', False))
-                expert_toggle_row = tk.Frame(win, bg="#0d1117")
-                expert_toggle_row.pack(fill="x", padx=16, pady=(8, 0))
-                tk.Checkbutton(
-                    expert_toggle_row, variable=expert_mode_var,
-                    bg="#0d1117", activebackground="#0d1117",
-                    selectcolor="#238636",
-                    fg="#c9d1d9", font=("Segoe UI", 11, "bold"),
-                    text="Enable Expert Mode (show all advanced profile options)", anchor="w"
-                ).pack(side="left")
+        # Expert Mode toggle (persistent in config)
+        expert_mode_var = tk.BooleanVar(value=cfg.get('opt_expert_mode', False))
+        expert_toggle_row = tk.Frame(win, bg="#0d1117")
+        expert_toggle_row.pack(fill="x", padx=16, pady=(8, 0))
+        tk.Checkbutton(
+            expert_toggle_row, variable=expert_mode_var,
+            bg="#0d1117", activebackground="#0d1117",
+            selectcolor="#238636",
+            fg="#c9d1d9", font=("Segoe UI", 11, "bold"),
+            text="Enable Expert Mode (show all advanced profile options)", anchor="w"
+        ).pack(side="left")
         if self.rip_thread and self.rip_thread.is_alive():
             messagebox.showwarning(
                 "Rip in Progress",
@@ -2115,8 +2079,8 @@ class JellyRipperGUI(tk.Tk):
             btn_row.pack(fill="x", padx=16, pady=12)
 
             def save():
-                                # Save expert mode toggle
-                                cfg['opt_expert_mode'] = expert_mode_var.get()
+                # Save expert mode toggle
+                cfg['opt_expert_mode'] = expert_mode_var.get()
                 try:
                     tool_validators = {
                         "makemkvcon_path": validate_makemkvcon,

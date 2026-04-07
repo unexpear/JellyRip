@@ -84,13 +84,13 @@ def _autofill_tool_paths(cfg):
 def main():
     if sys.platform == "win32":
         import ctypes
+
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "JellyRip.App.1"
             )
-            except Exception as e:
-                import logging
-                logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
+        except Exception as e:
+            import logging
             logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
 
     cfg = load_config()
