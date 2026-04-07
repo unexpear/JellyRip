@@ -15,6 +15,7 @@ class TranscodeEngine:
 	def run_job(self, job, dry_run=False):
 		"""
 		job: TranscodeJob (from core/pipeline.py)
+		Logs: full command, all output, errors, and job metadata for every job.
 		"""
 		builder = FFmpegBuilder(job.profile, job.input_path, job.output_path, job.metadata)
 		cmd = builder.build_command()
@@ -23,11 +24,21 @@ class TranscodeEngine:
 		if dry_run:
 			print("[DRY RUN] Command:", " ".join(cmd))
 			return cmd
-		with open(log_path, "w", encoding="utf-8") as logf:
-			logf.write("COMMAND: " + " ".join(cmd) + "\n\n")
-			proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-			for line in proc.stdout:
-				logf.write(line)
-			proc.wait()
-			logf.write(f"\nExit code: {proc.returncode}\n")
-		return proc.returncode, log_path
+		try:
+			with open(log_path, "w", encoding="utf-8") as logf:
+				logf.write("COMMAND: " + " ".join(cmd) + "\n")
+				logf.write(f"INPUT: {job.input_path}\nOUTPUT: {job.output_path}\nPROFILE: {getattr(job.profile, 'name', '')}\n")
+				logf.write(f"METADATA: {repr(getattr(job, 'metadata', {}))}\n\n")
+				logf.flush()
+				proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+				for line in proc.stdout:
+					logf.write(line)
+					logf.flush()
+				proc.wait()
+				logf.write(f"\nExit code: {proc.returncode}\n")
+				logf.flush()
+			return proc.returncode, log_path
+		except Exception as e:
+			with open(log_path, "a", encoding="utf-8") as logf:
+				logf.write(f"\nERROR: {repr(e)}\n")
+			return -1, log_path

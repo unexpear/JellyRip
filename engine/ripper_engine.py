@@ -96,12 +96,15 @@ class RipperEngine:
                     except subprocess.TimeoutExpired:
                         try:
                             proc.kill()
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        except Exception as e:
+                            import logging
+                            logging.warning("proc.kill failed: %s", e)
+                    except Exception as e:
+                        import logging
+                        logging.warning("TimeoutExpired handler failed: %s", e)
+            except Exception as e:
+                import logging
+                logging.warning("_run_with_timeout outer failed: %s", e)
             finally:
                 self.current_process = None
 
@@ -184,8 +187,9 @@ class RipperEngine:
                                 on_log(
                                     f"Warning: could not remove {f}: {e}"
                                 )
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.warning("_find_mkv_files failed: %s", e)
 
         t = threading.Thread(target=_clean, daemon=True)
         t.start()
@@ -225,8 +229,9 @@ class RipperEngine:
                                     total_size += os.path.getsize(
                                         os.path.join(dp, f)
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    import logging
+                                    logging.warning("_find_mkv_files inner failed: %s", e)
                     except Exception:
                         pass
                     result.append((full, name, mkv_count, total_size))
@@ -292,7 +297,7 @@ class RipperEngine:
                 except Exception as cleanup_err:
                     logging.warning(
                         "Failed to remove temporary JSON file %s: %s",
-                        tmp, cleanup_err,
+                        io_tmp, cleanup_err,
                     )
 
     def write_temp_metadata(self, rip_path, title, disc_number,
@@ -893,8 +898,15 @@ class RipperEngine:
         try:
             for line in iter(pipe.readline, ""):
                 q.put(line)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.warning("_read_pipe_lines failed: %s", e)
+        finally:
+            try:
+                pipe.close()
+            except Exception as e:
+                import logging
+                logging.warning("pipe.close failed: %s", e)
         finally:
             try:
                 pipe.close()

@@ -88,15 +88,16 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "JellyRip.App.1"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
 
     cfg = load_config()
     try:
         _autofill_tool_paths(cfg)
-    except Exception:
-        # Startup must remain resilient even if auto-locate fails.
-        pass
+    except Exception as e:
+        import logging
+        logging.warning("_autofill_tool_paths failed: %s", e)
     app = JellyRipperGUI(cfg)
     app.mainloop()
 

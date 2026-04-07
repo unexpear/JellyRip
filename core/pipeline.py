@@ -40,7 +40,21 @@ class PipelineController:
 
     def add_job(self, input_path: str, output_path: str, profile_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, file_info: Optional[Dict[str, Any]] = None):
         profile = self.profile_loader.get_profile(profile_name)
-        job = TranscodeJob(input_path, output_path, profile, metadata)
+        # Output naming/collision avoidance
+        overwrite = profile.get('output', 'overwrite', False)
+        auto_increment = profile.get('output', 'auto_increment', True)
+        base, ext = os.path.splitext(output_path)
+        candidate = output_path
+        idx = 1
+        while os.path.exists(candidate):
+            if overwrite:
+                break
+            if auto_increment:
+                candidate = f"{base}_{idx}{ext}"
+                idx += 1
+            else:
+                raise FileExistsError(f"Output file exists and overwrite/auto_increment are disabled: {candidate}")
+        job = TranscodeJob(input_path, candidate, profile, metadata)
         if file_info and job.should_skip(file_info):
             print(f"Skipping job: {job.skip_reason}")
             return False
