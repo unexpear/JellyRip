@@ -56,26 +56,17 @@ class RipperController:
         self._preview_lock        = threading.Lock()
         self._wiped_session_paths = set()
         self.session_paths = None
+        self.session_helpers = SessionHelpers(self)
         self.sm = SessionStateMachine(
             debug=bool(self.engine.cfg.get("opt_debug_state", False)),
             logger=self.log,
         )
 
     def log(self, msg):
-        """Record a timestamped log line and forward it to the GUI queue."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        full = f"[{timestamp}] {msg}"
-        self.session_log.append(full)
-        cap  = int(self.engine.cfg.get("opt_log_cap_lines", 300000))
-        trim = int(self.engine.cfg.get("opt_log_trim_lines", 200000))
-        if len(self.session_log) > cap:
-            self.session_log = self.session_log[-trim:]
-        self.gui.append_log(full)
+        return self.session_helpers.log(msg)
 
     def report(self, msg):
-        """Track a warning/failure event and emit it to the live log."""
-        self.session_report.append(msg)
-        self.log(msg)
+        return self.session_helpers.report(msg)
 
     def _warn_degraded_rips(self):
         """Add session warnings for any degraded titles from the last rip."""
@@ -134,118 +125,16 @@ class RipperController:
         )
 
     def flush_log(self):
-        """Persist current session log buffer to configured log file."""
-        log_file = os.path.normpath(
-            self.engine.cfg.get("log_file", "")
-        )
-        # Ensure .txt extension if missing
-        if log_file and not log_file.lower().endswith(('.txt', '.log')):
-            log_file = log_file + '.txt'
-        self.engine.write_session_log(
-            log_file, self.start_time, self.session_log, self.log
-        )
+        return self.session_helpers.flush_log()
 
     def write_session_summary(self):
-        if not self.engine.cfg.get(
-            "opt_session_failure_report", True
-        ):
-            return
-        if getattr(self, "sm", None) is not None:
-            if self.sm.state == SessionState.COMPLETED:
-                if self.session_report:
-                    self.log("Session summary: Completed with warnings.")
-                    self.log("=" * 44)
-                    self.log("SESSION SUMMARY — WARNINGS")
-                    self.log("=" * 44)
-                    for line in self.session_report:
-                        self.log(f"  {line}")
-                    self.log("=" * 44)
-                else:
-                    self.log(
-                        "Session summary: All discs completed successfully."
-                    )
-                return
-            if self.sm.state == SessionState.FAILED and not self.session_report:
-                self.log("Session summary: Session failed.")
-                return
-        if not self.session_report:
-            self.log(
-                "Session summary: All discs completed successfully."
-            )
-            return
-        self.log("=" * 44)
-        self.log("SESSION SUMMARY — FAILURES/WARNINGS")
-        self.log("=" * 44)
-        for line in self.session_report:
-            self.log(f"  {line}")
-        self.log("=" * 44)
+        return self.session_helpers.write_session_summary()
 
     def scan_with_retry(self):
-        """
-        Single choke point for all disc scanning.
-        Wraps engine.scan_disc() with UI state management and one
-        automatic retry. All run_* methods must use this — never
-        call engine.scan_disc() directly.
-        """
-        for attempt in range(3):
-            self.log(
-                f"Scanning disc on drive "
-                f"{self.engine.get_disc_target()}..."
-            )
-            self.gui.set_status("Scanning... (time varies by disc)")
-            self.gui.start_indeterminate()
-            try:
-                result = self.engine.scan_disc(
-                    self.log, self.gui.set_progress
-                )
-            finally:
-                self.gui.stop_indeterminate()
-                self.gui.set_progress(0)
-
-            if self.engine.abort_event.is_set():
-                self.log("Scan aborted.")
-                return None
-
-            if result is None:
-                if attempt < 2:
-                    self.log("Scan failed — retrying...")
-                    time.sleep(2 + attempt)
-                continue
-
-            # Return even if empty (e.g., bad disc structure).
-            # Handle empty result at call site.
-            return result
-
-        self.log("Scan failed after 3 attempts.")
-        return None
+        return self.session_helpers.scan_with_retry()
 
     def check_resume(self, temp_root, media_type=None):
-        """Offer workflow-level resume using saved session metadata."""
-        resumable = self.engine.find_resumable_sessions(temp_root)
-        if not resumable:
-            return None
-        for full_path, name, meta, file_count in resumable:
-            if media_type and meta.get("media_type") not in {None, media_type}:
-                continue
-            title = meta.get("title", "Unknown")
-            ts    = meta.get("timestamp", name)
-            phase = meta.get("phase", meta.get("status", "unknown"))
-            if self.gui.ask_yesno(
-                f"Resume previous session?\n\n"
-                f"Title: {title}\n"
-                f"Started: {ts}\n"
-                f"Phase: {phase}\n"
-                f"Files so far: {file_count}\n\n"
-                "This reloads saved workflow metadata only. Any partial "
-                "rip files will be replaced by a fresh rip."
-            ):
-                self.log(f"Resuming session: {name}")
-                return {
-                    "path": full_path,
-                    "name": name,
-                    "meta": meta,
-                }
-        return None
+        return self.session_helpers.check_resume(temp_root, media_type)
 
     def _init_session_paths(self, overrides=None):
         """Initialize per-run path state from defaults plus optional overrides."""
