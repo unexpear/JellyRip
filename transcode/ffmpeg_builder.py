@@ -16,25 +16,30 @@ class FFmpegBuilder:
         hw_accel = self.profile.get('video', 'hw_accel')
         audio_mode = self.profile.get('audio', 'mode')
         container = self.profile.get('output', 'container')
-        # Remux mode
+        # Remux mode (best practice: preserve all streams, metadata, and disposition)
         if video == 'copy':
             cmd = [
                 'ffmpeg', '-i', self.input_path,
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-c:s', 'copy',
+                '-map', '0',  # map all streams
+                '-c', 'copy',
+                '-map_metadata', '0',
+                '-disposition:s:0', 'default',
                 self.output_path
             ]
             return cmd
         # Transcode mode
         cmd = ['ffmpeg', '-i', self.input_path]
-        # Hardware acceleration
+        # Hardware acceleration (auto, nvenc, qsv, or CPU)
         if hw_accel and hw_accel.startswith('nvenc'):
             vcodec = f'h264_nvenc' if video == 'h264' else f'hevc_nvenc'
         elif hw_accel and hw_accel.startswith('qsv'):
             vcodec = f'h264_qsv' if video == 'h264' else f'hevc_qsv'
+        elif hw_accel and hw_accel == 'auto_prefer':
+            # Try hardware, fallback to CPU (let ffmpeg auto-select)
+            vcodec = f'hevc_nvenc' if video == 'h265' else f'h264_nvenc'
         else:
             vcodec = f'libx264' if video == 'h264' else f'libx265'
+        cmd += ['-map', '0']  # map all streams
         cmd += ['-c:v', vcodec]
         if mode == 'crf' and crf is not None:
             cmd += ['-crf', str(crf)]
@@ -49,6 +54,9 @@ class FFmpegBuilder:
             cmd += ['-c:a', 'ac3']
         # Subtitles
         cmd += ['-c:s', 'copy']
+        # Metadata and disposition
+        cmd += ['-map_metadata', '0']
+        cmd += ['-disposition:s:0', 'default']
         # Output
         cmd += [self.output_path]
         return cmd
