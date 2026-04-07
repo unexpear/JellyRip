@@ -88,8 +88,9 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "JellyRip.App.1"
             )
-        except Exception as e:
-            import logging
+            except Exception as e:
+                import logging
+                logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
             logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
 
     cfg = load_config()

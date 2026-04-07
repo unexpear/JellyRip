@@ -98,8 +98,9 @@ class RipperEngine:
                             proc.kill()
                         except Exception as e:
                             import logging
-                            logging.warning("proc.kill failed: %s", e)
                     except Exception as e:
+                        import logging
+                        logging.warning("_run_with_timeout outer failed: %s", e)
                         import logging
                         logging.warning("TimeoutExpired handler failed: %s", e)
             except Exception as e:
@@ -182,8 +183,9 @@ class RipperEngine:
                                 os.remove(full)
                                 on_log(
                                     f"Cleaned up leftover partial file: {f}"
-                                )
-                            except Exception as e:
+                except Exception as e:
+                    import logging
+                    logging.warning("_find_mkv_files failed: %s", e)
                                 on_log(
                                     f"Warning: could not remove {f}: {e}"
                                 )
@@ -803,8 +805,9 @@ class RipperEngine:
                 return "warn", free, required_bytes
             return "ok", free, required_bytes
         except Exception as e:
-            on_log(f"Warning: could not check disk space: {e}")
-            return "ok", 0, required_bytes
+                import logging
+                logging.warning("check_disk_space failed: %s", e)
+                return "ok", 0, required_bytes
 
     def _snapshot_mkv_files(self, rip_path):
         return set(
