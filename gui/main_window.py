@@ -137,6 +137,20 @@ from utils.updater import (
 
 
 class JellyRipperGUI(tk.Tk):
+        def auto_detect_existing_folder_mode(self, folder_path):
+            """
+            Auto-detect mode for an existing folder:
+            - If folder is under tv_folder, default to 'no' for order prompt.
+            - If folder is under movies_folder, default to 'main'.
+            """
+            tv_folder = self.cfg.get('tv_folder', '').lower()
+            movies_folder = self.cfg.get('movies_folder', '').lower()
+            folder_path_l = folder_path.lower()
+            if tv_folder and folder_path_l.startswith(tv_folder):
+                return 'tv_no_order'  # TV: quick no for order
+            if movies_folder and folder_path_l.startswith(movies_folder):
+                return 'movie_main'   # Movie: main
+            return None
     def ask_accept_partial(self):
         result = [None]
         done = threading.Event()
@@ -689,9 +703,9 @@ class JellyRipperGUI(tk.Tk):
                         "Update Blocked",
                         "Signature verification is enabled but no signer "
                         "thumbprint is configured.\n\n"
-                        "Set opt_update_signer_thumbprint in Settings to "
-                        "your release certificate thumbprint before using "
-                        "auto-update.",
+                        "To enable updates, open Settings → Advanced, and set "
+                        "the 'Update Signer Thumbprint' field to your release certificate thumbprint.\n\n"
+                        "See the documentation: https://github.com/unexpear/JellyRip/wiki/Update-Signing for details.",
                     ),
                 )
                 self.after(0, _finish_ready)
@@ -1866,6 +1880,17 @@ class JellyRipperGUI(tk.Tk):
                 )
 
     def open_settings(self):
+                # Expert Mode toggle (persistent in config)
+                expert_mode_var = tk.BooleanVar(value=cfg.get('opt_expert_mode', False))
+                expert_toggle_row = tk.Frame(win, bg="#0d1117")
+                expert_toggle_row.pack(fill="x", padx=16, pady=(8, 0))
+                tk.Checkbutton(
+                    expert_toggle_row, variable=expert_mode_var,
+                    bg="#0d1117", activebackground="#0d1117",
+                    selectcolor="#238636",
+                    fg="#c9d1d9", font=("Segoe UI", 11, "bold"),
+                    text="Enable Expert Mode (show all advanced profile options)", anchor="w"
+                ).pack(side="left")
         if self.rip_thread and self.rip_thread.is_alive():
             messagebox.showwarning(
                 "Rip in Progress",
@@ -1950,6 +1975,41 @@ class JellyRipperGUI(tk.Tk):
             validation_tab = make_scroll_tab("Validation")
             advanced_tab = make_scroll_tab("Advanced")
             logs_tab = make_scroll_tab("Logs & Debug")
+            expert_tab = None
+            if expert_mode_var.get():
+                expert_tab = make_scroll_tab("Expert")
+            # --- Expert Tab (if enabled) ---
+            if expert_tab is not None:
+                section(expert_tab, "Transcode Profile (Expert)")
+                # Show all profile parameters for direct editing
+                from transcode.profiles import PROFILE_SCHEMA
+                expert_vars = {}
+                for section_name, keys in PROFILE_SCHEMA.items():
+                    section(expert_tab, section_name.capitalize())
+                    for key in keys:
+                        row = tk.Frame(expert_tab, bg="#0d1117")
+                        row.pack(fill="x", padx=24, pady=2)
+                        tk.Label(
+                            row, text=key, bg="#0d1117", fg="#c9d1d9",
+                            font=("Segoe UI", 10), width=18, anchor="w"
+                        ).pack(side="left")
+                        var = tk.StringVar()
+                        tk.Entry(
+                            row, textvariable=var,
+                            bg="#161b22", fg="#c9d1d9",
+                            font=("Segoe UI", 10), relief="flat", bd=3, width=24
+                        ).pack(side="left")
+                        expert_vars[f"{section_name}.{key}"] = var
+                # Optionally: add a button to apply expert profile changes
+                def apply_expert_profile():
+                    # This is a placeholder for applying expert profile changes
+                    # You would parse and validate the values, then update the profile
+                    self.controller.log("Expert profile changes applied (not yet implemented)")
+                tk.Button(
+                    expert_tab, text="Apply Expert Profile Changes",
+                    bg="#238636", fg="white", font=("Segoe UI", 10, "bold"),
+                    command=apply_expert_profile
+                ).pack(pady=12)
 
             cfg      = self.cfg
             vars_map = {}
@@ -2305,6 +2365,8 @@ class JellyRipperGUI(tk.Tk):
             btn_row.pack(fill="x", padx=16, pady=12)
 
             def save():
+                                # Save expert mode toggle
+                                cfg['opt_expert_mode'] = expert_mode_var.get()
                 try:
                     tool_validators = {
                         "makemkvcon_path": validate_makemkvcon,

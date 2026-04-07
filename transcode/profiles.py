@@ -3,33 +3,46 @@ import os
 from typing import Any, Dict, Optional, List
 
 PROFILE_SCHEMA = {
+    # Video stream selection and encoding options
     "video": {
-        "codec": str,
+        "codec": str,  # Target codec (e.g., h264, h265, copy)
         "mode": str,  # crf, bitrate, copy
         "crf": (int, type(None)),
         "bitrate": (int, type(None)),
         "preset": (str, type(None)),
         "hw_accel": str,  # auto_prefer, cpu, nvenc, qsv, etc.
+        # Advanced: add 'stream_index' or 'select' for multi-video support if needed
     },
+    # Audio stream selection and encoding options
     "audio": {
         "mode": str,  # copy, aac, ac3
-        "language": (str, type(None)),
+        "language": (str, type(None)),  # Preferred language (e.g., 'eng')
         "tracks": (str, type(None)),  # all, main, language, etc.
+        # Advanced: add 'downmix' (bool/str) for stereo compatibility if needed
     },
+    # Subtitle stream selection and handling
     "subtitles": {
         "mode": str,  # all, forced, language, none
-        "burn": bool,
-        "language": (str, type(None)),
+        "burn": bool,  # Burn-in if required for compatibility
+        "language": (str, type(None)),  # Preferred language
+        # Advanced: add 'soft_preferred' (bool) to prefer soft subs
     },
+    # Output container and naming
     "output": {
-        "container": str,
-        "naming": str,
-        "overwrite": bool,
-        "auto_increment": bool,
+        "container": str,  # mkv, mp4, etc.
+        "naming": str,  # Output naming pattern
+        "overwrite": bool,  # Overwrite existing files
+        "auto_increment": bool,  # Auto-increment to avoid collisions
     },
+    # Constraints for skipping unnecessary jobs
     "constraints": {
         "skip_if_below_gb": (int, float, type(None)),
         "skip_if_codec_matches": bool,
+    },
+    # Metadata preservation and advanced options
+    "metadata": {
+        "preserve": (bool, type(None)),  # Preserve all metadata if True
+        # Advanced: add 'chapters' (bool) to preserve chapters
     }
 }
 

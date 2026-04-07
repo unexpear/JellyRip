@@ -226,8 +226,9 @@ def _locate_makemkvcon_registry():
                         pass
             except OSError:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.warning("_locate_makemkvcon_registry failed: %s", e)
     return None
 
 
@@ -277,8 +278,9 @@ def _locate_ffprobe_registry():
                         pass
             except OSError:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.warning("_locate_ffprobe_registry failed: %s", e)
     # Chocolatey default path
     choco = r"C:\tools\ffmpeg"
     found = _resolve_ffprobe_from_dir(choco)

@@ -562,8 +562,8 @@ class RipperController:
         for f in mkv_files:
             try:
                 actual_total += os.path.getsize(f)
-            except Exception:
-                pass
+            except Exception as e:
+                self.log(f"os.path.getsize failed: {e}")
 
         status, reason, ratio = self._size_validation_status(
             actual_total, expected_total
@@ -596,8 +596,8 @@ class RipperController:
         for f in mkv_files:
             try:
                 actual_total += os.path.getsize(f)
-            except Exception:
-                pass
+            except Exception as e:
+                self.log(f"os.path.getsize failed: {e}")
 
         pct = (actual_total / expected_total) * 100
         self.log(
@@ -1140,8 +1140,8 @@ class RipperController:
             ):
                 try:
                     os.remove(f)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log(f"os.remove failed: {e}")
 
         self.gui.set_status("Ripping... (this may take 20-60 min)")
         _pre_rip_mkvs = frozenset(

@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM  JellyRip release pipeline — enforces correct order:
-REM    tests -> build -> verify -> commit -> push -> publish
+REM    tests -> build -> verify -> push -> publish
 REM
 REM  Usage:  release.bat 1.0.12
 REM ============================================================
