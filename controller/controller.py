@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys as _sys
 import threading
 import time
 from datetime import datetime
@@ -26,6 +27,8 @@ from utils.parsing import parse_episode_names, parse_ordered_titles, safe_int
 from utils.scoring import choose_best_title
 from utils.session_result import normalize_session_result
 from utils.state_machine import SessionState, SessionStateMachine
+
+_POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 
 class RipperController:
@@ -992,6 +995,7 @@ class RipperController:
                         [vlc, latest],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        **_POPEN_FLAGS,
                     )
                     self.log(
                         f"Preview opened in VLC: {os.path.basename(latest)}"

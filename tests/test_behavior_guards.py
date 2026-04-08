@@ -710,6 +710,7 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         "controller.controller.subprocess.Popen",
         lambda args: opened.append(args),
     )
+<<<<<<< ours
     # Only patch os.startfile if it exists (Windows only)
     import sys
     import types
@@ -736,6 +737,13 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
             lambda path: opened.append(path),
             raising=False
         )
+=======
+    monkeypatch.setattr(
+        "controller.controller.os.startfile",
+        lambda path: opened.append(path),
+        raising=False,
+    )
+>>>>>>> theirs
     monkeypatch.setattr("controller.controller.time.sleep", lambda _x: None)
 
     # Run thread target inline for deterministic test behavior.

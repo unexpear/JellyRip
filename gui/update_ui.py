@@ -1,21 +1,21 @@
+"""Update workflow helpers extracted from the main GUI window module."""
+
 import os
-import sys
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
-import subprocess
+import urllib.error
 import webbrowser
-from tkinter import messagebox
-
+from shared.runtime import __version__
 from utils.updater import (
-    fetch_latest_release,
     download_asset,
-    verify_downloaded_update,
-    sha256_file,
+    fetch_latest_release,
     is_newer_version,
+    sha256_file,
+    verify_downloaded_update,
 )
-
-__version__ = None  # Will be set by main_window.py
 
 def launch_downloaded_update(gui, downloaded_path):
     """Launch downloaded update package and close app for file replacement."""
@@ -23,11 +23,6 @@ def launch_downloaded_update(gui, downloaded_path):
         update_dir = os.path.dirname(os.path.normpath(downloaded_path))
         is_installer = os.path.basename(downloaded_path).lower().endswith("installer.exe")
         gui.controller.log(
-            "Launching installer — a UAC permission prompt may appear."
-        )
-        gui.show_info(
-            "Update Ready",
-            "The installer is starting.\n\n"
             "A UAC permission prompt may appear.\n"
             "JellyRip will now close so files can be replaced."
         )
@@ -35,17 +30,23 @@ def launch_downloaded_update(gui, downloaded_path):
         gui.after(500, gui.destroy)
         if is_installer:
             try:
-                subprocess.Popen(
-                    [
-                        downloaded_path,
-                        "/SP-",
-                        "/VERYSILENT",
-                        "/SUPPRESSMSGBOXES",
-                        "/NORESTART",
-                        "/CLOSEAPPLICATIONS",
-                    ],
-                    **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
-                )
+                if sys.platform == "win32":
+                    subprocess.Popen(
+                        [
+                            downloaded_path,
+                            "/SP-",
+                            "/SUPPRESSMSGBOXES",
+                        ],
+                        creationflags=0x08000000,
+                    )
+                else:
+                    subprocess.Popen(
+                        [
+                            downloaded_path,
+                            "/SP-",
+                            "/SUPPRESSMSGBOXES",
+                        ]
+                    )
             except Exception as e:
                 gui.controller.log(
                     f"Silent installer launch failed ({e}); falling back to standard launch."
@@ -54,7 +55,6 @@ def launch_downloaded_update(gui, downloaded_path):
         else:
             os.startfile(downloaded_path)
         # Best-effort cleanup after launch. Run detached so cleanup can
-        # continue after JellyRip exits.
         if update_dir and os.path.basename(update_dir).startswith("JellyRipUpdate_"):
             safe_dir = update_dir.replace("'", "''")
             cleanup_cmd = (
@@ -64,17 +64,31 @@ def launch_downloaded_update(gui, downloaded_path):
                 f"}}"
             )
             try:
-                subprocess.Popen(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-WindowStyle",
-                        "Hidden",
-                        "-Command",
-                        cleanup_cmd,
-                    ],
-                    **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
-                )
+                if sys.platform == "win32":
+                    subprocess.Popen(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-WindowStyle",
+                            "Hidden",
+                            "-Command",
+                            cleanup_cmd,
+                        ],
+                        creationflags=0x08000000,
+                    )
+                else:
+                    subprocess.Popen(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-WindowStyle",
+                            "Hidden",
+                            "-Command",
+                            cleanup_cmd,
+                        ]
+                    )
+        # Use a unique per-download temp directory to prevent TOCTOU
+        # attacks via the predictable JellyRipUpdate/ fixed path.
             except Exception:
                 pass
     except Exception as e:
@@ -84,6 +98,7 @@ def launch_downloaded_update(gui, downloaded_path):
             "Downloaded update package but could not launch it.\n\n"
             f"Run this file manually:\n{downloaded_path}"
         )
+
 
 def check_for_updates(gui):
     """Check GitHub releases for a newer version and offer download."""
@@ -100,13 +115,24 @@ def check_for_updates(gui):
     def worker():
         try:
             release = fetch_latest_release("unexpear/JellyRip")
+        except urllib.error.URLError as e:
+            gui.controller.log(f"Update check failed: {e}")
+            gui.after(
+                0,
+                lambda: gui.show_error(
+                    "Update Check Failed",
+                    "Could not reach GitHub Releases right now."
+                )
+            )
+            gui.after(0, _finish_ready)
+            return
         except Exception as e:
             gui.controller.log(f"Update check failed: {e}")
             gui.after(
                 0,
                 lambda: gui.show_error(
                     "Update Check Failed",
-                    f"Could not reach GitHub Releases or unexpected error.\n{e}"
+                    f"Unexpected error while checking updates:\n{e}"
                 )
             )
             gui.after(0, _finish_ready)
@@ -228,6 +254,9 @@ def check_for_updates(gui):
                     "To enable updates, open Settings → Advanced, and set "
                     "the 'Update Signer Thumbprint' field to your release certificate thumbprint.\n\n"
                     "See the documentation: https://github.com/unexpear/JellyRip/wiki/Update-Signing for details.",
+                    "Set opt_update_signer_thumbprint in Settings to "
+                    "your release certificate thumbprint before using "
+                    "auto-update.",
                 ),
             )
             gui.after(0, _finish_ready)

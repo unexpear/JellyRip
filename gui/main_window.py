@@ -9,11 +9,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import urllib.error
-import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -127,9 +124,13 @@ from utils.helpers import (
     make_rip_folder_name,
 )
 from utils.scoring import choose_best_title, format_audio_summary
+<<<<<<< ours
 
 from gui import update_ui
 
+=======
+from gui.update_ui import check_for_updates, launch_downloaded_update
+>>>>>>> theirs
 
 
 class JellyRipperGUI(tk.Tk):
@@ -284,6 +285,12 @@ class JellyRipperGUI(tk.Tk):
         util_frame = tk.Frame(self, bg=BG)
         util_frame.pack(fill="x", padx=20)
         tk.Button(
+            util_frame, text="📂  Folder Scanner",
+            command=self._open_folder_scanner,
+            bg="#21262d", fg="#8b949e",
+            font=("Segoe UI", 10), relief="flat"
+        ).pack(side="right", padx=4)
+        tk.Button(
             util_frame, text="📋  Copy Log",
             command=self.copy_log_to_clipboard,
             bg="#21262d", fg="#8b949e",
@@ -303,6 +310,85 @@ class JellyRipperGUI(tk.Tk):
             font=("Segoe UI", 10), relief="flat"
         )
         self.settings_btn.pack(side="right", padx=4)
+    def _open_folder_scanner(self):
+        from tools.folder_scanner import scan_folder
+        folder = self.ask_directory("Folder Scanner", "Choose a folder to scan")
+        if not folder:
+            self.show_info("Folder Scanner", "No folder selected.")
+            return
+        # Ask for mode
+        mode = self._ask_folder_scan_mode()
+        if mode is None:
+            self.show_info("Folder Scanner", "Scan cancelled.")
+            return
+        try:
+            results = scan_folder(folder, mode)
+        except Exception as e:
+            self.show_error("Folder Scanner", f"Error scanning folder:\n{e}")
+            return
+        self._show_folder_scan_results(folder, results, mode)
+
+    def _ask_folder_scan_mode(self):
+        # Simple modal dialog for mode selection
+        win = tk.Toplevel(self)
+        win.title("Folder Scanner — Choose Mode")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.resizable(False, False)
+        var = tk.IntVar(value=1)
+        tk.Label(win, text="Choose scan mode:", bg="#161b22", fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(padx=18, pady=(18, 6))
+        modes = [
+            ("1: Largest to Smallest", 1),
+            ("2: Bad/Weird Names", 2),
+            ("3: Alphabetical", 3),
+        ]
+        for text, val in modes:
+            tk.Radiobutton(win, text=text, variable=var, value=val, bg="#161b22", fg="#c9d1d9", selectcolor="#21262d", font=("Segoe UI", 11)).pack(anchor="w", padx=24)
+        btn_row = tk.Frame(win, bg="#161b22")
+        btn_row.pack(pady=16)
+        result = [None]
+        def ok():
+            result[0] = var.get()
+            win.destroy()
+        def cancel():
+            result[0] = None
+            win.destroy()
+        tk.Button(btn_row, text="OK", command=ok, bg="#238636", fg="white", font=("Segoe UI", 10, "bold"), width=10, relief="flat").pack(side="left", padx=8)
+        tk.Button(btn_row, text="Cancel", command=cancel, bg="#30363d", fg="#8b949e", font=("Segoe UI", 10), width=10, relief="flat").pack(side="left", padx=8)
+        win.wait_window()
+        return result[0]
+
+    def _show_folder_scan_results(self, folder, results, mode):
+        win = tk.Toplevel(self)
+        win.title(f"Folder Scanner Results — {os.path.basename(folder)}")
+        win.configure(bg="#0d1117")
+        win.geometry("900x600")
+        win.grab_set()
+        tk.Label(win, text=f"Scan Results for:\n{folder}", bg="#0d1117", fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(pady=(16, 4))
+        mode_text = {1: "Largest to Smallest", 2: "Bad/Weird Names", 3: "Alphabetical"}.get(mode, "?")
+        tk.Label(win, text=f"Mode: {mode_text} (read-only, no changes made)", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 10, "italic")).pack(pady=(0, 10))
+        frame = tk.Frame(win, bg="#0d1117")
+        frame.pack(fill="both", expand=True, padx=16, pady=8)
+        tree = ttk.Treeview(frame, columns=("type", "size", "bad"), show="headings", style="Disc.Treeview")
+        tree.heading("type", text="Type")
+        tree.heading("size", text="Size (MB)")
+        tree.heading("bad", text="Name Status")
+        tree.column("type", width=80, anchor="center")
+        tree.column("size", width=100, anchor="e")
+        tree.column("bad", width=180, anchor="center")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        for entry in results:
+            size_mb = entry["size"] / (1024*1024)
+            tree.insert("", "end", values=(
+                "DIR" if entry["is_dir"] else "FILE",
+                f"{size_mb:8.2f}",
+                "BAD/WEIRD" if entry["bad_name"] else "OK"
+            ), text=entry["name"])
+        # Add a close button
+        tk.Button(win, text="Close", command=win.destroy, bg="#21262d", fg="#8b949e", font=("Segoe UI", 10), relief="flat").pack(pady=12)
 
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
@@ -441,12 +527,19 @@ class JellyRipperGUI(tk.Tk):
             self.controller.log(f"Could not copy log: {e}")
 
     def _launch_downloaded_update(self, downloaded_path):
+<<<<<<< ours
         """Delegate to update_ui.launch_downloaded_update."""
         update_ui.launch_downloaded_update(self, downloaded_path)
 
     def check_for_updates(self):
         """Delegate to update_ui.check_for_updates."""
         update_ui.check_for_updates(self)
+=======
+        launch_downloaded_update(self, downloaded_path)
+
+    def check_for_updates(self):
+        check_for_updates(self)
+>>>>>>> theirs
 
     def _show_input_bar(self, label, initial_value=""):
         self.input_label_var.set(label)
@@ -2263,7 +2356,7 @@ class JellyRipperGUI(tk.Tk):
                  title, message],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,
+                **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
             )
         except Exception:
             pass
