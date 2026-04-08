@@ -110,37 +110,55 @@ class RipperEngine:
         """Find temp sessions with saved workflow metadata that can be resumed.
 
         Runs in a daemon thread so a slow or unreachable network share cannot
-        block the caller indefinitely.  Returns [] if the scan takes longer
-        than *timeout* seconds.
+        block the caller indefinitely. Returns [] if the scan takes longer
+        than *timeout* seconds. Now supports cancellation and logs exceptions.
         """
+        import logging
         resumable = []
+        abort_event = self.abort_event
 
         def _scan():
+            if abort_event.is_set():
+                logging.warning("Session scan aborted before start.")
+                return
             if not os.path.isdir(temp_root):
                 return
             try:
                 names = os.listdir(temp_root)
-            except Exception:
+            except Exception as e:
+                logging.warning(f"Session scan failed to listdir: {e}")
                 return
             for name in names:
+                if abort_event.is_set():
+                    logging.warning("Session scan cancelled during folder scan.")
+                    return
                 full = os.path.join(temp_root, name)
                 if not os.path.isdir(full):
                     continue
-                meta = self.read_temp_metadata(full)
+                try:
+                    meta = self.read_temp_metadata(full)
+                except Exception as e:
+                    logging.warning(f"Failed to read metadata for {full}: {e}")
+                    continue
                 if meta and meta.get("phase") not in {"complete", "organized"}:
                     mkv_count = 0
                     try:
                         for dp, dn, fns in os.walk(full):
+                            if abort_event.is_set():
+                                logging.warning(f"Session scan cancelled during os.walk in {full}.")
+                                return
                             mkv_count += sum(
                                 1 for f in fns if f.endswith(".mkv")
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning(f"Failed os.walk in {full}: {e}")
                     resumable.append((full, name, meta, mkv_count))
 
         t = threading.Thread(target=_scan, daemon=True)
         t.start()
         t.join(timeout=timeout)
+        if t.is_alive():
+            logging.warning("Session scan thread exceeded timeout and may still be running.")
         return resumable
 
     def _atomic_write_json(self, path, data):
