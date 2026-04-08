@@ -1,10 +1,8 @@
-﻿"""Controller layer implementation."""
-
-import glob as _glob
+﻿
+"""Controller layer implementation."""
 import os
 import re
 import shutil
-import subprocess as _subprocess
 import threading
 import time
 import uuid
@@ -31,8 +29,6 @@ AnalyzedFile = tuple[str, float, float]
 AnalyzedFiles = list[AnalyzedFile]
 ExpectedSizeMap = dict[int, int]
 build_fallback_title = _build_fallback_title
-glob = _glob
-subprocess = _subprocess
 
 
 def _normalize_title_file_map(raw_value: Any) -> dict[int, list[str]]:
@@ -130,18 +126,7 @@ class RipperController(LegacyControllerMixin):
     def emit(self, event: Event) -> None:
         if hasattr(self.ui, "handle_event"):
             self.ui.handle_event(event)
-        else:
-            if event.type == "progress":
-                self.ui.on_progress(event.job_id, event.data["percent"])
-            elif event.type == "log":
-                self.ui.on_log(event.job_id, event.data["message"])
-            elif event.type == "done":
-                self.ui.on_complete(event.job_id)
-            elif event.type == "error":
-                error = event.data["error"]
-                if not isinstance(error, Exception):
-                    error = Exception(str(error))
-                self.ui.on_error(event.job_id, error)
+        # else: do nothing (no fallback to direct UI calls)
 
     def worker(self) -> None:
         for qjob in self.queue.jobs:
@@ -857,8 +842,8 @@ class RipperController(LegacyControllerMixin):
             extras_folder=extras_folder,
             season=0, year=year,
             extra_counter=1,
-            on_progress=self.gui.set_progress,
-            on_log=self.log
+            on_progress=lambda percent: self.emit(Event("progress", "", {"percent": percent})),  # type: ignore[reportUnknownLambdaType]
+            on_log=lambda message: self.emit(Event("log", "", {"message": message})),  # type: ignore[reportUnknownLambdaType]
         )
         if ok:
             post_status, post_reason = self._verify_expected_sizes(
@@ -2907,8 +2892,8 @@ class RipperController(LegacyControllerMixin):
             real_names, extra_indices, is_tv, title,
             dest_folder, extras_folder, season, year,
             self.global_extra_counter,
-            on_progress=self.gui.set_progress,
-            on_log=self.log,
+            on_progress=lambda percent: self.emit(Event("progress", "", {"percent": percent})),  # type: ignore[arg-type]
+            on_log=lambda message: self.emit(Event("log", "", {"message": message})),  # type: ignore[arg-type]
             bonus_indices=bonus_indices,
             bonus_folder=bonus_folder,
         )
