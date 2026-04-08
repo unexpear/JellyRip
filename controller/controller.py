@@ -348,6 +348,7 @@ class RipperController(LegacyControllerMixin):
         """Run manual movie-disc workflow."""
         self._run_disc(is_tv=False)
 
+
     def run_smart_rip(self) -> None:
         """Auto-select and rip the highest-scoring main movie title."""
         cfg        = self.engine.cfg
