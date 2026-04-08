@@ -4,7 +4,11 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        (r'c:/Users/micha/Desktop/ffmpeg/ffmpeg-2026-04-01-git-eedf8f0165-full_build/ffmpeg-2026-04-01-git-eedf8f0165-full_build/bin/ffmpeg.exe', '.'),
+        (r'c:/Users/micha/Desktop/ffmpeg/ffmpeg-2026-04-01-git-eedf8f0165-full_build/ffmpeg-2026-04-01-git-eedf8f0165-full_build/bin/ffprobe.exe', '.'),
+        (r'c:/Users/micha/Desktop/ffmpeg/ffmpeg-2026-04-01-git-eedf8f0165-full_build/ffmpeg-2026-04-01-git-eedf8f0165-full_build/bin/ffplay.exe', '.'),
+    ],
     datas=[],
     hiddenimports=[],
     hookspath=[],
