@@ -35,8 +35,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
+
 [Files]
 Source: "..\dist\JellyRip.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\JellyRip"; Filename: "{app}\{#MyAppExeName}"
