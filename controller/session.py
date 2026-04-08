@@ -4,25 +4,54 @@ import time
 from datetime import datetime
 from utils.state_machine import SessionState
 
+
+from shared.runtime import GuiCallbacks
+
 class SessionHelpers:
-    def __init__(self, controller):
-        self.controller = controller
+    def __init__(self, callbacks: GuiCallbacks, controller=None):
+        self.callbacks = callbacks
+        self.controller = controller  # Optional, for legacy access (remove if not needed)
+
+    def _send_log(self, msg: str) -> None:
+        append_log = getattr(self.callbacks, "append_log", None)
+        if callable(append_log):
+            append_log(msg)
+            return
+        on_log = getattr(self.callbacks, "on_log", None)
+        if callable(on_log):
+            try:
+                on_log(msg)
+            except TypeError:
+                on_log("controller", msg)
+
+    def _send_status(self, msg: str) -> None:
+        on_status = getattr(self.callbacks, "on_status", None)
+        if callable(on_status):
+            on_status(msg)
+            return
+        set_status = getattr(self.callbacks, "set_status", None)
+        if callable(set_status):
+            set_status(msg)
 
     def log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full = f"[{timestamp}] {msg}"
-        self.controller.session_log.append(full)
-        cap  = int(self.controller.engine.cfg.get("opt_log_cap_lines", 300000))
-        trim = int(self.controller.engine.cfg.get("opt_log_trim_lines", 200000))
-        if len(self.controller.session_log) > cap:
-            self.controller.session_log = self.controller.session_log[-trim:]
-        self.controller.gui.append_log(full)
+        if self.controller:
+            self.controller.session_log.append(full)
+            cap  = int(self.controller.engine.cfg.get("opt_log_cap_lines", 300000))
+            trim = int(self.controller.engine.cfg.get("opt_log_trim_lines", 200000))
+            if len(self.controller.session_log) > cap:
+                self.controller.session_log = self.controller.session_log[-trim:]
+        self._send_log(full)
 
     def report(self, msg):
-        self.controller.session_report.append(msg)
+        if self.controller:
+            self.controller.session_report.append(msg)
         self.log(msg)
 
     def flush_log(self):
+        if not self.controller:
+            return
         log_file = os.path.normpath(
             self.controller.engine.cfg.get("log_file", "")
         )
@@ -74,15 +103,20 @@ class SessionHelpers:
                 f"Scanning disc on drive "
                 f"{self.controller.engine.get_disc_target()}..."
             )
-            self.controller.gui.set_status("Scanning... (time varies by disc)")
-            self.controller.gui.start_indeterminate()
+            self._send_status("Scanning... (time varies by disc)")
+            if hasattr(self.callbacks, "start_indeterminate"):
+                self.callbacks.start_indeterminate()
             try:
+                set_progress = getattr(self.callbacks, "set_progress", None)
                 result = self.controller.engine.scan_disc(
-                    self.log, self.controller.gui.set_progress
+                    self.log, set_progress
                 )
             finally:
-                self.controller.gui.stop_indeterminate()
-                self.controller.gui.set_progress(0)
+                if hasattr(self.callbacks, "stop_indeterminate"):
+                    self.callbacks.stop_indeterminate()
+                set_progress = getattr(self.callbacks, "set_progress", None)
+                if set_progress:
+                    set_progress(0)
 
             if self.controller.engine.abort_event.is_set():
                 self.log("Scan aborted.")
@@ -107,7 +141,8 @@ class SessionHelpers:
             title = meta.get("title", "Unknown")
             ts    = meta.get("timestamp", name)
             phase = meta.get("phase", meta.get("status", "unknown"))
-            if self.controller.gui.ask_yesno(
+            ask_yesno = getattr(self.callbacks, "ask_yesno", None)
+            prompt = (
                 f"Resume previous session?\n\n"
                 f"Title: {title}\n"
                 f"Started: {ts}\n"
@@ -115,7 +150,8 @@ class SessionHelpers:
                 f"Files so far: {file_count}\n\n"
                 "This reloads saved workflow metadata only. Any partial "
                 "rip files will be replaced by a fresh rip."
-            ):
+            )
+            if ask_yesno and ask_yesno(prompt):
                 self.log(f"Resuming session: {name}")
                 return {
                     "path": full_path,

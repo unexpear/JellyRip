@@ -1,12 +1,13 @@
 """Media file selection helpers."""
 
 import os
+from collections.abc import Sequence
 
 
-def select_largest_file(files):
+def select_largest_file(files: Sequence[str]) -> str | None:
     if not files:
         return None
-    largest = None
+    largest: str | None = None
     largest_size = -1
     for path in files:
         try:

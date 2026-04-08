@@ -6,8 +6,7 @@ import re
 import subprocess
 import sys as _sys
 from datetime import datetime
-
-_POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+from os import PathLike
 
 _WINDOWS_RESERVED = re.compile(
     r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)',
@@ -15,37 +14,37 @@ _WINDOWS_RESERVED = re.compile(
 )
 
 
-def clean_name(name):
-    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '', name)
-    name = name.strip().rstrip(". ")
-    if not name:
+def clean_name(name: object) -> str:
+    cleaned = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '', str(name))
+    cleaned = cleaned.strip().rstrip(". ")
+    if not cleaned:
         return "Title_Unknown"
     # Append underscore to Windows reserved device names.
-    stem, _, ext = name.partition(".")
+    stem, _, ext = cleaned.partition(".")
     if _WINDOWS_RESERVED.match(stem):
-        name = stem + "_" + ("." + ext if ext else "")
-    return name
+        cleaned = stem + "_" + ("." + ext if ext else "")
+    return cleaned
 
 
-def make_rip_folder_name():
+def make_rip_folder_name() -> str:
     return datetime.now().strftime("Disc_%Y-%m-%d_%H-%M-%S")
 
 
-def make_temp_title():
+def make_temp_title() -> str:
     return f"TEMP_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
 
-def is_network_path(path):
+def is_network_path(path: str | PathLike[str] | None) -> bool:
     """Best-effort check for UNC or mapped/network drive paths.
-    
-    On Windows: checks for UNC paths (\\\\server\share) and DRIVE_REMOTE via GetDriveType.
+
+    On Windows: checks for UNC paths (\\\\server\\share) and DRIVE_REMOTE via GetDriveType.
     On Linux/macOS: checks /proc/mounts or mount output for network filesystem types (nfs, cifs, smb).
     Note: /mnt/ on WSL contains local mounts, not network paths; this function checks actual mount types.
     """
     try:
         if not path:
             return False
-        p = os.path.normpath(path)
+        p: str = os.path.normpath(os.fspath(path))
         if p.startswith("\\\\"):
             return True
         if platform.system() == "Windows":
@@ -78,7 +77,6 @@ def is_network_path(path):
                 pass
             # Fallback: if /proc/mounts is unavailable, try 'mount' command
             try:
-                import subprocess
                 result = subprocess.run(["mount"], capture_output=True, text=True, timeout=2)
                 for line in result.stdout.split("\n"):
                     if any(fs in line.lower() for fs in ("nfs", "cifs", "smb")):
@@ -96,20 +94,30 @@ def is_network_path(path):
         return False
 
 
-
-def get_available_drives(makemkvcon_path):
+def get_available_drives(makemkvcon_path: str) -> list[tuple[int, str]]:
     """Query MakeMKV for available optical drives via disc:9999 trick."""
-    drives = []
+    drives: list[tuple[int, str]] = []
     try:
-        proc = subprocess.Popen(
-            [makemkvcon_path, "-r", "info", "disc:9999"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            **_POPEN_FLAGS
-        )
+        if _sys.platform == "win32":
+            proc = subprocess.Popen(
+                [makemkvcon_path, "-r", "info", "disc:9999"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=0x08000000,
+            )
+        else:
+            proc = subprocess.Popen(
+                [makemkvcon_path, "-r", "info", "disc:9999"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
         try:
+            if proc.stdout is None:
+                return [(0, "Default Drive (disc:0)")]
             for line in iter(proc.stdout.readline, ""):
                 line = line.strip()
                 if line.startswith("DRV:"):

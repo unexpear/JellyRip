@@ -1,4 +1,4 @@
-"""Engine layer implementation."""
+﻿"""Engine layer implementation."""
 
 import glob
 import json
@@ -10,9 +10,10 @@ import sys as _sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Generator, List
 
-# Suppress black CMD flash on Windows for every subprocess we spawn.
 _POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 from shared.runtime import RIP_ATTEMPT_FLAGS
@@ -28,10 +29,131 @@ from utils.parsing import (
 from utils.scoring import score_title
 
 
+@dataclass(frozen=True)
+class Job:
+    source: str
+    output: str
+    profile: str = "default"
+
+
+@dataclass
+class Result:
+    success: bool
+    outputs: List[str]
+    errors: List[Any]
+
+
+@dataclass
+class EngineEvent:
+    type: str
+    data: Any
+
+
+class Progress:
+    def __init__(self, percent: float = 0.0, eta: str = "", speed: str = ""):
+        self.percent = percent
+        self.eta = eta
+        self.speed = speed
+
+
 class RipperEngine:
+    def run_job_streaming(self, job: Job) -> Generator[EngineEvent, None, None]:
+        result = self.run_job(job)
+        for line in result.outputs:
+            yield EngineEvent("log", line)
+        yield EngineEvent("done", result)
+
+    def run_job(self, job: Job) -> Result:
+        outputs: List[str] = []
+
+        def on_log(msg: str) -> None:
+            outputs.append(str(msg))
+
+        source = str(job.source).strip()
+        if source.lower() == "all":
+            success = self.rip_all_titles(
+                job.output,
+                on_progress=lambda _p: None,
+                on_log=on_log,
+            )
+            errors: List[Any] = []
+        else:
+            title_ids = [
+                safe_int(part)
+                for part in source.split(",")
+                if str(part).strip()
+            ]
+            if not title_ids:
+                outputs.append("No title IDs supplied for selected-title job.")
+                return Result(success=False, outputs=outputs, errors=["no-title-ids"] )
+            success, failed_titles = self.rip_selected_titles(
+                job.output,
+                title_ids,
+                on_progress=lambda _p: None,
+                on_log=on_log,
+            )
+            errors = list(failed_titles)
+        return Result(success=bool(success), outputs=outputs, errors=errors)
+
+    def get_disc_target(self) -> str:
+        return f"disc:{safe_int(self.cfg.get('opt_drive_index', 0))}"
+
+    def reset_abort(self) -> None:
+        with self._abort_lock:
+            self.abort_event.clear()
+
+    def _get_makemkvcon(self) -> str:
+        cached = getattr(self, "_resolved_makemkvcon", None)
+        current = os.path.normpath(self.cfg.get("makemkvcon_path", ""))
+        if cached and getattr(self, "_resolved_makemkvcon_src", None) == current:
+            return cached
+        resolved = resolve_makemkvcon(current)
+        self._resolved_makemkvcon = resolved
+        self._resolved_makemkvcon_src = current
+        return resolved
+
+    def cleanup_partial_files(self, root_path, on_log):
+        """Remove stale `.partial` files without touching completed MKVs."""
+        if not self.cfg.get("opt_clean_partials_startup", True):
+            return
+        if not os.path.isdir(root_path):
+            return
+        for path in glob.glob(os.path.join(root_path, "**", "*.partial"), recursive=True):
+            try:
+                os.remove(path)
+                on_log(f"Cleaned up leftover partial file: {os.path.basename(path)}")
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                on_log(f"Warning: could not remove {os.path.basename(path)}: {e}")
+
+    def unique_path(self, path):
+        """Return a collision-free destination path by suffixing ' - N'."""
+        if not os.path.exists(path):
+            return path
+        base, ext = os.path.splitext(path)
+        counter = 2
+        while os.path.exists(new_path := f"{base} - {counter}{ext}"):
+            counter += 1
+        return new_path
+
+    def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
+        """Rip a short disposable preview clip for a single title (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_preview_title(self, rip_path, title_id, preview_seconds, on_log)
+
+    def rip_all_titles(self, rip_path, on_progress, on_log):
+        """Rip all disc titles with retry flags and stall-aware process handling (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_all_titles(self, rip_path, on_progress, on_log)
+
+    def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
+        """Rip selected title IDs with per-title retries and aggregated progress (delegated)."""
+        from engine import rip_ops
+        return rip_ops.rip_selected_titles(self, rip_path, title_ids, on_progress, on_log)
     def __init__(self, cfg):
         """
-        LAYER 1 — Engine
+        LAYER 1 â€” Engine
 
         Pure logic layer. No UI calls, no tkinter, no user interaction.
 
@@ -86,7 +208,7 @@ class RipperEngine:
             if self.abort_event.is_set():
                 return
             self.abort_event.set()
-            proc = self.current_process  # read inside lock — avoids race with rip thread
+            proc = self.current_process  # read inside lock â€” avoids race with rip thread
 
         if proc is not None:
             try:
@@ -423,7 +545,7 @@ class RipperEngine:
             del t["streams"]
             result.append(t)
 
-        # Sort by score descending — best candidate first.
+        # Sort by score descending â€” best candidate first.
         # Keep scores out of title dicts to avoid mutating shared objects.
         scored = [(t, score_title(t, result)) for t in result]
         scored.sort(key=lambda pair: pair[1], reverse=True)
@@ -471,7 +593,7 @@ class RipperEngine:
                 diff = scored[0][1] - scored[1][1]
                 if diff < 0.05:
                     on_log(
-                        "WARNING: Top titles are very close — "
+                        "WARNING: Top titles are very close â€” "
                         "possible ambiguity."
                     )
 
@@ -637,7 +759,7 @@ class RipperEngine:
             self._last_scan_timestamp = time.time()
             self._last_scan_target = disc_target
             return total_bytes
-        # Disc is present (TINFO lines seen) but sizes are all zero — return 0
+        # Disc is present (TINFO lines seen) but sizes are all zero â€” return 0
         # so callers that distinguish None ("no disc") from 0 ("disc, no size")
         # still get a truthy-enough signal.  Returning None here would cause
         # _disc_present() to permanently report False for such discs.
@@ -653,7 +775,7 @@ class RipperEngine:
             if not os.path.exists(path):
                 on_log(f"Warning: disk-space path does not exist: {path}")
                 return "ok", 0, required_bytes
-            # Run in a daemon thread — shutil.disk_usage() can hang indefinitely
+            # Run in a daemon thread â€” shutil.disk_usage() can hang indefinitely
             # on an offline or slow network share.
             _free = [None]
             _err  = [None]
@@ -675,7 +797,7 @@ class RipperEngine:
 
             free = _free[0]
             on_log(
-                f"Disk space — "
+                f"Disk space â€” "
                 f"Required: {required_bytes / (1024**3):.1f} GB  "
                 f"Free: {free / (1024**3):.1f} GB"
             )
@@ -854,7 +976,7 @@ class RipperEngine:
                     if (not stall_warned and
                             time.time() - last_output > stall_timeout):
                         on_log(
-                            f"No output for {stall_timeout}s — "
+                            f"No output for {stall_timeout}s â€” "
                             "process may be reading difficult sectors; waiting."
                         )
                         stall_warned = True
@@ -950,12 +1072,12 @@ class RipperEngine:
                         if msg:
                             on_log(msg)
                             # Log all messages. Don't use them for failure
-                            # detection — trust the return code only.
+                            # detection â€” trust the return code only.
         except queue_module.Empty:
             pass
 
         # Warn if MakeMKV exited successfully but we got stall warnings
-        # during the rip — this can indicate disc read/write problems that
+        # during the rip â€” this can indicate disc read/write problems that
         # might prevent file creation even though the process succeeded.
         if rc == 0 and stall_warned:
             on_log(
@@ -1054,10 +1176,6 @@ class RipperEngine:
         return timed_out or proc.returncode == 0
 
 
-    def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
-        """Rip a short disposable preview clip for a single title (delegated)."""
-        from engine import rip_ops
-        return rip_ops.rip_preview_title(self, rip_path, title_id, preview_seconds, on_log)
 
     def _get_rip_attempts(self):
         """Resolve retry strategy flags based on config toggles."""
@@ -1069,16 +1187,8 @@ class RipperEngine:
         ]
 
 
-    def rip_all_titles(self, rip_path, on_progress, on_log):
-        """Rip all disc titles with retry flags and stall-aware process handling (delegated)."""
-        from engine import rip_ops
-        return rip_ops.rip_all_titles(self, rip_path, on_progress, on_log)
 
 
-    def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
-        """Rip selected title IDs with per-title retries and aggregated progress (delegated)."""
-        from engine import rip_ops
-        return rip_ops.rip_selected_titles(self, rip_path, title_ids, on_progress, on_log)
 
     def analyze_files(self, mkv_files, on_log):
         """
@@ -1297,7 +1407,7 @@ class RipperEngine:
 
         if not os.path.exists(io_source):
             on_log(f"Missing file: {source}")
-            self.last_move_error = "Move failed — source file is missing."
+            self.last_move_error = "Move failed â€” source file is missing."
             return False
 
         # Verify source has stopped growing before accepting move, respecting config timeout.
@@ -1314,7 +1424,7 @@ class RipperEngine:
                         f"Stabilization failed."
                     )
                     self.last_move_error = (
-                        "Move failed — source file incomplete. "
+                        "Move failed â€” source file incomplete. "
                         "Stabilization did not complete successfully."
                     )
                     return False
@@ -1352,7 +1462,7 @@ class RipperEngine:
                 if not os.path.exists(io_final_path):
                     on_log("ERROR: destination missing after move.")
                     self.last_move_error = (
-                        "Move failed — destination file missing after move."
+                        "Move failed â€” destination file missing after move."
                     )
                     return False
                 size_ok, dst_size = wait_for_size_match(
@@ -1365,13 +1475,13 @@ class RipperEngine:
                         f"after {verify_retries} verification check(s)."
                     )
                     self.last_move_error = (
-                        "Move failed — network write mismatch. "
+                        "Move failed â€” network write mismatch. "
                         "Destination size did not match source."
                     )
                     return False
                 if not self._quick_ffprobe_ok(io_final_path, on_log):
                     self.last_move_error = (
-                        "Move failed — destination file failed integrity "
+                        "Move failed â€” destination file failed integrity "
                         "probe (ffprobe)."
                     )
                     return False
@@ -1391,8 +1501,8 @@ class RipperEngine:
                         os.remove(io_temp_dest)
                     except Exception:
                         pass
-                on_log("Move aborted — partial file removed.")
-                self.last_move_error = "Move failed — operation aborted."
+                on_log("Move aborted â€” partial file removed.")
+                self.last_move_error = "Move failed â€” operation aborted."
                 return False
             try:
                 shutil.copystat(io_source, io_temp_dest)
@@ -1406,7 +1516,7 @@ class RipperEngine:
                 )
                 final_path = new_final
                 io_final_path = self._io_path(final_path)
-            src_size = os.path.getsize(io_source)  # read before replace — source may vanish after
+            src_size = os.path.getsize(io_source)  # read before replace â€” source may vanish after
             try:
                 os.replace(io_temp_dest, io_final_path)
             except OSError as e:
@@ -1421,7 +1531,7 @@ class RipperEngine:
                     on_log(
                         f"ERROR: fallback move failed for {os.path.basename(source)}: {move_err}"
                     )
-                    self.last_move_error = f"Move failed — fallback move error: {move_err}"
+                    self.last_move_error = f"Move failed â€” fallback move error: {move_err}"
                     return False
             if os.path.exists(io_final_path):
                 size_ok, dst_size = wait_for_size_match(
@@ -1435,13 +1545,13 @@ class RipperEngine:
                         "Source file retained."
                     )
                     self.last_move_error = (
-                        "Move failed — network write mismatch. "
+                        "Move failed â€” network write mismatch. "
                         "Destination size did not match source."
                     )
                     return False
                 if not self._quick_ffprobe_ok(io_final_path, on_log):
                     self.last_move_error = (
-                        "Move failed — destination file failed integrity "
+                        "Move failed â€” destination file failed integrity "
                         "probe (ffprobe)."
                     )
                     return False
@@ -1455,7 +1565,7 @@ class RipperEngine:
             else:
                 on_log("ERROR: destination missing after move.")
                 self.last_move_error = (
-                    "Move failed — destination file missing after move."
+                    "Move failed â€” destination file missing after move."
                 )
                 return False
             return True
@@ -1466,7 +1576,7 @@ class RipperEngine:
                 except Exception:
                     pass
             on_log(f"ERROR moving file: {e}")
-            self.last_move_error = f"Move failed — {e}"
+            self.last_move_error = f"Move failed â€” {e}"
             return False
 
     def move_files(self, titles_list, main_indices, episode_numbers,
@@ -1639,7 +1749,7 @@ class RipperEngine:
         except Exception as e:
             on_log(f"ERROR during move: {e}")
             on_log(
-                "Check temp folder — "
+                "Check temp folder â€” "
                 "some files may not have moved."
             )
             return False, extra_counter, moved_paths
@@ -1648,7 +1758,7 @@ class RipperEngine:
                           session_log, on_log):
         """Append session logs to disk with rollover for oversized log files."""
         if not log_file:
-            on_log("No log file configured — session log not saved.")
+            on_log("No log file configured â€” session log not saved.")
             return
         try:
             # Ensure log file has .txt extension

@@ -1,5 +1,17 @@
 """Shared runtime primitives used by split modules and the compatibility shim."""
 
+from collections.abc import Callable
+from typing import Protocol, TypeAlias
+
+
+class GuiCallbacks(Protocol):
+    def append_log(self, msg: str) -> None: ...
+    def set_status(self, msg: str) -> None: ...
+    def set_progress(self, value: int) -> None: ...
+    def start_indeterminate(self) -> None: ...
+    def stop_indeterminate(self) -> None: ...
+    def ask_yesno(self, prompt: str) -> bool: ...
+
 import glob
 import json
 import os
@@ -16,8 +28,11 @@ from datetime import datetime
 
 __version__ = "1.0.12"
 
+ConfigScalar: TypeAlias = str | int | bool | float
+LogFn: TypeAlias = Callable[[str], None]
 
-def get_config_dir():
+
+def get_config_dir() -> str:
     system = platform.system()
     if system == "Windows":
         base = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -49,7 +64,7 @@ _DEFAULT_MOVIES = (
     else os.path.expanduser("~/Videos/Movies")
 )
 
-DEFAULTS = {
+DEFAULTS: dict[str, ConfigScalar] = {
     "makemkvcon_path": r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
     "ffprobe_path": "",
     "temp_folder": _DEFAULT_TEMP,
@@ -109,7 +124,7 @@ DEFAULTS = {
     "opt_update_signer_thumbprint": "",
 }
 
-RIP_ATTEMPT_FLAGS = [
+RIP_ATTEMPT_FLAGS: list[list[str]] = [
     ["--cache=1024"],
     ["--noscan", "--cache=1024"],
     ["--noscan", "--directio=true", "--cache=512"],
@@ -117,33 +132,33 @@ RIP_ATTEMPT_FLAGS = [
 
 
 _SAFE_INT_DEBUG_ENABLED = False
-_SAFE_INT_DEBUG_LOG_FN = None
-_SAFE_INT_WARNED_VALUES = set()
+_SAFE_INT_DEBUG_LOG_FN: LogFn | None = None
+_SAFE_INT_WARNED_VALUES: set[str] = set()
 _SAFE_INT_WARNED_LIMIT_REACHED = False
 _SAFE_INT_WARN_MAX_UNIQUE = 50
 
 _DURATION_DEBUG_ENABLED = False
-_DURATION_DEBUG_LOG_FN = None
-_DURATION_WARNED_VALUES = set()
+_DURATION_DEBUG_LOG_FN: LogFn | None = None
+_DURATION_WARNED_VALUES: set[str] = set()
 _DURATION_WARNED_LIMIT_REACHED = False
 _DURATION_WARN_MAX_UNIQUE = 50
 
 
-def configure_safe_int_debug(enabled=False, log_fn=None):
+def configure_safe_int_debug(enabled: bool = False, log_fn: LogFn | None = None) -> None:
     global _SAFE_INT_DEBUG_ENABLED
     global _SAFE_INT_DEBUG_LOG_FN
     _SAFE_INT_DEBUG_ENABLED = bool(enabled)
     _SAFE_INT_DEBUG_LOG_FN = log_fn
 
 
-def configure_duration_debug(enabled=False, log_fn=None):
+def configure_duration_debug(enabled: bool = False, log_fn: LogFn | None = None) -> None:
     global _DURATION_DEBUG_ENABLED
     global _DURATION_DEBUG_LOG_FN
     _DURATION_DEBUG_ENABLED = bool(enabled)
     _DURATION_DEBUG_LOG_FN = log_fn
 
 
-def _safe_int_debug_warn(val):
+def _safe_int_debug_warn(val: object) -> None:
     global _SAFE_INT_WARNED_LIMIT_REACHED
 
     if not _SAFE_INT_DEBUG_ENABLED:
@@ -178,7 +193,7 @@ def _safe_int_debug_warn(val):
         print(msg)
 
 
-def _duration_debug_warn(val):
+def _duration_debug_warn(val: object) -> None:
     global _DURATION_WARNED_LIMIT_REACHED
 
     if not _DURATION_DEBUG_ENABLED:
@@ -211,6 +226,14 @@ def _duration_debug_warn(val):
         _DURATION_DEBUG_LOG_FN(msg)
     else:
         print(msg)
+
+
+def safe_int_debug_warn(val: object) -> None:
+    _safe_int_debug_warn(val)
+
+
+def duration_debug_warn(val: object) -> None:
+    _duration_debug_warn(val)
 
 
 __all__ = [

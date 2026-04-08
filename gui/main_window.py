@@ -1,5 +1,6 @@
 """GUI layer implementation."""
 
+
 import glob
 import json
 import os
@@ -16,6 +17,8 @@ from datetime import datetime
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+from shared.event import Event
+from ui.adapters import UIAdapter
 
 
 if sys.platform == "win32":
@@ -124,16 +127,11 @@ from utils.helpers import (
     make_rip_folder_name,
 )
 from utils.scoring import choose_best_title, format_audio_summary
-<<<<<<< ours
 
-from gui import update_ui
-
-=======
 from gui.update_ui import check_for_updates, launch_downloaded_update
->>>>>>> theirs
 
 
-class JellyRipperGUI(tk.Tk):
+class JellyRipperGUI(tk.Tk, UIAdapter):
     def auto_detect_existing_folder_mode(self, folder_path):
         """
         Auto-detect mode for an existing folder:
@@ -148,6 +146,41 @@ class JellyRipperGUI(tk.Tk):
         if movies_folder and folder_path_l.startswith(movies_folder):
             return 'movie_main'   # Movie: main
         return None
+
+
+    # --- UIAdapter interface ---
+    def handle_event(self, event: Event) -> None:
+        if event.type == "progress":
+            percent = event.data.get("percent")
+            if isinstance(percent, (int, float)):
+                self.on_progress(event.job_id, float(percent))
+            return
+
+        if event.type == "log":
+            self.on_log(event.job_id, str(event.data.get("message", "")))
+            return
+
+        if event.type == "done":
+            self.on_complete(event.job_id)
+            return
+
+        if event.type == "error":
+            raw_error = event.data.get("error", "Unknown error")
+            error = raw_error if isinstance(raw_error, Exception) else Exception(str(raw_error))
+            self.on_error(event.job_id, error)
+
+    def on_progress(self, _job_id: str, value: float) -> None:
+        self.set_progress(value)
+
+    def on_log(self, _job_id: str, message: str) -> None:
+        self.append_log(message)
+
+    def on_error(self, job_id: str, error: Exception) -> None:
+        title = f"Job {job_id}" if job_id else "Rip Error"
+        self.show_error(title, str(error))
+
+    def on_complete(self, _job_id: str) -> None:
+        self.set_progress(100)
 
     def __init__(self, cfg):
         """
@@ -199,9 +232,10 @@ class JellyRipperGUI(tk.Tk):
         self.build_interface()
         self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
-        self.after(100, self.process_queue)
         self._taskbar_progress = None
         self.after(500, self._init_taskbar)
+        # Schedule process_queue last to guarantee all widgets are initialized
+        self.after(100, self.process_queue)
 
     def _append_log_text_main(self, msg, tag=None):
         """Append one line to the log widget from the Tk main thread only."""
@@ -321,12 +355,66 @@ class JellyRipperGUI(tk.Tk):
         if mode is None:
             self.show_info("Folder Scanner", "Scan cancelled.")
             return
-        try:
-            results = scan_folder(folder, mode)
-        except Exception as e:
-            self.show_error("Folder Scanner", f"Error scanning folder:\n{e}")
-            return
-        self._show_folder_scan_results(folder, results, mode)
+
+        # Determine log location (same dir as main log, but separate file)
+        main_log = self.cfg.get("log_file", "")
+        log_dir = os.path.dirname(main_log) if main_log else os.path.expanduser("~")
+        scan_log_path = os.path.join(log_dir, "folder_scan_log.txt")
+
+        # Progress popup
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Scanning Folder...")
+        progress_win.geometry("400x120")
+        progress_win.configure(bg="#161b22")
+        progress_win.grab_set()
+        tk.Label(progress_win, text=f"Scanning: {folder}", bg="#161b22", fg="#58a6ff", font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
+        progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(progress_win, variable=progress_var, maximum=100, mode="determinate")
+        progress_bar.pack(fill="x", padx=30, pady=(0, 12))
+        status_var = tk.StringVar(value="Starting scan...")
+        tk.Label(progress_win, textvariable=status_var, bg="#161b22", fg="#8b949e", font=("Segoe UI", 10, "italic")).pack()
+
+        results = []
+        def do_scan():
+            nonlocal results
+            import traceback
+            try:
+                def progress_cb(current, total):
+                    try:
+                        pct = (current / total) * 100 if total else 0
+                        progress_var.set(pct)
+                        status_var.set(f"Scanning {current} of {total} items...")
+                        progress_win.update_idletasks()
+                    except Exception as cb_exc:
+                        print("[ERROR] Exception in progress_cb:", cb_exc)
+                        traceback.print_exc()
+                results = scan_folder(folder, mode, progress_cb=progress_cb, log_path=scan_log_path)
+            except Exception as e:
+                print("[ERROR] Exception in folder scan thread:", e)
+                traceback.print_exc()
+                results.append(e)
+            self.after(0, on_done)
+
+        def on_done():
+            try:
+                progress_win.destroy()
+            except Exception as destroy_exc:
+                print("[ERROR] Exception destroying progress_win:", destroy_exc)
+            if results and isinstance(results[0], Exception):
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[ERROR] Folder Scanner error: {results[0]}\nTraceback:\n{tb}")
+                self.show_error("Folder Scanner", f"Error scanning folder:\n{results[0]}\n\nSee terminal for traceback.")
+                return
+            try:
+                self._show_folder_scan_results(folder, results, mode)
+            except Exception as show_exc:
+                print("[ERROR] Exception showing scan results:", show_exc)
+                import traceback
+                traceback.print_exc()
+                self.show_error("Folder Scanner", f"Error displaying scan results:\n{show_exc}\n\nSee terminal for traceback.")
+
+        threading.Thread(target=do_scan, daemon=True).start()
 
     def _ask_folder_scan_mode(self):
         # Simple modal dialog for mode selection
@@ -359,15 +447,21 @@ class JellyRipperGUI(tk.Tk):
         return result[0]
 
     def _show_folder_scan_results(self, folder, results, mode):
+        BG = "#0d1117"
+        import logging
+        logging.warning(f"[DEBUG] _show_folder_scan_results called. Results: {len(results)} entries. Mode: {mode}")
+        print(f"[DEBUG] _show_folder_scan_results called. Results: {len(results)} entries. Mode: {mode}")
         win = tk.Toplevel(self)
         win.title(f"Folder Scanner Results — {os.path.basename(folder)}")
-        win.configure(bg="#0d1117")
+        win.configure(bg=BG)
         win.geometry("900x600")
         win.grab_set()
-        tk.Label(win, text=f"Scan Results for:\n{folder}", bg="#0d1117", fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(pady=(16, 4))
+        win.lift()
+        win.focus_force()
+        tk.Label(win, text=f"Scan Results for:\n{folder}", bg=BG, fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(pady=(16, 4))
         mode_text = {1: "Largest to Smallest", 2: "Bad/Weird Names", 3: "Alphabetical"}.get(mode, "?")
-        tk.Label(win, text=f"Mode: {mode_text} (read-only, no changes made)", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 10, "italic")).pack(pady=(0, 10))
-        frame = tk.Frame(win, bg="#0d1117")
+        tk.Label(win, text=f"Mode: {mode_text} (read-only, no changes made)", bg=BG, fg="#8b949e", font=("Segoe UI", 10, "italic")).pack(pady=(0, 10))
+        frame = tk.Frame(win, bg=BG)
         frame.pack(fill="both", expand=True, padx=16, pady=8)
         tree = ttk.Treeview(frame, columns=("type", "size", "bad"), show="headings", style="Disc.Treeview")
         tree.heading("type", text="Type")
@@ -380,6 +474,9 @@ class JellyRipperGUI(tk.Tk):
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        if not results:
+            logging.warning("[DEBUG] No results to display in scan results window.")
+            print("[DEBUG] No results to display in scan results window.")
         for entry in results:
             size_mb = entry["size"] / (1024*1024)
             tree.insert("", "end", values=(
@@ -527,19 +624,12 @@ class JellyRipperGUI(tk.Tk):
             self.controller.log(f"Could not copy log: {e}")
 
     def _launch_downloaded_update(self, downloaded_path):
-<<<<<<< ours
         """Delegate to update_ui.launch_downloaded_update."""
-        update_ui.launch_downloaded_update(self, downloaded_path)
-
-    def check_for_updates(self):
-        """Delegate to update_ui.check_for_updates."""
-        update_ui.check_for_updates(self)
-=======
         launch_downloaded_update(self, downloaded_path)
 
     def check_for_updates(self):
+        """Delegate to update_ui.check_for_updates."""
         check_for_updates(self)
->>>>>>> theirs
 
     def _show_input_bar(self, label, initial_value=""):
         self.input_label_var.set(label)
@@ -1687,17 +1777,9 @@ class JellyRipperGUI(tk.Tk):
 
 
     def open_settings(self):
+        cfg = self.cfg
         # Expert Mode toggle (persistent in config)
         expert_mode_var = tk.BooleanVar(value=cfg.get('opt_expert_mode', False))
-        expert_toggle_row = tk.Frame(win, bg="#0d1117")
-        expert_toggle_row.pack(fill="x", padx=16, pady=(8, 0))
-        tk.Checkbutton(
-            expert_toggle_row, variable=expert_mode_var,
-            bg="#0d1117", activebackground="#0d1117",
-            selectcolor="#238636",
-            fg="#c9d1d9", font=("Segoe UI", 11, "bold"),
-            text="Enable Expert Mode (show all advanced profile options)", anchor="w"
-        ).pack(side="left")
         if self.rip_thread and self.rip_thread.is_alive():
             messagebox.showwarning(
                 "Rip in Progress",
@@ -1724,6 +1806,15 @@ class JellyRipperGUI(tk.Tk):
             win = tk.Toplevel(self)
             self._settings_window = win
             win.title("JellyRip Settings")
+            expert_toggle_row = tk.Frame(win, bg="#0d1117")
+            expert_toggle_row.pack(fill="x", padx=16, pady=(8, 0))
+            tk.Checkbutton(
+                expert_toggle_row, variable=expert_mode_var,
+                bg="#0d1117", activebackground="#0d1117",
+                selectcolor="#238636",
+                fg="#c9d1d9", font=("Segoe UI", 11, "bold"),
+                text="Enable Expert Mode (show all advanced profile options)", anchor="w"
+            ).pack(side="left")
             win.configure(bg="#0d1117")
             try:
                 win.grab_set()
@@ -2378,6 +2469,10 @@ class JellyRipperGUI(tk.Tk):
         self.message_queue.put(msg)
 
     def process_queue(self):
+        # Defensive: skip if log_text is not yet initialized
+        if not hasattr(self, "log_text"):
+            self.after(100, self.process_queue)
+            return
         # Batch process log messages for better performance.
         # Collect up to 100 messages, then insert all at once
         # instead of state on/off 100 times.
@@ -2439,7 +2534,16 @@ class JellyRipperGUI(tk.Tk):
             "Exit", "Close Jellyfin Raw Ripper?", parent=self
         ):
             self.engine.abort()
+            # Attempt to join any running rip thread
+            if self.rip_thread and self.rip_thread.is_alive():
+                try:
+                    self.rip_thread.join(timeout=3)
+                except Exception:
+                    pass
             self.destroy()
+            # As a last resort, force kill the process (kills all threads/subprocesses)
+            import os
+            os._exit(0)
 
     def _pick_movie_mode(self):
         choice = self._run_on_main(
@@ -2625,8 +2729,10 @@ class JellyRipperGUI(tk.Tk):
 
 
 if __name__ == "__main__":
-    cfg = load_config()
-    app = JellyRipperGUI(cfg)
+    # Example: direct AppConfig construction for testing or alternate entry
+    # config = AppConfig(source="/path/to/makemkvcon", output="/path/to/ffprobe", quality="high")
+    config = load_config()
+    app = JellyRipperGUI(config)
     app.mainloop()
 
 __all__ = ["JellyRipperGUI"]
