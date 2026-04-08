@@ -4,28 +4,23 @@ import os
 import sys
 from pathlib import Path
 
-from config import (
-    auto_locate_tools,
-    load_config,
-    save_config,
-    validate_ffprobe,
-    validate_makemkvcon,
-)
+from config import load_config
 
-def _bootstrap_tk_paths():
+
+def _bootstrap_tk_paths() -> None:
     """Set Tcl/Tk library paths when Python's auto-discovery is broken."""
     if sys.platform != "win32":
         return
     if os.environ.get("TCL_LIBRARY") and os.environ.get("TK_LIBRARY"):
         return
 
-    candidate_roots = []
+    candidate_roots: list[Path] = []
     if getattr(sys, "frozen", False):
-        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        meipass = Path(str(getattr(sys, "_MEIPASS", "")))
         candidate_roots.append(meipass)
         candidate_roots.append(meipass / "tcl")
 
-    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix))
+    base_prefix = Path(str(getattr(sys, "base_prefix", sys.prefix)))
     candidate_roots.append(base_prefix / "tcl")
 
     for root in candidate_roots:
@@ -53,38 +48,10 @@ _bootstrap_tk_paths()
 from gui.main_window import JellyRipperGUI
 
 
-def _autofill_tool_paths(cfg):
-    """Auto-populate missing/invalid tool paths without overwriting working ones."""
-    found_mkv, found_ffp = auto_locate_tools()
-    updates = {
-        "makemkvcon_path": (found_mkv, validate_makemkvcon),
-        "ffprobe_path": (found_ffp, validate_ffprobe),
-    }
-
-    changed = False
-    for key, (found, validator) in updates.items():
-        current = str(cfg.get(key, "") or "").strip()
-        current_ok = False
-        if current:
-            current_ok, _ = validator(current)
-        if current_ok:
-            continue
-        if not found:
-            continue
-        candidate = str(found).strip()
-        candidate_ok, _ = validator(candidate)
-        if candidate_ok and candidate != current:
-            cfg[key] = candidate
-            changed = True
-
-    if changed:
-        save_config(cfg)
-
-
-def main():
+def main() -> None:
+    print("[DEBUG] main() entered")
     if sys.platform == "win32":
         import ctypes
-
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "JellyRip.App.1"
@@ -93,14 +60,21 @@ def main():
             import logging
             logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
 
-    cfg = load_config()
+    config = load_config()
+    print("[DEBUG] config loaded")
+    # No autofill or mutation allowed
+    print("[DEBUG] launching JellyRipperGUI")
+    app = JellyRipperGUI(config)
+    print("[DEBUG] mainloop starting")
     try:
-        _autofill_tool_paths(cfg)
+        app.mainloop()
+        print("[DEBUG] mainloop exited normally")
     except Exception as e:
-        import logging
-        logging.warning("_autofill_tool_paths failed: %s", e)
-    app = JellyRipperGUI(cfg)
-    app.mainloop()
+        import traceback
+        print(f"[ERROR] Exception in mainloop: {e}")
+        traceback.print_exc()
+    except KeyboardInterrupt:
+        print("[DEBUG] mainloop interrupted by KeyboardInterrupt")
 
 
 if __name__ == "__main__":

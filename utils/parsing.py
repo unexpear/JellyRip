@@ -3,11 +3,9 @@
 import os
 import re
 import shlex
+from collections.abc import Callable
 
-from shared.runtime import (  # pyright: ignore[reportMissingImports]
-    _duration_debug_warn,
-    _safe_int_debug_warn,
-)
+from shared.runtime import duration_debug_warn, safe_int_debug_warn
 
 # Whitelist of MakeMKV flags that are allowed in user-configurable args.
 # This prevents command injection via opt_makemkv_global_args, opt_makemkv_info_args, opt_makemkv_rip_args.
@@ -16,7 +14,10 @@ _ALLOWED_MAKEMKV_FLAGS = {
 }
 
 
-def parse_episode_names(name_input):
+LogFn = Callable[[str], None]
+
+
+def parse_episode_names(name_input: str | None) -> list[str]:
     if not name_input:
         return []
 
@@ -28,14 +29,14 @@ def parse_episode_names(name_input):
     return [x.strip() for x in name_input.split(",")]
 
 
-def _normalize_title_part(s):
+def _normalize_title_part(s: str) -> str:
     """Collapse internal whitespace and strip surrounding whitespace/quotes."""
     s = s.strip().strip('"')
     s = re.sub(r'\s+', ' ', s)
     return s
 
 
-def parse_ordered_titles(name_input):
+def parse_ordered_titles(name_input: str | None) -> list[str]:
     """Parse ordered title lists for multi-disc dump naming.
 
     Accepts comma-separated values by default, and also accepts a
@@ -76,7 +77,7 @@ def parse_ordered_titles(name_input):
     return [p for p in parts if p]
 
 
-def parse_duration_to_seconds(s):
+def parse_duration_to_seconds(s: object) -> int:
     """
     Convert MakeMKV duration string to integer seconds.
     Handles H:MM:SS and M:SS formats. Returns 0 on any parse failure.
@@ -88,7 +89,7 @@ def parse_duration_to_seconds(s):
     try:
         s = str(s).strip()
         if not s or ":" not in s:
-            _duration_debug_warn(s)
+            duration_debug_warn(s)
             return 0
         # Accept HH:MM:SS, H:MM:SS, M:SS, and fractional seconds like
         # 00:45:12.000 or 1:23:45.678 from some MakeMKV builds.
@@ -96,22 +97,22 @@ def parse_duration_to_seconds(s):
         try:
             parts = [float(p) for p in raw_parts]
         except ValueError:
-            _duration_debug_warn(s)
+            duration_debug_warn(s)
             return 0
         if len(parts) == 3:
             h, m, sec = parts
         elif len(parts) == 2:
             h, m, sec = 0.0, parts[0], parts[1]
         else:
-            _duration_debug_warn(s)
+            duration_debug_warn(s)
             return 0
         return int(h * 3600 + m * 60 + sec)
     except Exception:
-        _duration_debug_warn(s)
+        duration_debug_warn(s)
         return 0
 
 
-def safe_int(val):
+def safe_int(val: object) -> int:
     """
     Safely convert any value to integer.
     MakeMKV sometimes returns malformed data (e.g., chapter field
@@ -125,7 +126,7 @@ def safe_int(val):
             return 0
         if "/" in s:
             # Ambiguous formats like "1/12" are not safe integer fields.
-            _safe_int_debug_warn(val)
+            safe_int_debug_warn(val)
             return 0
         # Try direct int conversion first
         try:
@@ -136,14 +137,14 @@ def safe_int(val):
             match = re.search(r'-?\d+(?:\.\d+)?', s)
             if match:
                 return int(float(match.group()))
-            _safe_int_debug_warn(val)
+            safe_int_debug_warn(val)
             return 0
     except Exception:
-        _safe_int_debug_warn(val)
+        safe_int_debug_warn(val)
         return 0
 
 
-def parse_size_to_bytes(val):
+def parse_size_to_bytes(val: object) -> int:
     """Parse MakeMKV size values into integer bytes."""
     try:
         s = str(val).strip()
@@ -216,7 +217,7 @@ def parse_size_to_bytes(val):
         return 0
 
 
-def parse_cli_args(raw, on_log=None, label="args"):
+def parse_cli_args(raw: str | None, on_log: LogFn | None = None, label: str = "args") -> list[str]:
     """Parse a CLI argument string into argv tokens, restricted to whitelisted flags.
 
     To prevent command injection attacks, only MakeMKV flags in the whitelist are allowed.
@@ -235,9 +236,9 @@ def parse_cli_args(raw, on_log=None, label="args"):
             )
         tokens = s.split()
 
-    filtered = []
-    dropped = []
-    profile_tokens = []
+    filtered: list[str] = []
+    dropped: list[str] = []
+    profile_tokens: list[str] = []
     for tok in tokens:
         low = tok.lower()
         # Remove unsupported MakeMKV profile tokens

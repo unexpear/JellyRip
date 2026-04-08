@@ -1,4 +1,4 @@
-"""
+﻿"""
 Rip subprocess lifecycle logic for RipperEngine.
 """
 import os

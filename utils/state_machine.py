@@ -1,5 +1,6 @@
 """Session state machine for enforcing pipeline transitions."""
 
+from collections.abc import Callable
 from enum import Enum, auto
 
 
@@ -15,11 +16,11 @@ class SessionState(Enum):
 
 
 class SessionStateMachine:
-    def __init__(self, debug=False, logger=None):
+    def __init__(self, debug: bool = False, logger: Callable[[str], None] | None = None):
         self.state = SessionState.INIT
         self.debug = bool(debug)
         self.logger = logger
-        self.allowed = {
+        self.allowed: dict[SessionState, list[SessionState]] = {
             SessionState.INIT: [SessionState.SCANNED, SessionState.FAILED],
             SessionState.SCANNED: [SessionState.RIPPED, SessionState.FAILED],
             SessionState.RIPPED: [SessionState.STABILIZED, SessionState.FAILED],
@@ -28,11 +29,11 @@ class SessionStateMachine:
             SessionState.MOVED: [SessionState.COMPLETED, SessionState.FAILED],
         }
 
-    def _emit(self, message):
+    def _emit(self, message: str) -> None:
         if self.debug and self.logger:
             self.logger(message)
 
-    def transition(self, new_state):
+    def transition(self, new_state: SessionState) -> None:
         if self.state == SessionState.FAILED:
             return
 
@@ -44,12 +45,12 @@ class SessionStateMachine:
         self._emit(f"[STATE] {self.state.name} -> {new_state.name}")
         self.state = new_state
 
-    def fail(self, reason=None):
+    def fail(self, reason: str | None = None) -> None:
         if self.debug and reason:
             self._emit(f"[STATE] FAIL: {reason}")
         self.state = SessionState.FAILED
 
-    def complete(self):
+    def complete(self) -> None:
         """Force COMPLETED if not already failed.
 
         Used by flows (e.g. _run_disc) that don't track every intermediate
@@ -60,5 +61,5 @@ class SessionStateMachine:
             self._emit(f"[STATE] {self.state.name} -> COMPLETED (forced)")
             self.state = SessionState.COMPLETED
 
-    def is_success(self):
+    def is_success(self) -> bool:
         return self.state == SessionState.COMPLETED

@@ -1,12 +1,23 @@
 """Naming helpers for workflow-level title and preview naming behavior."""
 
+from __future__ import annotations
+
 import re
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from typing import Literal, TypeAlias
+
+NamingMode = Literal["disc-title", "disc-title+timestamp", "timestamp"]
+ConfigLike: TypeAlias = Mapping[str, object]
+TitleLike: TypeAlias = Mapping[str, object]
+MakeTempTitleFn: TypeAlias = Callable[[], str]
+CleanNameFn: TypeAlias = Callable[[object], str]
+ChooseBestTitleFn: TypeAlias = Callable[[Sequence[TitleLike], bool], tuple[TitleLike | None, float]]
 
 
-def normalize_naming_mode(mode_value):
+def normalize_naming_mode(mode_value: object) -> NamingMode:
     """Normalize configured naming mode including backward-compatible aliases."""
-    mode = (mode_value or "timestamp").strip().lower()
+    mode = str(mode_value or "timestamp").strip().lower()
     if mode in {"auto-title", "disc-title"}:
         return "disc-title"
     if mode in {"auto-title+timestamp", "disc-title+timestamp"}:
@@ -14,114 +25,88 @@ def normalize_naming_mode(mode_value):
     return "timestamp"
 
 
-def parse_metadata_id(raw):
-    """Parse a user-entered metadata provider ID into a Jellyfin tag.
-
-    Accepts formats like:
-        tmdbid-12345, tmdb-12345, tmdb:12345, 12345 (assumed tmdb)
-        imdbid-tt1234567, imdb-tt1234567, tt1234567
-        tvdbid-79168, tvdb-79168, tvdb:79168
-
-    Returns a string like ``[tmdbid-12345]`` or ``""`` if input is empty/invalid.
-    """
+def parse_metadata_id(raw: str | None) -> str:
+    """Parse a user-entered metadata provider ID into a Jellyfin tag."""
     if not raw:
         return ""
-    raw = raw.strip().strip("[]")
-    if not raw:
+    token = raw.strip().strip("[]")
+    if not token:
         return ""
 
-    # Already in Jellyfin format: tmdbid-NNN / imdbid-ttNNN / tvdbid-NNN
-    m = re.match(r"^(tmdbid|imdbid|tvdbid)-(\S+)$", raw, re.IGNORECASE)
-    if m:
-        return f"[{m.group(1).lower()}-{m.group(2)}]"
+    match = re.match(r"^(tmdbid|imdbid|tvdbid)-(\S+)$", token, re.IGNORECASE)
+    if match:
+        return f"[{match.group(1).lower()}-{match.group(2)}]"
 
-    # Shorthand: tmdb-NNN / imdb-ttNNN / tvdb-NNN or with colon
-    m = re.match(r"^(tmdb|imdb|tvdb)[:\-](\S+)$", raw, re.IGNORECASE)
-    if m:
-        return f"[{m.group(1).lower()}id-{m.group(2)}]"
+    match = re.match(r"^(tmdb|imdb|tvdb)[:\-](\S+)$", token, re.IGNORECASE)
+    if match:
+        return f"[{match.group(1).lower()}id-{match.group(2)}]"
 
-    # Bare IMDb ID: tt followed by digits
-    m = re.match(r"^(tt\d+)$", raw, re.IGNORECASE)
-    if m:
-        return f"[imdbid-{m.group(1)}]"
+    match = re.match(r"^(tt\d+)$", token, re.IGNORECASE)
+    if match:
+        return f"[imdbid-{match.group(1)}]"
 
-    # Bare integer: assume TMDB (most common)
-    m = re.match(r"^(\d+)$", raw)
-    if m:
-        return f"[tmdbid-{m.group(1)}]"
+    match = re.match(r"^(\d+)$", token)
+    if match:
+        return f"[tmdbid-{match.group(1)}]"
 
     return ""
 
 
-def build_movie_folder_name(title_clean, year, metadata_id=""):
-    """Build a Jellyfin-compatible movie folder name.
-
-    ``title_clean`` must already be passed through ``clean_name()``.
-    ``metadata_id`` is the raw user input (parsed by ``parse_metadata_id``).
-    """
+def build_movie_folder_name(title_clean: str, year: str | int, metadata_id: str = "") -> str:
     tag = parse_metadata_id(metadata_id)
     base = f"{title_clean} ({year})"
-    if tag:
-        base = f"{base} {tag}"
-    return base
+    return f"{base} {tag}" if tag else base
 
 
-def build_tv_folder_name(title_clean, metadata_id=""):
-    """Build a Jellyfin-compatible TV series folder name.
-
-    ``title_clean`` must already be passed through ``clean_name()``.
-    """
+def build_tv_folder_name(title_clean: str, metadata_id: str = "") -> str:
     tag = parse_metadata_id(metadata_id)
-    if tag:
-        return f"{title_clean} {tag}"
-    return title_clean
+    return f"{title_clean} {tag}" if tag else title_clean
 
 
-def resolve_naming_mode(cfg):
+def resolve_naming_mode(cfg: ConfigLike) -> NamingMode:
     """Resolve naming mode from config with fallback for legacy key names."""
     mode_value = cfg.get("opt_naming_mode", cfg.get("opt_fallback_title_mode", "timestamp"))
     return normalize_naming_mode(mode_value)
 
 
-def build_fallback_title(cfg, make_temp_title_fn, clean_name_fn,
-                         choose_best_title_fn, disc_titles=None,
-                         disc_name=None):
-    """Build fallback title string based on the active naming mode.
-
-    ``disc_name`` is the CINFO disc title from MakeMKV — preferred over
-    per-title TINFO names when available and non-generic.
-    """
+def build_fallback_title(
+    cfg: ConfigLike,
+    make_temp_title_fn: MakeTempTitleFn,
+    clean_name_fn: CleanNameFn,
+    choose_best_title_fn: ChooseBestTitleFn,
+    disc_titles: Sequence[TitleLike] | None = None,
+    disc_name: str | None = None,
+) -> str:
+    """Build fallback title string based on the active naming mode."""
     mode = resolve_naming_mode(cfg)
     timestamp_title = make_temp_title_fn()
 
     if mode == "timestamp":
         return timestamp_title
 
-    # Prefer CINFO disc name (disc-level) over TINFO title name
     if disc_name:
         raw = clean_name_fn(disc_name.strip())
         low = raw.lower() if raw else ""
-        is_generic = (low.startswith("title ") or low.startswith("title_")
-                      or low.startswith("disc") or not low)
+        is_generic = low.startswith("title ") or low.startswith("title_") or low.startswith("disc") or not low
         if not is_generic:
             if mode == "disc-title+timestamp":
                 ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 return clean_name_fn(f"{raw}_{ts}")
             return raw
 
-    # Fall back to best title from TINFO
-    best = None
+    best: TitleLike | None = None
     if disc_titles:
-        best, _ = choose_best_title_fn(disc_titles, require_valid=True)
+        best, _ = choose_best_title_fn(disc_titles, True)
         if not best:
-            best, _ = choose_best_title_fn(disc_titles)
+            best, _ = choose_best_title_fn(disc_titles, False)
 
     if not best:
         return timestamp_title
 
-    raw = clean_name_fn(best.get("name", "").strip())
+    raw_name = str(best.get("name", "")).strip()
+    raw = clean_name_fn(raw_name)
     if not raw or raw.lower().startswith("title "):
-        raw = f"Disc_Title_{best.get('id', 0) + 1}"
+        raw = f"Disc_Title_{int(best.get('id', 0)) + 1}"
 
     if mode == "disc-title+timestamp":
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -130,7 +115,7 @@ def build_fallback_title(cfg, make_temp_title_fn, clean_name_fn,
     return raw
 
 
-def build_naming_preview_text(mode_label_value, sample_title, sample_suffix):
+def build_naming_preview_text(mode_label_value: object, sample_title: str, sample_suffix: str) -> str:
     """Build a human-readable naming preview example for settings UI."""
     mode = normalize_naming_mode(mode_label_value)
     if mode == "disc-title":

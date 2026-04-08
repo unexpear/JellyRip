@@ -1,1083 +1,186 @@
 ﻿"""Controller layer implementation."""
 
-import glob
-import json
+import glob as _glob
 import os
 import re
 import shutil
-import subprocess
-import sys as _sys
+import subprocess as _subprocess
 import threading
 import time
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional, Sequence, cast
+
+from config import AppConfig
+from controller.legacy_compat import LegacyControllerMixin
+from controller.naming import build_fallback_title as _build_fallback_title
+from controller.naming import build_movie_folder_name, build_tv_folder_name, parse_metadata_id
 from controller.session import SessionHelpers
-
-from controller.naming import (
-    build_fallback_title,
-    build_movie_folder_name,
-    build_tv_folder_name,
-    parse_metadata_id,
-)
-
-from shared.runtime import __version__
-from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
+from shared.event import Event
 from utils.fallback import handle_fallback
-from utils.media import select_largest_file
+from utils.helpers import clean_name, make_rip_folder_name, make_temp_title
 from utils.parsing import parse_episode_names, parse_ordered_titles, safe_int
 from utils.scoring import choose_best_title
-from utils.session_result import normalize_session_result
 from utils.state_machine import SessionState, SessionStateMachine
 
-_POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+DiscTitle = dict[str, Any]
+DiscTitles = list[DiscTitle]
+AnalyzedFile = tuple[str, float, float]
+AnalyzedFiles = list[AnalyzedFile]
+ExpectedSizeMap = dict[int, int]
+build_fallback_title = _build_fallback_title
+glob = _glob
+subprocess = _subprocess
 
 
-class RipperController:
-    def __init__(self, engine, gui):
-        """
-        LAYER 2 — Controller
+def _normalize_title_file_map(raw_value: Any) -> dict[int, list[str]]:
+    normalized: dict[int, list[str]] = {}
+    if not isinstance(raw_value, Mapping):
+        return normalized
+    raw_map = cast(Mapping[object, object], raw_value)
+    for raw_tid, raw_files in raw_map.items():
+        if not isinstance(raw_tid, (int, str)):
+            continue
+        if not isinstance(raw_files, Sequence) or isinstance(raw_files, (str, bytes)):
+            continue
+        file_list = [str(path) for path in cast(Sequence[object], raw_files)]
+        normalized[int(raw_tid)] = file_list
+    return normalized
 
-        Workflow orchestration layer. Calls engine methods and GUI methods
-        but owns neither. No tkinter widgets, no subprocess calls.
 
-        Owns the session flow for each ripping mode:
-          - Temp folder management and resume detection
-          - scan_with_retry() — single choke point for all disc scanning
-          - Disc loop (insert → scan → select → rip → analyze → move)
-          - Session logging and failure reporting
+@dataclass
+class Progress:
+    percent: float = 0.0
+    eta: str = ""
+    speed: str = ""
 
-        Design rule: every scan goes through scan_with_retry(). Never call
-        engine.scan_disc() directly from a run_* method.
 
-        The 2-second settle delay (time.sleep(2)) after disc insertion is
-        intentional hardware timing and must stay outside scan_with_retry().
-        """
-        self.engine = engine
-        self.gui    = gui
-        self.session_log          = []
-        self.start_time           = datetime.now()
-        self.global_extra_counter = 1
-        self.session_report       = []
-        self._preview_lock        = threading.Lock()
-        self._wiped_session_paths = set()
-        self.session_paths = None
-        self.session_helpers = SessionHelpers(self)
+@dataclass
+class QueuedJob:
+    id: str
+    job: Any  # Should be Job, but avoid circular import
+    name: str
+    config: Optional[AppConfig] = None
+    status: str = "pending"
+    result: Any = None  # Should be Result
+    logs: List[str] = field(default_factory=lambda: [])
+    created_at: datetime = field(default_factory=datetime.now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    progress: Progress = field(default_factory=Progress)
+
+
+class JobQueue:
+    def __init__(self) -> None:
+        self.jobs: List[QueuedJob] = []
+        self.running: bool = False
+
+    def add_job(self, job: Any, config: Optional[AppConfig] = None) -> str:
+        name: str = getattr(job, "source", None) or "Job"
+        qjob = QueuedJob(
+            id=str(uuid.uuid4()),
+            job=job,
+            name=name,
+            config=config,
+            logs=[]
+        )
+        self.jobs.append(qjob)
+        return qjob.id
+
+    def start(self, controller: "RipperController") -> None:
+        if self.running:
+            return
+        self.running = True
+        threading.Thread(target=lambda: controller.worker(), daemon=True).start()
+
+
+class RipperController(LegacyControllerMixin):
+    def __init__(self, engine: Any, ui: Any) -> None:
+        self.queue: JobQueue = JobQueue()
+        self.engine: Any = engine
+        self.ui: Any = ui
+        self.gui: Any = ui
+        self.session_log: List[str] = []
+        self.start_time: datetime = datetime.now()
+        self.global_extra_counter: int = 1
+        self.session_report: List[str] = []
+        self._preview_lock = threading.Lock()
+        self._wiped_session_paths: set[str] = set()
+        self.session_paths: Optional[Dict[str, str]] = None
+        self.session_helpers = SessionHelpers(ui, self)
         self.sm = SessionStateMachine(
             debug=bool(self.engine.cfg.get("opt_debug_state", False)),
             logger=self.log,
         )
 
-    def log(self, msg):
-        return self.session_helpers.log(msg)
-
-    def report(self, msg):
-        return self.session_helpers.report(msg)
-
-    def _warn_degraded_rips(self):
-        """Add session warnings for any degraded titles from the last rip."""
-        for tid in self.engine.last_degraded_titles:
-            self.report(
-                f"Title {tid}: MakeMKV read errors but output produced "
-                f"(degraded rip — validated downstream by ffprobe)"
-            )
-
-    def _reset_state_machine(self):
-        self.sm = SessionStateMachine(
-            debug=bool(self.engine.cfg.get("opt_debug_state", False)),
-            logger=self.log,
-        )
-
-    def _state_transition(self, new_state):
-        self.sm.transition(new_state)
-        if self.engine.cfg.get("opt_debug_state_json", False):
-            self.log(
-                "STATE_JSON: " + json.dumps(
-                    {
-                        "event": "transition",
-                        "state": self.sm.state.name,
-                        "time": datetime.now().isoformat(timespec="seconds"),
-                    }
-                )
-            )
-
-    def _state_fail(self, reason):
-        self.sm.fail(reason)
-        if self.engine.cfg.get("opt_debug_state_json", False):
-            self.log(
-                "STATE_JSON: " + json.dumps(
-                    {
-                        "event": "fail",
-                        "reason": reason,
-                        "state": self.sm.state.name,
-                        "time": datetime.now().isoformat(timespec="seconds"),
-                    }
-                )
-            )
-
-    def _record_fallback_event(self, reason, accepted, strict):
-        if not self.engine.cfg.get("opt_debug_state_json", False):
-            return
-        self.log(
-            "STATE_JSON: " + json.dumps(
-                {
-                    "event": "fallback",
-                    "reason": reason,
-                    "accepted": bool(accepted),
-                    "strict": bool(strict),
-                    "time": datetime.now().isoformat(timespec="seconds"),
-                }
-            )
-        )
-
-    def flush_log(self):
-        return self.session_helpers.flush_log()
-
-    def write_session_summary(self):
-        return self.session_helpers.write_session_summary()
-
-    def scan_with_retry(self):
-        return self.session_helpers.scan_with_retry()
-
-    def check_resume(self, temp_root, media_type=None):
-        return self.session_helpers.check_resume(temp_root, media_type)
-
-    def _init_session_paths(self, overrides=None):
-        """Initialize per-run path state from defaults plus optional overrides."""
-        cfg = self.engine.cfg
-        self.session_paths = {
-            "temp": os.path.normpath(cfg.get("temp_folder", "")),
-            "movies": os.path.normpath(cfg.get("movies_folder", "")),
-            "tv": os.path.normpath(cfg.get("tv_folder", "")),
-        }
-        if overrides:
-            key_map = {
-                "temp_folder": "temp",
-                "movies_folder": "movies",
-                "tv_folder": "tv",
-            }
-            for k, v in overrides.items():
-                session_key = key_map.get(k)
-                if session_key and v:
-                    self.session_paths[session_key] = os.path.normpath(v)
-
-    def get_path(self, key):
-        if not self.session_paths:
-            raise RuntimeError("session_paths not initialized")
-        return self.session_paths[key]
-
-    def _log_session_paths(self):
-        if not self.session_paths:
-            return
-        self.log(f"=== JellyRip v{__version__} — session start ===")
-        self.log(f"Temp:   {self.session_paths.get('temp')}")
-        self.log(f"Movies: {self.session_paths.get('movies')}")
-        self.log(f"TV:     {self.session_paths.get('tv')}")
-        self.log("=================")
-
-    def _validate_paths(self, temp, movies=None, tv=None):
-        def _norm(p):
-            return os.path.normcase(os.path.abspath(os.path.normpath(str(p))))
-
-        def _is_writable(path):
-            # Fast pre-check keeps behavior explicit and testable on all OSes.
-            if not os.access(path, os.W_OK):
-                return False
-            # Write a probe file in a daemon thread — on a slow/offline network
-            # share, open() and os.remove() can block for 60-120 s.
-            probe = os.path.join(path, f".jellyrip_probe_{os.getpid()}")
-            _result = [False]
-
-            def _probe():
-                try:
-                    with open(probe, "w") as f:
-                        f.write("")
-                    os.remove(probe)
-                    _result[0] = True
-                except OSError:
-                    pass
-
-            t = threading.Thread(target=_probe, daemon=True)
-            t.start()
-            t.join(timeout=8.0)
-            return _result[0]
-
-        _SYSTEM_PATH_RE = re.compile(
-            r'^[A-Za-z]:\\(Windows|Program Files|Program Files \(x86\))(\\|$)',
-            re.IGNORECASE,
-        )
-
-        temp_n = _norm(temp) if temp else None
-        movies_n = _norm(movies) if movies else None
-        tv_n = _norm(tv) if tv else None
-
-        if temp_n and movies_n and temp_n == movies_n:
-            return "Temp and Movies folder cannot be the same"
-        if temp_n and tv_n and temp_n == tv_n:
-            return "Temp and TV folder cannot be the same"
-
-        for p in [x for x in [temp_n, movies_n, tv_n] if x]:
-            if _SYSTEM_PATH_RE.match(p):
-                return f"Blocked system path: {p}"
-
-            if os.path.exists(p) and not _is_writable(p):
-                return f"Path not writable: {p}"
-
+    def extract_progress(self, log_line: str) -> Optional[float]:
+        match = re.search(r'(\d{1,3}(?:\.\d+)?)\s*%', log_line)
+        if match:
+            pct = float(match.group(1))
+            if 0 <= pct <= 100:
+                return pct
         return None
 
-    def _prompt_run_path_overrides(self, path_fields):
-        """Optionally override folder paths for this run only.
+    def run_now(self, job: Any) -> Any:
+        """Bypass queue, run a single job immediately."""
+        return self.engine.run_job(job)
 
-        path_fields: list of tuples (config_key, human_label).
-        Returns dict of resolved paths, or None if aborted.
-        """
-        resolved = {
-            key: os.path.normpath(self.engine.cfg.get(key, ""))
-            for key, _label in path_fields
-        }
-
-        if not path_fields:
-            return resolved
-
-        if not self.gui.ask_yesno(
-            "Use custom folders for this run?\n\n"
-            "Yes = browse/select per-mode paths\n"
-            "No = use saved defaults"
-        ):
-            return resolved
-
-        self.log("Custom run-folder override selected — collecting paths.")
-
-        for key, label in path_fields:
-            default_path = resolved[key]
-            used_picker = callable(getattr(self.gui, "ask_directory", None))
-
-            if used_picker:
-                self.log(
-                    f"Opening folder picker — {label} (default: {default_path})"
-                )
-                chosen = self.gui.ask_directory(
-                    f"{label} (Run Override)",
-                    "Choose folder (Cancel = keep default)",
-                    initialdir=default_path,
-                )
-                if chosen is None:
-                    resolved[key] = default_path
-                    self.log(
-                        f"Folder picker closed/cancelled — {label}: using default {default_path}"
-                    )
-                    continue
-                self.log(f"Folder picker result — {label}: {chosen}")
-                chosen = os.path.normpath(str(chosen).strip())
-                if os.path.isdir(chosen):
-                    resolved[key] = chosen
-                    self.log(f"Run override — {label}: {chosen}")
-                    continue
-                try:
-                    os.makedirs(chosen, exist_ok=True)
-                    resolved[key] = chosen
-                    self.log(f"Run override — {label}: {chosen}")
-                    continue
-                except Exception as e:
-                    self.log(
-                        f"Could not create folder '{chosen}': {e}"
-                    )
-                    resolved[key] = default_path
-                    self.log(
-                        f"Falling back to default {label}: {default_path}"
-                    )
-                    continue
-
-            while True:
-                entered = self.gui.ask_input(
-                    f"{label} (Run Override)",
-                    "Enter folder path (Skip = keep default):",
-                    default_value=default_path,
-                )
-                if entered is None:
-                    resolved[key] = default_path
-                    self.log(
-                        f"Run override cancelled — {label}: using default {default_path}"
-                    )
-                    break
-
-                chosen = default_path if entered == "" else str(entered).strip()
-                if not chosen:
-                    chosen = default_path
-                chosen = os.path.normpath(chosen)
-
-                if os.path.isdir(chosen):
-                    resolved[key] = chosen
-                    self.log(f"Run override — {label}: {chosen}")
-                    break
-
-                if self.gui.ask_yesno(
-                    f"Folder does not exist:\n{chosen}\n\nCreate it?"
-                ):
-                    try:
-                        os.makedirs(chosen, exist_ok=True)
-                        resolved[key] = chosen
-                        self.log(f"Run override — {label}: {chosen}")
-                        break
-                    except Exception as e:
-                        self.log(
-                            f"Could not create folder '{chosen}': {e}"
-                        )
-                else:
-                    self.log(
-                        f"Re-enter {label} or click Skip to keep default."
-                    )
-
-        error = self._validate_paths(
-            resolved.get("temp_folder"),
-            movies=resolved.get("movies_folder"),
-            tv=resolved.get("tv_folder"),
-        )
-        if error:
-            self.log(f"ERROR: {error}")
-            self.gui.show_error("Invalid Run Paths", error)
-            return None
-
-        self.log("Custom folders set, continuing...")
-
-        return resolved
-
-    def _restore_selected_titles(self, disc_titles, resume_meta):
-        """Return saved selected title ids if they still exist on this disc."""
-        saved = resume_meta.get("selected_titles") or []
-        if not saved:
-            return None
-        valid_ids = {int(t.get("id", -1)) for t in disc_titles}
-        restored = [int(tid) for tid in saved if int(tid) in valid_ids]
-        return restored or None
-
-    def _map_title_ids_to_analyzed_indices(self, titles_list, title_ids):
-        """Map MakeMKV title ids to analyze_files indices.
-
-        Primary: explicit engine tracking from rip_selected_titles.
-        Fallback: filename parsing tags for legacy compatibility.
-        """
-        wanted = {int(tid) for tid in (title_ids or [])}
-        if not wanted:
-            return []
-        tracked = getattr(self.engine, "last_title_file_map", {}) or {}
-        tracked_lookup = {}
-        for tid, files in tracked.items():
-            if int(tid) not in wanted:
-                continue
-            for p in files or []:
-                tracked_lookup[os.path.normcase(os.path.abspath(p))] = int(tid)
-        mapped = []
-        for idx, (path, _dur, _mb) in enumerate(titles_list):
-            norm = os.path.normcase(os.path.abspath(path))
-            title_id = tracked_lookup.get(norm)
-            if title_id is None:
-                title_id = self._title_id_from_filename(path)
-            if title_id in wanted:
-                mapped.append(idx)
-        return mapped
-
-    def _fallback_title_from_mode(self, disc_titles=None):
-        """Build fallback title string based on configured naming mode."""
-        disc_name = self.engine.last_disc_info.get("title")
-        title = build_fallback_title(
-            self.engine.cfg,
-            make_temp_title,
-            clean_name,
-            choose_best_title,
-            disc_titles=disc_titles,
-            disc_name=disc_name,
-        )
-        self.log(f"Auto-title fallback used: '{title}'")
-        return title
-
-    def _log_ripped_file_sizes(self, mkv_files):
-        """Log final sizes for newly ripped files so anomalies stand out."""
-        for f in sorted(mkv_files):
-            try:
-                size_gb = os.path.getsize(f) / (1024**3)
-                self.log(
-                    f"Ripped file: {os.path.basename(f)} — {size_gb:.2f} GB"
-                )
-            except Exception as e:
-                self.log(
-                    f"Ripped file: {os.path.basename(f)} — size unavailable ({e})"
-                )
-
-    def _title_id_from_filename(self, path):
-        name = os.path.basename(path)
-        m = re.search(r'title_t(\d+)', name, re.IGNORECASE)
-        if not m:
-            return None
-        try:
-            return int(m.group(1))
-        except Exception:
-            return None
-
-    def _size_validation_status(self, actual_bytes, expected_bytes):
-        """Return (status, reason, ratio): status in {pass,warn,hard_fail}."""
-        if expected_bytes <= 0:
-            return "pass", "no_expected_size", 1.0
-
-        hard_ratio = max(
-            0.10,
-            min(0.95, float(self.engine.cfg.get("opt_hard_fail_ratio_pct", 40)) / 100.0)
-        )
-        warn_ratio = max(
-            hard_ratio,
-            min(0.99, float(self.engine.cfg.get("opt_expected_size_ratio_pct", 70)) / 100.0)
-        )
-        ratio = actual_bytes / expected_bytes if expected_bytes > 0 else 0.0
-
-        if ratio < hard_ratio:
-            return (
-                "hard_fail",
-                f"size too small: {ratio * 100:.1f}% of expected "
-                f"(< {hard_ratio * 100:.0f}% hard floor)",
-                ratio,
-            )
-        if ratio < warn_ratio:
-            return (
-                "warn",
-                f"size below preferred threshold: {ratio * 100:.1f}% "
-                f"(< {warn_ratio * 100:.0f}%)",
-                ratio,
-            )
-        return "pass", f"size OK ({ratio * 100:.1f}%)", ratio
-
-    def _verify_expected_sizes(self, mkv_files, expected_size_by_title):
-        """Aggregate expected-vs-actual validation with hard/warn thresholds."""
-        if not self.engine.cfg.get("opt_safe_mode", True):
-            return "pass", "safe_mode_disabled"
-        if not expected_size_by_title:
-            return "pass", "no_expected_size"
-
-        expected_total = sum(int(v or 0) for v in expected_size_by_title.values())
-        actual_total = 0
-        for f in mkv_files:
-            try:
-                actual_total += os.path.getsize(f)
-            except Exception as e:
-                self.log(f"os.path.getsize failed: {e}")
-
-        status, reason, ratio = self._size_validation_status(
-            actual_total, expected_total
-        )
-        self.log(
-            "Size sanity (aggregate): expected "
-            f"{expected_total / (1024**3):.2f} GB, actual "
-            f"{actual_total / (1024**3):.2f} GB "
-            f"({ratio * 100:.1f}%)"
-        )
-        if status == "hard_fail":
-            self.log(f"ERROR: {reason}")
-        elif status == "warn":
-            self.log(f"WARNING: {reason}")
-        return status, reason
-
-    def _log_expected_vs_actual_summary(self, mkv_files,
-                                        expected_size_by_title):
-        """Log concise total expected vs actual output size summary."""
-        if not expected_size_by_title:
-            return
-
-        expected_total = sum(
-            int(v or 0) for v in expected_size_by_title.values()
-        )
-        if expected_total <= 0:
-            return
-
-        actual_total = 0
-        for f in mkv_files:
-            try:
-                actual_total += os.path.getsize(f)
-            except Exception as e:
-                self.log(f"os.path.getsize failed: {e}")
-
-        pct = (actual_total / expected_total) * 100
-        self.log(
-            "Expected total size: "
-            f"{expected_total / (1024**3):.2f} GB | "
-            f"Actual total size: {actual_total / (1024**3):.2f} GB "
-            f"({pct:.1f}%)"
-        )
-
-    def _ensure_session_paths(self):
-        """Hard guard: raises if session_paths has not been initialized."""
-        if not self.session_paths:
-            raise RuntimeError(
-                "session_paths not initialized — "
-                "call _init_session_paths() first"
-            )
-
-    def _verify_container_integrity(
-        self, mkv_files, analyzed=None,
-        expected_durations=None, expected_sizes=None,
-        title_file_map=None,
-    ):
-        """Require ffprobe-readable container with duration > 0 for each file.
-
-        Accepts an optional pre-analyzed list (from a prior analyze_files call)
-        to avoid running ffprobe twice in the same pipeline step.
-
-        When expected_durations (filepath → seconds) and/or expected_sizes
-        (filepath → bytes) are provided, performs tiered duration sanity checks.
-        Comparison is done at the title-group level (sum of all files per title)
-        when title_file_map (title_id → [paths]) is supplied, preventing false
-        per-file warnings on seamless/multi-part titles.
-
-        Tiers:
-          < 50%  → severe warning (TRUNCATION ERROR when BOTH dur AND size agree)
-          50â€“75% → likely truncation warning
-          75â€“90% → minor mismatch warning
-          â‰¥ 90%  → normal variance, no warning
-
-        Expected size values below 200 MB are treated as unreliable disc scan
-        metadata and excluded from size-based escalation.
-
-        Short titles (expected < 600 s) use widened tiers to avoid false
-        positives from disc timing inaccuracies.
-
-        In strict mode (opt_strict_mode), any tier below "minor" (< 75%)
-        escalates to a hard failure.
-        """
-        _SIZE_FLOOR = 200 * 1024 * 1024   # 200 MB — below this, size is noise
-        _SHORT_TITLE = 600                  # < 600 s — widen tiers
-
-        if not mkv_files:
-            return False
-        self.log("Container integrity check (ffprobe)...")
-        if analyzed is None:
-            analyzed = self.engine.analyze_files(mkv_files, self.log)
-        if len(analyzed) != len(mkv_files):
-            self.log(
-                "ERROR: Container integrity check incomplete "
-                f"({len(analyzed)}/{len(mkv_files)} files analyzed)."
-            )
-            return False
-        bad = [os.path.basename(f) for f, dur, _mb in analyzed if dur <= 0]
-        if bad:
-            self.log(
-                "ERROR: Container integrity check failed for: "
-                + ", ".join(bad)
-            )
-            return False
-
-        if not (expected_durations or expected_sizes):
-            return True
-
-        strict = bool(self.engine.cfg.get("opt_strict_mode", False))
-        strict_fail = False
-
-        # Build a lookup: filepath → (dur, size_bytes) from analyzed results.
-        analyzed_lookup = {
-            f: (dur, int(mb * 1024 * 1024))
-            for f, dur, mb in analyzed
-        }
-
-        # Build groups: each group is a list of file paths belonging to one
-        # logical title. When title_file_map is absent, treat each file as
-        # its own group.
-        if title_file_map:
-            groups = [
-                (tid, [fp for fp in files if fp in analyzed_lookup])
-                for tid, files in title_file_map.items()
-            ]
-            # Files not covered by any title group get individual treatment.
-            covered = {fp for _, files in groups for fp in files}
-            for fp in analyzed_lookup:
-                if fp not in covered:
-                    groups.append((None, [fp]))
+    def emit(self, event: Event) -> None:
+        if hasattr(self.ui, "handle_event"):
+            self.ui.handle_event(event)
         else:
-            groups = [(None, [fp]) for fp in mkv_files]
+            if event.type == "progress":
+                self.ui.on_progress(event.job_id, event.data["percent"])
+            elif event.type == "log":
+                self.ui.on_log(event.job_id, event.data["message"])
+            elif event.type == "done":
+                self.ui.on_complete(event.job_id)
+            elif event.type == "error":
+                error = event.data["error"]
+                if not isinstance(error, Exception):
+                    error = Exception(str(error))
+                self.ui.on_error(event.job_id, error)
 
-        warned_tids: set = set()
-
-        for tid, files in groups:
-            if not files:
+    def worker(self) -> None:
+        for qjob in self.queue.jobs:
+            if qjob.status != "pending":
                 continue
-            if tid is not None and tid in warned_tids:
-                continue
-
-            # Aggregate duration and size across the group.
-            total_dur = sum(analyzed_lookup[fp][0] for fp in files if fp in analyzed_lookup)
-            total_bytes = sum(analyzed_lookup[fp][1] for fp in files if fp in analyzed_lookup)
-            label = (
-                os.path.basename(files[0])
-                if len(files) == 1
-                else f"Title {tid} ({len(files)} files)"
-                if tid is not None
-                else os.path.basename(files[0])
-            )
-
-            # Aggregate expectations across group files.
-            exp_dur = sum(
-                (expected_durations or {}).get(fp, 0) for fp in files
-            ) or None
-            raw_exp_size = sum(
-                (expected_sizes or {}).get(fp, 0) for fp in files
-            )
-            # Clamp unreliable disc-scan size metadata.
-            exp_size = raw_exp_size if raw_exp_size >= _SIZE_FLOOR else None
-
-            if not exp_dur or exp_dur <= 0:
-                continue
-
-            dur_ratio = total_dur / exp_dur if total_dur > 0 else 0.0
-            size_ratio = total_bytes / exp_size if exp_size else None
-
-            # Widen tiers for short titles.
-            is_short = exp_dur < _SHORT_TITLE
-            t_severe  = 0.4 if is_short else 0.5
-            t_likely  = 0.6 if is_short else 0.75
-            t_minor   = 0.85 if is_short else 0.9
-
-            if dur_ratio >= t_minor:
-                continue  # normal variance
-
-            if tid is not None:
-                warned_tids.add(tid)
-
-            if dur_ratio < t_severe:
-                if size_ratio is not None and size_ratio < t_severe:
-                    self.report(
-                        f"TRUNCATION ERROR: {label} — "
-                        f"duration {total_dur / 60:.1f} min "
-                        f"(expected ~{exp_dur / 60:.1f} min, "
-                        f"{dur_ratio * 100:.0f}%) AND "
-                        f"size {total_bytes // (1024**2)} MB "
-                        f"(expected ~{int(exp_size) // (1024**2)} MB, "
-                        f"{size_ratio * 100:.0f}%) — "
-                        f"both signals indicate corrupt/incomplete rip"
-                    )
-                    if strict:
-                        strict_fail = True
-                else:
-                    self.report(
-                        f"WARNING: Severe duration mismatch — {label}: "
-                        f"actual {total_dur / 60:.1f} min, "
-                        f"expected ~{exp_dur / 60:.1f} min "
-                        f"({dur_ratio * 100:.0f}%) — possible truncation"
-                    )
-                    if strict:
-                        strict_fail = True
-            elif dur_ratio < t_likely:
-                self.report(
-                    f"WARNING: Likely truncation — {label}: "
-                    f"actual {total_dur / 60:.1f} min, "
-                    f"expected ~{exp_dur / 60:.1f} min "
-                    f"({dur_ratio * 100:.0f}%)"
-                    + (
-                        f"; size also low ({size_ratio * 100:.0f}%)"
-                        if (size_ratio is not None and size_ratio < t_likely)
-                        else ""
-                    )
-                )
-                if strict:
-                    strict_fail = True
-            else:
-                self.report(
-                    f"WARNING: Minor duration mismatch — {label}: "
-                    f"actual {total_dur / 60:.1f} min, "
-                    f"expected ~{exp_dur / 60:.1f} min "
-                    f"({dur_ratio * 100:.0f}%)"
-                )
-
-        if strict_fail:
-            self.log(
-                "ERROR: Strict mode — truncation warning escalated to failure."
-            )
-            return False
-
-        return True
-
-    def _normalize_rip_result(self, rip_path, success, failed_titles,
-                               pre_existing_files=None):
-        """Collapse rip outcomes into one all-or-nothing success state.
-
-        pre_existing_files: optional frozenset of MKV paths that existed in
-        rip_path before this rip started.  Files in this set are excluded from
-        the validity check so a leftover invalid partial from a prior session
-        cannot cause the current rip to fail.
-        """
-        _excluded = frozenset(pre_existing_files or [])
-        mkv_files = sorted(
-            f for f in self._safe_glob(
-                os.path.join(rip_path, "**", "*.mkv"),
-                recursive=True,
-                context="Enumerating rip outputs",
-            )
-            if f not in _excluded
-        )
-
-        valid_files = [
-            f for f in mkv_files
-            if self.engine._quick_ffprobe_ok(f, self.log)
-        ]
-
-        if self.engine.abort_flag:
-            self.log("Rip aborted — treating session as failure.")
-        if failed_titles:
-            self.log(f"Titles failed: {failed_titles}")
-        if not mkv_files:
-            self.log("No MKV files produced — treating as failure.")
-
-        self.log(
-            "Failure gate: "
-            f"abort={self.engine.abort_flag}, "
-            f"failed_titles={len(failed_titles or [])}, "
-            f"files={len(mkv_files)}, valid={len(valid_files)}"
-        )
-
-        normalized = normalize_session_result(
-            self.engine.abort_flag,
-            failed_titles,
-            mkv_files,
-            valid_files,
-        )
-
-        if len(valid_files) != len(mkv_files):
-            self.log("One or more MKV files are invalid — treating as failure.")
-        if not normalized:
-            return False, mkv_files
-
-        return bool(success), mkv_files
-
-    # ------------------------------------------------------------------
-    # Library-scanning helpers (used by "attach to existing show" mode)
-    # ------------------------------------------------------------------
-
-    # SxxEyy with optional chained episodes: S01E01, S01E01E02, S01E01E02E03 â€¦
-    # Captured groups: season, first episode, then zero or more extra E-tokens.
-    _RE_SxxEyy = re.compile(
-        r"S(\d{1,3})((?:E\d{1,3})+)",
-        re.IGNORECASE,
-    )
-    # 1x01 / Nx01 — season Ã— episode
-    _RE_NxNN = re.compile(r"(\d{1,2})x(\d{1,2})")
-    # "Episode N" — no season token; useful when file is already inside a
-    # Season folder (the folder itself encodes the season).
-    _RE_EPISODE_N = re.compile(r"[Ee]pisode\s+(\d{1,4})")
-    # Splits the E-token block into individual episode numbers.
-    _RE_E_SPLIT = re.compile(r"E(\d{1,3})", re.IGNORECASE)
-
-    @staticmethod
-    def get_next_episode(existing: set) -> int:
-        """Return the lowest episode number not yet in *existing*.
-
-        Fills gaps before appending, so a library missing E03 returns 3
-        rather than max+1.  Returns 1 when *existing* is empty.
-        """
-        if not existing:
-            return 1
-        for i in range(1, max(existing) + 2):
-            if i not in existing:
-                return i
-        return max(existing) + 1  # unreachable but satisfies type checkers
-
-    def _episodes_from_filename(self, fname: str, season: int) -> set:
-        """Extract every episode number encoded in *fname* for *season*.
-
-        Handles:
-          - ``S01E01``           → {1}
-          - ``S01E01E02``        → {1, 2}   (multi-episode file)
-          - ``S01E01E02E03``     → {1, 2, 3}
-          - ``1x01``             → {1}
-          - ``Episode 4``        → {4}
-
-        Returns an empty set when the filename does not match any pattern
-        or the season token does not match *season*.
-        """
-        # --- SxxEyy (with optional chained episodes) ---
-        m = self._RE_SxxEyy.search(fname)
-        if m:
-            if int(m.group(1)) != season:
-                # Season token present but wrong season — do not fall through.
-                return set()
-            return {int(n) for n in self._RE_E_SPLIT.findall(m.group(2))}
-
-        # --- Nx01 format ---
-        m = self._RE_NxNN.search(fname)
-        if m:
-            if int(m.group(1)) != season:
-                return set()
-            return {int(m.group(2))}
-
-        # --- "Episode N" (no season token) ---
-        m = self._RE_EPISODE_N.search(fname)
-        if m:
-            return {int(m.group(1))}
-
-        return set()
-
-    def _scan_episode_files(self, folder: str, season: int) -> set:
-        """Return the set of episode numbers found in *folder* for *season*.
-
-        Multi-episode files (e.g. ``S01E01E02.mkv``) contribute all their
-        episode numbers so gap detection is never fooled into thinking an
-        episode is missing when it is part of a combined file.
-        Season 00 is supported (Jellyfin treats it as Specials).
-        Only reads the directory listing — no ffprobe or file I/O.
-        """
-        found: set = set()
-        if not folder or not os.path.isdir(folder):
-            return found
-        try:
-            for fname in os.listdir(folder):
-                found |= self._episodes_from_filename(fname, season)
-        except OSError:
-            pass
-        return found
-
-    def _scan_library_folder(self, show_root: str) -> dict:
-        """Scan *show_root* for existing season folders and their episodes.
-
-        Returns a dict mapping season number (int) to a sorted list of
-        episode numbers already present on disk.  Season 00 ("Specials")
-        is included and logged.  Only reads directory listings — no file I/O.
-
-        Example::
-
-            {0: [1, 2], 1: [1, 2, 3], 2: [1, 2]}
-        """
-        result: dict = {}
-        if not show_root or not os.path.isdir(show_root):
-            return result
-        # "Season 00", "Season 1", "Specials" (mapped to season 0) are all valid.
-        season_pat = re.compile(r"Season\s+(\d{1,3})", re.IGNORECASE)
-        specials_pat = re.compile(r"^Specials?$", re.IGNORECASE)
-        try:
-            for entry in os.listdir(show_root):
-                season_dir = os.path.join(show_root, entry)
-                if not os.path.isdir(season_dir):
-                    continue
-                m = season_pat.match(entry)
-                if m:
-                    season_num = int(m.group(1))
-                elif specials_pat.match(entry):
-                    season_num = 0
-                else:
-                    continue
-                eps = self._scan_episode_files(season_dir, season_num)
-                result[season_num] = sorted(eps)
-                if season_num == 0:
-                    self.log(
-                        f"Specials/Season 00 detected: {season_dir} "
-                        f"({len(eps)} item(s))"
-                    )
-        except OSError:
-            pass
-        return result
-
-    def _scan_highest_episode(self, dest_folder: str, season: int) -> int:
-        """Return the highest episode number already present in *dest_folder*
-        for *season*, or 0 if none are found.
-
-        Kept for backward compatibility; internally delegates to
-        :meth:`_scan_episode_files`.
-        """
-        eps = self._scan_episode_files(dest_folder, season)
-        return max(eps) if eps else 0
-
-    def _mark_session_failed(self, rip_path, **metadata):
-        """Wipe session outputs and persist a single failed session state."""
-        self.log("Session failed — wiping outputs.")
-        self.engine.update_temp_metadata(
-            rip_path,
-            status="failed",
-            phase="failed",
-            **metadata,
-        )
-        if rip_path not in self._wiped_session_paths:
-            self.engine.wipe_session_outputs(rip_path, self.log)
-            self._wiped_session_paths.add(rip_path)
-
-    def _safe_glob(self, pattern, recursive=False, timeout=8.0, context="glob"):
-        """Run glob with timeout so slow/offline shares do not block flow."""
-        matches = []
-        err = [None]
-
-        def _scan():
+            qjob.status = "running"
+            qjob.started_at = datetime.now()
+            self.emit(Event("log", qjob.id, {"message": "Running"}))
             try:
-                matches.extend(glob.glob(pattern, recursive=recursive))
+                logs: List[str] = []
+                last_emit: float = 0.0
+                for engine_event in self.engine.run_job_streaming(qjob.job):
+                    if engine_event.type == "log":
+                        logs.append(str(engine_event.data))
+                        percent = self.extract_progress(str(engine_event.data))
+                        if percent is not None:
+                            qjob.progress.percent = percent
+                            now = time.time()
+                            if now - last_emit > 0.2:
+                                self.emit(Event("progress", qjob.id, {"percent": percent}))
+                                last_emit = now
+                        self.emit(Event("log", qjob.id, {"message": str(engine_event.data)}))
+                    elif engine_event.type == "done":
+                        qjob.result = engine_event.data
+                        qjob.logs = logs
+                        qjob.status = "done" if getattr(engine_event.data, "success", False) else "failed"
+                        self.emit(Event("done", qjob.id, {"result": engine_event.data}))
+                if not qjob.status or qjob.status == "running":
+                    qjob.status = "done"
             except Exception as e:
-                err[0] = e
-
-        t = threading.Thread(target=_scan, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-        if t.is_alive():
-            self.log(f"WARNING: {context} timed out; continuing.")
-            return []
-        if err[0] is not None:
-            self.log(f"WARNING: {context} failed: {err[0]}")
-            return []
-        return matches
-
-    def preview_title(self, title_id):
-        """Rip a short preview clip for one title and open it in VLC."""
-        temp_root = (
-            self.get_path("temp")
-            if self.session_paths and "temp" in self.session_paths
-            else self.engine.cfg["temp_folder"]
-        )
-        preview_dir = os.path.join(
-            temp_root, "preview"
-        )
-
-        try:
-            shutil.rmtree(preview_dir, ignore_errors=True)
-            os.makedirs(preview_dir, exist_ok=True)
-        except Exception as e:
-            self.log(f"Preview setup failed: {e}")
-            return
-
-        def run_preview():
-            lock_acquired = False
-            try:
-                if not self._preview_lock.acquire(blocking=False):
-                    self.log("Preview already running. Wait for it to finish.")
-                    return
-                lock_acquired = True
-
-                if self.engine.abort_event.is_set():
-                    self.log("Preview skipped: abort requested.")
-                    return
-                self.log(f"Preview: starting Title {title_id + 1} for 40s...")
-                self.gui.set_status(
-                    f"Previewing Title {title_id + 1}... (40s sample)"
-                )
-                preview_ok = self.engine.rip_preview_title(
-                    preview_dir, title_id, 40, self.log
-                )
-
-                # MakeMKV may create output in nested paths and can finish
-                # metadata flush shortly after process stop. Poll briefly.
-                files = []
-                for _ in range(8):
-                    files = self._safe_glob(
-                        os.path.join(preview_dir, "**", "*.mkv"),
-                        recursive=True,
-                        context="Scanning preview outputs",
-                    )
-                    if files:
-                        break
-                    time.sleep(0.25)
-                if not files:
-                    if not preview_ok:
-                        self.log("Preview failed: rip process did not complete.")
-                    else:
-                        self.log("Preview failed: no preview file found.")
-                    return
-
-                latest = select_largest_file(files)
-                try:
-                    size_mb = os.path.getsize(latest) / (1024**2)
-                except Exception:
-                    size_mb = 0.0
-                analyzed = self.engine.analyze_files([latest], self.log)
-                duration = int(analyzed[0][1]) if analyzed else 0
-                mm = duration // 60
-                ss = duration % 60
-                self.log(
-                    f"Preview candidate: {os.path.basename(latest)} | "
-                    f"{size_mb:.0f} MB | {mm:02d}:{ss:02d}"
-                )
-                vlc = shutil.which("vlc")
-                if not vlc:
-                    for candidate in [
-                        r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-                        r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
-                    ]:
-                        if os.path.isfile(candidate):
-                            vlc = candidate
-                            break
-                if vlc:
-                    subprocess.Popen(
-                        [vlc, latest],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        **_POPEN_FLAGS,
-                    )
-                    self.log(
-                        f"Preview opened in VLC: {os.path.basename(latest)}"
-                    )
-                else:
-                    self.log(
-                        f"VLC not found; opening in default player: {os.path.basename(latest)}"
-                    )
-                    os.startfile(latest)
-            except Exception as e:
-                self.log(f"Preview open failed: {e}")
+                qjob.status = "failed"
+                self.emit(Event("error", qjob.id, {"error": str(e)}))
             finally:
-                # Only clear abort if no rip is running — otherwise
-                # preview cleanup would cancel a real abort request.
-                rip = getattr(self.gui, "rip_thread", None)
-                if not (rip and rip.is_alive()):
-                    self.engine.reset_abort()
-                self.gui.set_status("Ready")
-                if lock_acquired:
-                    self._preview_lock.release()
+                qjob.finished_at = datetime.now()
+        self.queue.running = False
 
-        threading.Thread(target=run_preview, daemon=True).start()
-
-    def _retry_rip_once_after_size_failure(self, rip_path, selected_ids,
-                                           expected_size_by_title):
-        """Retry rip once after size sanity failure and re-run checks."""
-        self.log(
-            "Safe Mode: size sanity failed — retrying rip once automatically."
-        )
-        self.engine.cleanup_partial_files(rip_path, self.log)
-        for pattern in ("**/*.mkv", "**/*.partial"):
-            for f in self._safe_glob(
-                os.path.join(rip_path, pattern),
-                recursive=True,
-                context="Cleaning retry artifacts",
-            ):
-                try:
-                    os.remove(f)
-                except Exception as e:
-                    self.log(f"os.remove failed: {e}")
-
-        self.gui.set_status("Ripping... (this may take 20-60 min)")
-        _pre_rip_mkvs = frozenset(
-            self._safe_glob(
-                os.path.join(rip_path, "**", "*.mkv"),
-                recursive=True,
-                context="Snapshotting pre-rip MKVs",
-            )
-        )
-        success, failed_titles = self.engine.rip_selected_titles(
-            rip_path, selected_ids,
-            on_progress=self.gui.set_progress,
-            on_log=self.log
-        )
-        self._warn_degraded_rips()
-        if failed_titles:
-            self.report(
-                f"Retry: titles failed — {failed_titles}"
-            )
-        success, mkv_files = self._normalize_rip_result(
-            rip_path, success, failed_titles, _pre_rip_mkvs
-        )
-        if not success:
-            return False
-
-        self.engine.update_temp_metadata(rip_path, status="ripped")
-
-        self._log_ripped_file_sizes(mkv_files)
-        stabilized, timed_out = self._stabilize_ripped_files(
-            mkv_files, expected_size_by_title
-        )
-        if not stabilized:
-            if timed_out:
-                self.log("Retry stabilization failed: timed out.")
-            return False
-        self._log_expected_vs_actual_summary(
-            mkv_files, expected_size_by_title
-        )
-        status, _reason = self._verify_expected_sizes(mkv_files, expected_size_by_title)
-        return status == "pass"
-
-    def _stabilize_file(self, path, timeout_seconds, min_stable_polls):
+    def log(self, message: str) -> None:
+        self.session_helpers.log(message)
+    def _stabilize_file(self, path: str, timeout_seconds: int, min_stable_polls: int) -> tuple[bool, bool]:
         """Wait for file to be stable: N equal reads AND 3+ seconds of no growth.
 
         Stability = file size stopped changing. Size alone is NOT a stability
@@ -1151,18 +254,14 @@ class RipperController:
                     f"Stabilizing: {prev_mb:.0f} MB -> {cur_mb:.0f} MB — still growing"
                 )
             prev = cur
+        return False, True  # timed out
 
-        self.log(
-            f"WARNING: File stabilization timed out after {timeout_seconds}s: "
-            f"{os.path.basename(path)}"
-        )
-        return False, True
 
     # CRITICAL:
     # All size threshold decisions for ripped files MUST go through this
     # function. Do not duplicate or inline this logic elsewhere.
     @staticmethod
-    def _compute_file_min_size(expected_bytes, floor_bytes):
+    def _compute_file_min_size(expected_bytes: int, floor_bytes: int) -> int:
         """Return the minimum acceptable size for a ripped file.
 
         If expected_bytes comes from disc metadata and is credibly large
@@ -1181,7 +280,11 @@ class RipperController:
             return min(int(expected_bytes * 0.5), expected_bytes)
         return floor_bytes
 
-    def _stabilize_ripped_files(self, mkv_files, expected_size_by_title=None):
+    def _stabilize_ripped_files(
+        self,
+        mkv_files: Sequence[str],
+        expected_size_by_title: Mapping[int, int] | None = None,
+    ) -> tuple[bool, bool]:
         """Optionally wait for ripped files to stabilize before analysis/move.
 
         Stabilization = file stopped changing size. The minimum-size floor is
@@ -1209,7 +312,7 @@ class RipperController:
             current_size = os.path.getsize(f)
             expected = 0
             if expected_size_by_title:
-                tid = self._title_id_from_filename(f)
+                tid: int | None = self._title_id_from_filename(f)
                 if tid is not None:
                     expected = int(expected_size_by_title.get(tid, 0) or 0)
             # Use expected size (from disc scan) for timeout budget when
@@ -1249,15 +352,15 @@ class RipperController:
 
         return True, False
 
-    def run_tv_disc(self):
+    def run_tv_disc(self) -> None:
         """Run manual TV-disc workflow."""
         self._run_disc(is_tv=True)
 
-    def run_movie_disc(self):
+    def run_movie_disc(self) -> None:
         """Run manual movie-disc workflow."""
         self._run_disc(is_tv=False)
 
-    def run_smart_rip(self):
+    def run_smart_rip(self) -> None:
         """Auto-select and rip the highest-scoring main movie title."""
         cfg        = self.engine.cfg
         path_overrides = self._prompt_run_path_overrides([
@@ -1324,7 +427,7 @@ class RipperController:
             return
 
         time.sleep(2)  # drive spin-up / mount stabilization
-        disc_titles = self.scan_with_retry()
+        disc_titles: DiscTitles | None = self.scan_with_retry()
 
         if self.engine.abort_event.is_set():
             return
@@ -1377,7 +480,7 @@ class RipperController:
         # Guardrail: movie discs where the "best" title is very short
         # are often extras/featurettes, not the main feature.
         min_minutes = max(1, int(cfg.get("opt_smart_min_minutes", 20)))
-        best_seconds = int(best.get("duration_seconds", 0) or 0)
+        best_seconds = safe_int(best.get("duration_seconds", 0))
         if best_seconds > 0 and best_seconds < min_minutes * 60:
             mins = best_seconds / 60
             self.log(
@@ -1392,23 +495,24 @@ class RipperController:
                 self.log("Cancelled due to Smart Rip short-title warning.")
                 return
 
-        selected_ids  = [best["id"]]
-        selected_size = best.get("size_bytes", 0)
-        expected_size_by_title = {
+        best_id = safe_int(best.get("id", -1))
+        selected_ids: list[int] = [best_id]
+        selected_size = safe_int(best.get("size_bytes", 0))
+        expected_size_by_title: ExpectedSizeMap = {
             int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
             for t in disc_titles
             if int(t.get("id", -1)) in selected_ids
         }
 
         self.log(
-            f"Smart Rip selected: Title {best['id']+1} "
+            f"Smart Rip selected: Title {best_id + 1} "
                 f"(score={smart_score:.3f}) "
                 f"{best['duration']} {best['size']}"
         )
 
         if cfg.get("opt_confirm_before_rip", True):
             if not self.gui.ask_yesno(
-                f"Smart Rip selected Title {best['id']+1} "
+                f"Smart Rip selected Title {best_id + 1} "
                     f"(score={smart_score:.3f}) "
                     f"{best['duration']} {best['size']} as main feature. "
                     f"Continue?"
@@ -1417,9 +521,9 @@ class RipperController:
                 return
 
         if self.gui.ask_yesno("Keep all extras from this disc?"):
-            selected_ids  = [t["id"] for t in disc_titles]
+            selected_ids = [int(t["id"]) for t in disc_titles]
             selected_size = sum(
-                t.get("size_bytes", 0) for t in disc_titles
+                int(t.get("size_bytes", 0) or 0) for t in disc_titles
             )
             expected_size_by_title = {
                 int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
@@ -1447,12 +551,13 @@ class RipperController:
                     _eopts,
                 )
                 if _chosen:
-                    _extra_ids = [
-                        _extra_disc[i]["id"] for i in _chosen
+                    chosen_indices = [int(i) for i in _chosen]
+                    _extra_ids: list[int] = [
+                        int(_extra_disc[i]["id"]) for i in chosen_indices
                     ]
-                    selected_ids = [best["id"]] + _extra_ids
+                    selected_ids = [best_id] + _extra_ids
                     selected_size = sum(
-                        t.get("size_bytes", 0) for t in disc_titles
+                        int(t.get("size_bytes", 0) or 0) for t in disc_titles
                         if t["id"] in selected_ids
                     )
                     expected_size_by_title = {
@@ -1503,7 +608,7 @@ class RipperController:
             if len(selected_ids) > 1 else
             "Ripping main feature..."
         )
-        self.gui.set_status("Ripping... (this may take 20-60 min)")
+        self.gui.set_status(status_msg)
         _pre_rip_mkvs = frozenset(
             self._safe_glob(
                 os.path.join(rip_path, "**", "*.mkv"),
@@ -1511,11 +616,15 @@ class RipperController:
                 context="Snapshotting pre-rip MKVs",
             )
         )
-        success, failed_titles = self.engine.rip_selected_titles(
-            rip_path, selected_ids,
-            on_progress=self.gui.set_progress,
-            on_log=self.log
+        from engine.ripper_engine import Job
+        job = Job(
+            source=','.join(str(tid) for tid in selected_ids),
+            output=rip_path,
+            profile="default"
         )
+        result = self.engine.run_job(job)
+        success = result.success
+        failed_titles = result.errors
         self._warn_degraded_rips()
         success, mkv_files = self._normalize_rip_result(
             rip_path, success, failed_titles, _pre_rip_mkvs
@@ -1617,9 +726,9 @@ class RipperController:
         self.gui.set_status("Analyzing...")
         self.gui.start_indeterminate()
         try:
-            titles_list = self.engine.analyze_files(
+            titles_list: AnalyzedFiles = self.engine.analyze_files(
                 mkv_files, self.log
-            )
+            ) or []
         finally:
             self.gui.stop_indeterminate()
             self.gui.set_progress(0)
@@ -1627,6 +736,7 @@ class RipperController:
         if not titles_list:
             self._state_fail("analysis_failed")
             return
+        assert titles_list is not None
 
         # Build expected-duration and expected-size maps for integrity warnings.
         # Maps filepath → expected value using disc scan data + rip tracking.
@@ -1638,16 +748,17 @@ class RipperController:
             int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
             for t in disc_titles
         }
-        _expected_durations: dict = {}
-        _expected_sizes: dict = {}
-        for tid, files in (self.engine.last_title_file_map or {}).items():
+        _expected_durations: dict[str, float] = {}
+        _expected_sizes: dict[str, int] = {}
+        title_file_map = _normalize_title_file_map(self.engine.last_title_file_map)
+        for tid, files in title_file_map.items():
             exp_dur = _dur_by_id.get(int(tid), 0)
             exp_size = _size_by_id.get(int(tid), 0)
             for fp in files:
                 if exp_dur > 0:
-                    _expected_durations[fp] = exp_dur
+                    _expected_durations[str(fp)] = exp_dur
                 if exp_size > 0:
-                    _expected_sizes[fp] = exp_size
+                    _expected_sizes[str(fp)] = exp_size
 
         # Container integrity uses the already-analyzed data — no extra ffprobe.
         if not self._verify_container_integrity(
@@ -1655,7 +766,7 @@ class RipperController:
             analyzed=titles_list,
             expected_durations=_expected_durations or None,
             expected_sizes=_expected_sizes or None,
-            title_file_map=self.engine.last_title_file_map or None,
+            title_file_map=title_file_map or None,
         ):
             self._state_fail("pre_move_integrity_failed")
             self.report(
@@ -1683,7 +794,7 @@ class RipperController:
         main_indices = [0]
         if len(selected_ids) > 1:
             mapped = self._map_title_ids_to_analyzed_indices(
-                titles_list, [best.get("id")]
+                titles_list, [best_id]
             )
             if mapped:
                 # Multi-file title safe: pick the largest mapped file.
@@ -1694,7 +805,7 @@ class RipperController:
                 main_indices = [chosen_idx]
             else:
                 def _closest_size_fallback():
-                    target_size = int(best.get("size_bytes", 0) or 0)
+                    target_size = safe_int(best.get("size_bytes", 0))
                     if target_size > 0 and titles_list:
                         idx = min(
                             range(len(titles_list)),
@@ -1904,11 +1015,14 @@ class RipperController:
                 context="Snapshotting pre-rip MKVs",
             )
         )
-        success = self.engine.rip_all_titles(
-            rip_path,
-            on_progress=self.gui.set_progress,
-            on_log=self.log
+        from engine.ripper_engine import Job
+        job = Job(
+            source="all",
+            output=rip_path,
+            profile="default"
         )
+        result = self.engine.run_job(job)
+        success = result.success
         success, mkv_files = self._normalize_rip_result(
             rip_path, success, [], _pre_rip_mkvs
         )
@@ -1955,9 +1069,9 @@ class RipperController:
             f"Use 'Organize Existing MKVs' to sort them."
         )
 
-    def _disc_present(self):
+    def _disc_present(self) -> bool:
         """Best-effort check: True when a readable disc appears present."""
-        result = [None]
+        result: list[int | None] = [None]
         cfg = getattr(self.engine, "cfg", {}) or {}
         # 45 s default: slow/encrypted discs can take 20-40 s to spin up and
         # produce the first TINFO line.  12 s was too short and caused every
@@ -1967,10 +1081,13 @@ class RipperController:
             int(cfg.get("opt_disc_presence_probe_seconds", 45))
         )
 
-        def _probe():
+        def _discard_log(_message: str) -> None:
+            return None
+
+        def _probe() -> None:
             try:
                 result[0] = self.engine.get_disc_size(
-                    lambda _m: None,
+                    _discard_log,
                     prefer_cached=False,
                     timeout_seconds=probe_timeout,
                 )
@@ -1993,7 +1110,11 @@ class RipperController:
         except Exception:
             return False
 
-    def _wait_for_disc_state(self, want_present, timeout_seconds=300):
+    def _wait_for_disc_state(
+        self,
+        want_present: bool,
+        timeout_seconds: int | None = 300,
+    ) -> bool:
         state_text = "inserted" if want_present else "removed"
         start    = time.time()
         last_log = 0
@@ -2035,9 +1156,9 @@ class RipperController:
                     return False
                 time.sleep(0.1)
 
-    def _build_disc_fingerprint(self):
+    def _build_disc_fingerprint(self) -> str | None:
         """Build a disc fingerprint using the standard scan retry path."""
-        titles = self.scan_with_retry()
+        titles: DiscTitles | None = self.scan_with_retry()
         if not titles:
             return None
         parts = [str(len(titles))]
@@ -2071,8 +1192,12 @@ class RipperController:
             )
         return "|".join(parts)
 
-    def _resolve_duplicate_dump_disc(self, disc_number, total,
-                                     per_disc_titles):
+    def _resolve_duplicate_dump_disc(
+        self,
+        disc_number: int,
+        total: int,
+        per_disc_titles: list[str],
+    ) -> str:
         """Resolve duplicate-disc detection with an easy custom-title override."""
         disc_label = (
             per_disc_titles[disc_number - 1]
@@ -2100,8 +1225,12 @@ class RipperController:
             "Stop"
         )
 
-    def _wait_for_new_unique_disc(self, seen_fingerprints,
-                                  disc_number, total):
+    def _wait_for_new_unique_disc(
+        self,
+        seen_fingerprints: set[str],
+        disc_number: int,
+        total: int,
+    ) -> str | None:
         """
         Wait for physical swap and ensure inserted disc is unique in this
         multi-disc batch session.
@@ -2203,7 +1332,7 @@ class RipperController:
         seen_fingerprints.add(fingerprint)
         return fingerprint
 
-    def _collect_dump_all_multi_setup(self):
+    def _collect_dump_all_multi_setup(self) -> tuple[int, list[str], str] | None:
         """Collect multi-disc batch setup with a review/edit loop."""
         while True:
             total_str = self.gui.ask_input(
@@ -2255,7 +1384,7 @@ class RipperController:
 
             self.log("Setup edit requested — re-enter multi-disc settings.")
 
-    def _run_dump_all_multi(self, temp_root):
+    def _run_dump_all_multi(self, temp_root: str) -> None:
         cfg = self.engine.cfg
 
         self.engine.reset_abort()
@@ -2285,7 +1414,7 @@ class RipperController:
         self.log(f"Multi-disc dump batch root: {batch_root}")
         self.log(f"Planned discs: {total}")
 
-        seen_fingerprints = set()
+        seen_fingerprints: set[str] = set()
         disc_number = 1
         verify_failures_for_slot = 0
         while disc_number <= total:
@@ -2407,11 +1536,14 @@ class RipperController:
                     context="Snapshotting pre-rip MKVs",
                 )
             )
-            success = self.engine.rip_all_titles(
-                rip_path,
-                on_progress=self.gui.set_progress,
-                on_log=self.log
+            from engine.ripper_engine import Job
+            job = Job(
+                source="all",
+                output=rip_path,
+                profile="default"
             )
+            result = self.engine.run_job(job)
+            success = result.success
             success, mkv_files = self._normalize_rip_result(
                 rip_path, success, [], _pre_rip_mkvs
             )
@@ -2479,7 +1611,7 @@ class RipperController:
             f"Use 'Organize Existing MKVs' to sort them."
         )
 
-    def run_organize(self):
+    def run_organize(self) -> None:
         cfg = self.engine.cfg
 
         if callable(getattr(self.gui, "ask_directory", None)):
@@ -2540,14 +1672,14 @@ class RipperController:
 
         is_tv = media_type in {"t", "tv"}
 
-        path_fields = [
+        path_fields: list[tuple[str, str]] = [
             ("tv_folder", "TV Folder"),
             ("temp_folder", "Temp Folder"),
         ] if is_tv else [
             ("movies_folder", "Movies Folder"),
             ("temp_folder", "Temp Folder"),
         ]
-        path_overrides = self._prompt_run_path_overrides(path_fields)
+        path_overrides: dict[str, str] | None = self._prompt_run_path_overrides(path_fields)
         if path_overrides is None:
             self.log("Cancelled before organize (path override step).")
             return
@@ -2566,18 +1698,21 @@ class RipperController:
             self.log(f"WARNING: No title — using: {title}")
         self.log(f"Title: {title}")
 
-        metadata_id = self.gui.ask_input(
+        metadata_input = self.gui.ask_input(
             "Metadata ID",
             "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
             "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
         )
+        metadata_id = str(metadata_input or "")
         if metadata_id:
             self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
+        year = "0000"
         if is_tv:
-            season_str = self.gui.ask_input(
+            season_input = self.gui.ask_input(
                 "Season", "Season number:"
             )
+            season_str = str(season_input or "")
             season = int(season_str) if (
                 season_str and season_str.isdigit()
             ) else 0
@@ -2594,7 +1729,8 @@ class RipperController:
             dest_folder = season_folder
             self.log(f"Season folder: {season_folder}")
         else:
-            year = self.gui.ask_input("Year", "Release year:")
+            year_input = self.gui.ask_input("Year", "Release year:")
+            year = str(year_input or "")
             if not year:
                 year = "0000"
                 self.log("WARNING: No year — using 0000")
@@ -2611,9 +1747,9 @@ class RipperController:
         self.gui.set_status("Analyzing files...")
         self.gui.start_indeterminate()
         try:
-            titles_list = self.engine.analyze_files(
+            titles_list: AnalyzedFiles = self.engine.analyze_files(
                 mkv_files, self.log
-            )
+            ) or []
         finally:
             self.gui.stop_indeterminate()
             self.gui.set_progress(0)
@@ -2623,9 +1759,13 @@ class RipperController:
             return
 
         move_ok = self._select_and_move(
-            titles_list, is_tv, title, dest_folder, extras_folder,
-            season if is_tv else None,
-            year if not is_tv else None
+            titles_list,
+            is_tv,
+            title,
+            dest_folder,
+            extras_folder,
+            0,
+            year,
         )
 
         if move_ok:
@@ -2652,7 +1792,7 @@ class RipperController:
         self.flush_log()
         self.gui.show_info("Done", "Organize complete!")
 
-    def _offer_temp_manager(self, temp_root):
+    def _offer_temp_manager(self, temp_root: str) -> None:
         old_folders = self.engine.find_old_temp_folders(temp_root)
         if not old_folders:
             return
@@ -2660,7 +1800,11 @@ class RipperController:
             old_folders, self.engine, self.log
         )
 
-    def _ask_extras_selection(self, titles_list, main_indices):
+    def _ask_extras_selection(
+        self,
+        titles_list: AnalyzedFiles,
+        main_indices: list[int],
+    ) -> tuple[list[int] | None, list[int] | None]:
         """Prompt user to select which non-main titles to keep as extras.
 
         When opt_extras_folder_mode is "split", shows two pickers so the
@@ -2724,7 +1868,7 @@ class RipperController:
         )
         if extras_chosen is None:
             return [], []
-        extras_abs = (
+        extras_abs: list[int] = (
             [_non_main[c] for c in extras_chosen]
             if extras_chosen else []
         )
@@ -2733,7 +1877,7 @@ class RipperController:
         extras_set = set(extras_abs)
         remaining = [i for i in _non_main if i not in extras_set]
 
-        bonus_abs = []
+        bonus_abs: list[int] = []
         if remaining:
             remaining_opts = [
                 f"{os.path.basename(titles_list[i][0])}  "
@@ -2754,7 +1898,7 @@ class RipperController:
 
         return extras_abs, bonus_abs
 
-    def _run_disc(self, is_tv):
+    def _run_disc(self, is_tv: bool) -> None:
         cfg        = self.engine.cfg
         path_fields = [
             ("tv_folder", "TV Folder"),
@@ -2769,9 +1913,9 @@ class RipperController:
             return
         self._init_session_paths(path_overrides)
         self._log_session_paths()
-        tv_root = self.get_path("tv")
-        movie_root = self.get_path("movies")
-        temp_root = self.get_path("temp")
+        tv_root: str = self.get_path("tv")
+        movie_root: str = self.get_path("movies")
+        temp_root: str = self.get_path("temp")
 
         self.engine.reset_abort()
         self._reset_state_machine()
@@ -2779,8 +1923,17 @@ class RipperController:
         self.global_extra_counter = 1
         self.session_report       = []
         disc_number = 0
-        season      = 0
-        year        = "0000"
+        season = 0
+        year = "0000"
+        title = ""
+        metadata_id: str | None = None
+        mid: str | None = None
+        library_root: str | None = None
+        library_state: dict[int, list[int]] = {}
+        series_root: str = temp_root
+        dest_folder = ""
+        extras_folder = ""
+        rip_path = ""
 
         self.engine.cleanup_partial_files(temp_root, self.log)
         if cfg.get("opt_show_temp_manager", True):
@@ -2795,8 +1948,8 @@ class RipperController:
         # Resume-from-old-session is intentionally disabled. We still keep
         # writing per-run JSON metadata for logs/debug context, but new runs
         # always start fresh instead of offering chained resume prompts.
-        resume_meta = {}
-        resume_path = None
+        resume_meta: dict[str, Any] = {}
+        resume_path: str | None = None
 
         if is_tv:
             # -------------------------------------------------------
@@ -2807,9 +1960,6 @@ class RipperController:
             # detect what episodes exist, and pick up exactly where
             # the library left off — including filling gaps.
             # -------------------------------------------------------
-            library_root: str | None = None
-            library_state: dict = {}   # {season_num: [ep, ...]}
-
             if not resume_meta and self.gui.ask_yesno(
                 "Continue an existing show folder?\n\n"
                 "Choose YES to point to a show folder that already has "
@@ -2818,16 +1968,17 @@ class RipperController:
                 "Choose NO to start a new folder from scratch."
             ):
                 if callable(getattr(self.gui, "ask_directory", None)):
-                    chosen = self.gui.ask_directory(
+                    chosen_input = self.gui.ask_directory(
                         "Library Folder",
                         "Choose existing show folder",
                         initialdir=tv_root,
                     )
                 else:
-                    chosen = self.gui.ask_input(
+                    chosen_input = self.gui.ask_input(
                         "Library Folder",
                         "Enter path to existing show folder (e.g. TV/Breaking Bad):",
                     )
+                chosen = str(chosen_input).strip() if chosen_input else None
                 if chosen and os.path.isdir(chosen):
                     library_root = os.path.normpath(chosen)
                     # Guard: if the user accidentally selected a Season folder
@@ -2861,7 +2012,7 @@ class RipperController:
                     self.log("No folder selected — starting fresh.")
                     library_root = None
 
-            title = self.gui.ask_input(
+            title_input = self.gui.ask_input(
                 "Title", "Exact TV show title:",
                 default_value=(
                     os.path.basename(library_root)
@@ -2869,16 +2020,18 @@ class RipperController:
                     else resume_meta.get("title", "")
                 )
             )
+            title = str(title_input or "")
             if not title:
                 title = self._fallback_title_from_mode()
                 self.log(f"WARNING: No title — using: {title}")
             self.log(f"Title: {title}")
 
-            metadata_id = self.gui.ask_input(
+            metadata_input = self.gui.ask_input(
                 "Metadata ID",
                 "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
                 "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
             )
+            metadata_id = str(metadata_input or "")
             if metadata_id:
                 self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
@@ -2904,13 +2057,15 @@ class RipperController:
                 f"and click OK when ready."
             )
 
-            active_resume = None
+            active_resume: dict[str, Any] | None = None
             if resume_meta and safe_int(
                 resume_meta.get("disc_number", 0)
             ) == disc_number:
                 active_resume = resume_meta
 
             auto_title_pending = False
+            selected_ids: list[int] = []
+            selected_size = 0
 
             if is_tv:
                 # Build the season prompt — when in library mode, show
@@ -2933,18 +2088,19 @@ class RipperController:
                         # to be the one still being collected).
                         default_season = str(max(library_state.keys()))
 
-                season_str = self.gui.ask_input(
+                season_input = self.gui.ask_input(
                     "Season",
                     f"Season number for disc {disc_number}:{season_hint}",
                     default_value=default_season,
                 )
+                season_str = str(season_input or "")
                 season = int(season_str) if (
                     season_str and season_str.isdigit()
                 ) else 0
                 if season == 0:
                     self.log("WARNING: No season number — using 00")
 
-                season_temp = os.path.join(
+                season_temp: str = os.path.join(
                     series_root, f"Season {season:02d}"
                 )
                 os.makedirs(season_temp, exist_ok=True)
@@ -2958,7 +2114,7 @@ class RipperController:
                 else:
                     season_folder = os.path.join(
                         tv_root,
-                        build_tv_folder_name(clean_name(title), metadata_id),
+                        build_tv_folder_name(clean_name(title), metadata_id or ""),
                         f"Season {season:02d}",
                     )
                 extras_folder = os.path.join(season_folder, "Extras")
@@ -2971,10 +2127,11 @@ class RipperController:
                 )
 
             else:
-                title = self.gui.ask_input(
+                title_input = self.gui.ask_input(
                     "Title", f"Title for disc {disc_number}:",
                     default_value=(active_resume or {}).get("title", "")
                 )
+                title = str(title_input or "")
                 if not title:
                     auto_title_pending = True
                     title = make_temp_title()
@@ -2982,25 +2139,27 @@ class RipperController:
                         "WARNING: No title entered — using fallback naming "
                         "mode after scan when possible."
                     )
-                year = self.gui.ask_input(
+                year_input = self.gui.ask_input(
                     "Year", "Release year:",
                     default_value=str(
                         (active_resume or {}).get("year", year)
                     )
                 )
+                year = str(year_input or "")
                 if not year:
                     year = "0000"
                     self.log("WARNING: No year — using 0000")
-                mid = self.gui.ask_input(
+                mid_input = self.gui.ask_input(
                     "Metadata ID",
                     "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
                     "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
                 )
+                mid = str(mid_input or "")
                 if mid:
                     self.log(f"Metadata ID: {parse_metadata_id(mid)}")
                 movie_folder = os.path.join(
                     movie_root,
-                    build_movie_folder_name(clean_name(title), year, mid),
+                    build_movie_folder_name(clean_name(title), year, mid or ""),
                 )
                 extras_folder = os.path.join(movie_folder, "Extras")
                 os.makedirs(movie_folder, exist_ok=True)
@@ -3036,7 +2195,7 @@ class RipperController:
                 break
 
             time.sleep(2)  # drive spin-up / mount stabilization
-            disc_titles = self.scan_with_retry()
+            disc_titles: DiscTitles | None = self.scan_with_retry()
 
             if self.engine.abort_event.is_set():
                 break
@@ -3075,7 +2234,7 @@ class RipperController:
                     movie_folder = os.path.join(
                         movie_root,
                         build_movie_folder_name(
-                            clean_name(title), year, mid,
+                            clean_name(title), year, mid or "",
                         ),
                     )
                     extras_folder = os.path.join(movie_folder, "Extras")
@@ -3097,7 +2256,7 @@ class RipperController:
             )
 
             if restored_selected_ids:
-                selected_ids = restored_selected_ids
+                selected_ids: list[int] = restored_selected_ids
                 selected_size = sum(
                     t["size_bytes"] for t in disc_titles
                     if t["id"] in selected_ids
@@ -3109,8 +2268,6 @@ class RipperController:
 
             # Select best by score, not incoming list position.
             if not restored_selected_ids and cfg.get("opt_smart_rip_mode", False):
-                selected_ids = None
-                selected_size = 0
                 best, smart_score = choose_best_title(
                     disc_titles, require_valid=True
                 )
@@ -3133,12 +2290,13 @@ class RipperController:
                         if self.gui.ask_yesno(
                             "Open manual title picker with Preview buttons?"
                         ):
-                            selected_ids = self.gui.show_disc_tree(
+                            selected_ids_raw = self.gui.show_disc_tree(
                                 disc_titles, is_tv, self.preview_title
                             )
-                            if selected_ids is None:
+                            if selected_ids_raw is None:
                                 self.log("Cancelled.")
                                 break
+                            selected_ids = [int(item) for item in selected_ids_raw]
                             if not selected_ids:
                                 self.log("No titles selected.")
                                 if not self.gui.ask_yesno("Try again?"):
@@ -3157,30 +2315,33 @@ class RipperController:
                                 break
                             continue
                     else:
-                        selected_ids  = [best["id"]]
-                        selected_size = best.get("size_bytes", 0)
+                        best_id = safe_int(best.get("id", -1))
+                        selected_ids = [best_id]
+                        selected_size = safe_int(best.get("size_bytes", 0))
                         self.log(
                             f"Smart Rip: auto-selected Title "
-                            f"{best['id']+1} "
+                            f"{best_id + 1} "
                             f"(score={smart_score:.3f}) "
                             f"{best['duration']} {best['size']}"
                         )
                 else:
-                    selected_ids  = [best["id"]]
-                    selected_size = best.get("size_bytes", 0)
+                    best_id = safe_int(best.get("id", -1))
+                    selected_ids = [best_id]
+                    selected_size = safe_int(best.get("size_bytes", 0))
                     self.log(
                         f"Smart Rip: auto-selected Title "
-                        f"{best['id']+1} "
+                        f"{best_id + 1} "
                         f"(score={smart_score:.3f}) "
                         f"{best['duration']} {best['size']}"
                     )
             elif not restored_selected_ids:
-                selected_ids = self.gui.show_disc_tree(
+                selected_ids_raw = self.gui.show_disc_tree(
                     disc_titles, is_tv, self.preview_title
                 )
-                if selected_ids is None:
+                if selected_ids_raw is None:
                     self.log("Cancelled.")
                     break
+                selected_ids = [int(item) for item in selected_ids_raw]
                 if not selected_ids:
                     self.log("No titles selected.")
                     if not self.gui.ask_yesno("Try again?"):
@@ -3191,7 +2352,7 @@ class RipperController:
                     if t["id"] in selected_ids
                 )
 
-            expected_size_by_title = {
+            expected_size_by_title: ExpectedSizeMap = {
                 int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
                 for t in disc_titles
                 if int(t.get("id", -1)) in selected_ids
@@ -3253,11 +2414,15 @@ class RipperController:
                     context="Snapshotting pre-rip MKVs",
                 )
             )
-            success, failed_titles = self.engine.rip_selected_titles(
-                rip_path, selected_ids,
-                on_progress=self.gui.set_progress,
-                on_log=self.log
+            from engine.ripper_engine import Job
+            job = Job(
+                source=','.join(str(tid) for tid in selected_ids),
+                output=rip_path,
+                profile="default"
             )
+            result = self.engine.run_job(job)
+            success = result.success
+            failed_titles = result.errors
             self._warn_degraded_rips()
 
             if failed_titles:
@@ -3376,13 +2541,13 @@ class RipperController:
             self.gui.set_status("Analyzing files...")
             self.gui.start_indeterminate()
             try:
-                titles_list = self.engine.analyze_files(
+                titles_list: AnalyzedFiles = self.engine.analyze_files(
                     mkv_files, self.log
-                )
+                ) or []
                 self.log(f"Analysis completed: {len(titles_list)} title(s) found.")
             except Exception as e:
                 self.log(f"ERROR during analysis: {e}")
-                titles_list = None
+                titles_list = []
             finally:
                 self.gui.stop_indeterminate()
                 self.gui.set_progress(0)
@@ -3403,9 +2568,10 @@ class RipperController:
                 int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
                 for t in disc_titles
             }
-            _exp_dur_d: dict = {}
-            _exp_size_d: dict = {}
-            for _tid, _files in (self.engine.last_title_file_map or {}).items():
+            _exp_dur_d: dict[str, float] = {}
+            _exp_size_d: dict[str, int] = {}
+            title_file_map = _normalize_title_file_map(self.engine.last_title_file_map)
+            for _tid, _files in title_file_map.items():
                 _ed = _dur_by_id_d.get(int(_tid), 0)
                 _es = _size_by_id_d.get(int(_tid), 0)
                 for _fp in _files:
@@ -3419,7 +2585,7 @@ class RipperController:
                 analyzed=titles_list,
                 expected_durations=_exp_dur_d or None,
                 expected_sizes=_exp_size_d or None,
-                title_file_map=self.engine.last_title_file_map or None,
+                title_file_map=title_file_map or None,
             ):
                 self.report(
                     f"Disc {disc_number}: ffprobe integrity check failed"
@@ -3443,9 +2609,13 @@ class RipperController:
                 continue
 
             move_ok = self._select_and_move(
-                titles_list, is_tv, title, dest_folder, extras_folder,
-                season if is_tv else None,
-                year if not is_tv else None,
+                titles_list,
+                is_tv,
+                title,
+                dest_folder,
+                extras_folder,
+                season if is_tv else 0,
+                year if not is_tv else "0000",
                 expected_size_by_title=expected_size_by_title,
                 session_rip_path=rip_path,
                 session_meta=active_resume,
@@ -3488,11 +2658,21 @@ class RipperController:
         self.gui.set_progress(0)
         self.gui.show_info("Done", "Session complete!")
 
-    def _select_and_move(self, titles_list, is_tv, title,
-                         dest_folder, extras_folder, season, year,
-                         expected_size_by_title=None, session_rip_path=None,
-                         session_meta=None, selected_title_ids=None):
-        options = []
+    def _select_and_move(
+        self,
+        titles_list: AnalyzedFiles,
+        is_tv: bool,
+        title: str,
+        dest_folder: str,
+        extras_folder: str,
+        season: int,
+        year: str,
+        expected_size_by_title: ExpectedSizeMap | None = None,
+        session_rip_path: str | None = None,
+        session_meta: dict[str, Any] | None = None,
+        selected_title_ids: list[int] | None = None,
+    ) -> bool:
+        options: list[str] = []
         for i, (f, dur, mb) in enumerate(titles_list, 1):
             mins = int(dur // 60) if dur > 0 else "?"
             options.append(
@@ -3500,7 +2680,8 @@ class RipperController:
             )
 
         restored_main_indices = self._map_title_ids_to_analyzed_indices(
-            titles_list, selected_title_ids
+            titles_list,
+            list(selected_title_ids or []),
         )
 
         self.log("Files (longest first, unknowns at end):")
@@ -3524,10 +2705,10 @@ class RipperController:
                     return False
 
                 main_indices = [
-                    int(s.split(":")[0]) - 1 for s in selected
+                    int(str(s).split(":")[0]) - 1 for s in selected
                 ]
 
-            default_episode_numbers = []
+            default_episode_numbers: list[int] = []
             if session_meta:
                 default_episode_numbers = session_meta.get(
                     "episode_numbers", []
@@ -3540,7 +2721,6 @@ class RipperController:
             if (
                 not default_episode_numbers
                 and dest_folder
-                and season is not None
             ):
                 existing_eps = self._scan_episode_files(dest_folder, season)
                 if existing_eps:
@@ -3605,7 +2785,7 @@ class RipperController:
                 # chosen episode numbers already exist as files in the
                 # destination folder.  This prevents silent overwrites
                 # when pointing at an existing library.
-                if dest_folder and season is not None:
+                if dest_folder:
                     existing_eps = self._scan_episode_files(
                         dest_folder, season
                     )
@@ -3688,12 +2868,12 @@ class RipperController:
                     self.log("Cancelled.")
                     return False
 
-                main_indices  = [int(selected[0].split(":")[0]) - 1]
+                main_indices = [int(str(selected[0]).split(":")[0]) - 1]
             extra_indices, bonus_indices = self._ask_extras_selection(
                 titles_list, main_indices
             )
-            episode_numbers = []
-            real_names      = []
+            episode_numbers: list[int] = []
+            real_names: list[str] = []
 
             if session_rip_path:
                 self.engine.update_temp_metadata(
@@ -3714,7 +2894,7 @@ class RipperController:
                     return False
 
         self.gui.set_status("Moving files...")
-        bonus_folder = None
+        bonus_folder: str | None = None
         if bonus_indices:
             bonus_name = self.engine.cfg.get(
                 "opt_bonus_folder_name", "featurettes"

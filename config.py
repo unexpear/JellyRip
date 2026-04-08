@@ -1,60 +1,59 @@
 """Configuration implementation for package-style imports."""
 
+from __future__ import annotations
+
 import json
+import logging
 import os
 import platform
 import shutil
 import subprocess
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass
+from os import PathLike
+from typing import TypeAlias, cast
 
 from shared.runtime import CONFIG_FILE, DEFAULTS, get_config_dir
 
-
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return dict(DEFAULTS)
-    try:
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            cfg = json.load(f)
-    except json.JSONDecodeError as exc:
-        print(f"Warning: config file is corrupt, resetting to defaults: {exc}")
-        cfg = {}
-    except Exception as exc:
-        print(f"Warning: could not read config, using defaults: {exc}")
-        cfg = {}
-    for key, value in DEFAULTS.items():
-        if key not in cfg:
-            cfg[key] = value
-
-    if "opt_naming_mode" not in cfg and "opt_fallback_title_mode" in cfg:
-        cfg["opt_naming_mode"] = cfg.get("opt_fallback_title_mode")
-
-    if "opt_fallback_title_mode" in cfg:
-        cfg.pop("opt_fallback_title_mode", None)
-
-    return cfg
+ConfigDict: TypeAlias = dict[str, object]
+ToolValidationResult: TypeAlias = tuple[bool, str]
+ToolValidator: TypeAlias = Callable[[str], ToolValidationResult]
 
 
-def save_config(cfg):
-    try:
-        tmp = CONFIG_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-        os.replace(tmp, CONFIG_FILE)
-    except Exception as exc:
-        raise RuntimeError(f"Could not save config: {exc}") from exc
+@dataclass(frozen=True)
+class AppConfig:
+    source: str
+    output: str
+    quality: str
+
+    def __post_init__(self) -> None:
+        if not self.source:
+            raise ValueError("source is required")
+        if not self.output:
+            raise ValueError("output is required")
 
 
-def _is_file(path):
-    return bool(path) and os.path.isfile(path)
+def _normalize_pathlike(path: str | PathLike[str] | None) -> str:
+    if not path:
+        return ""
+    return os.path.normpath(os.fspath(path))
 
 
-def _run_probe(executable, args):
-    if not _is_file(executable):
+def _is_file(path: str | PathLike[str] | None) -> bool:
+    normalized = _normalize_pathlike(path)
+    return bool(normalized) and os.path.isfile(normalized)
+
+
+def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> ToolValidationResult:
+    exe = _normalize_pathlike(executable)
+    if not _is_file(exe):
         return False, "Path does not exist"
+
+    command = [exe, *list(args)]
     try:
         if platform.system() == "Windows":
             proc = subprocess.run(
-                [executable] + list(args),
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=10,
@@ -62,40 +61,132 @@ def _run_probe(executable, args):
             )
         else:
             proc = subprocess.run(
-                [executable] + list(args),
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=10,
             )
     except Exception as exc:
         return False, str(exc)
+
     if proc.returncode != 0:
         return False, f"Exited with code {proc.returncode}"
     return True, ""
 
 
-def validate_makemkvcon(path):
-    return _run_probe(path, ["-r", "--version"])
+def auto_locate_ffmpeg() -> str:
+    """Find ffmpeg using common paths and PATH."""
+    candidates = [
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ffmpeg\ffmpeg.exe",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return shutil.which("ffmpeg") or ""
 
 
-def validate_ffprobe(path):
-    """Validate ffprobe. Accepts a direct exe path or a folder containing it."""
-    if os.path.isdir(path):
-        resolved = _resolve_ffprobe_from_dir(path)
-        if not resolved:
-            return False, "No ffprobe.exe found in folder"
-        return _run_probe(resolved, ["-version"])
+def auto_locate_handbrake() -> str:
+    """Find HandBrakeCLI using common paths and PATH."""
+    candidates = [
+        r"C:\Program Files\HandBrake\HandBrakeCLI.exe",
+        r"C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe",
+        r"C:\HandBrake\HandBrakeCLI.exe",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return shutil.which("HandBrakeCLI") or ""
+
+
+def validate_ffmpeg(path: str | PathLike[str] | None) -> ToolValidationResult:
     return _run_probe(path, ["-version"])
 
 
-def should_keep_current_tool_path(current_path, candidate_path, validator):
-    """Return True when current working path should be preserved.
+def validate_handbrake(path: str | PathLike[str] | None) -> ToolValidationResult:
+    return _run_probe(path, ["--version"])
 
-    Rule: never overwrite a working configured path unless the new path is
-    validated first.
-    """
-    current = os.path.normpath(str(current_path or "").strip())
-    candidate = os.path.normpath(str(candidate_path or "").strip())
+
+def load_config() -> ConfigDict:
+    """Load config as the mutable mapping shape used by the GUI and controller."""
+    raw: ConfigDict
+    if not os.path.exists(CONFIG_FILE):
+        raw = dict(DEFAULTS)
+    else:
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                loaded = json.load(f)
+            raw = cast(ConfigDict, loaded) if isinstance(loaded, dict) else dict(DEFAULTS)
+        except json.JSONDecodeError as exc:
+            logging.warning("Config file is corrupt, resetting to defaults: %s", exc)
+            raw = dict(DEFAULTS)
+        except Exception as exc:
+            logging.warning("Could not read config, using defaults: %s", exc)
+            raw = dict(DEFAULTS)
+
+    cfg: ConfigDict = dict(DEFAULTS)
+    cfg.update(raw)
+
+    if "opt_naming_mode" not in cfg and "opt_fallback_title_mode" in cfg:
+        cfg["opt_naming_mode"] = cfg.get("opt_fallback_title_mode", DEFAULTS["opt_naming_mode"])
+    cfg.pop("opt_fallback_title_mode", None)
+
+    required = ("temp_folder", "tv_folder", "movies_folder")
+    for field in required:
+        if not str(cfg.get(field, "") or "").strip():
+            raise ValueError(f"Missing required config field: {field}")
+
+    return cfg
+
+
+def save_config(cfg: Mapping[str, object] | AppConfig) -> None:
+    payload = asdict(cfg) if isinstance(cfg, AppConfig) else dict(cfg)
+    try:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+    except Exception as exc:
+        raise RuntimeError(f"Could not save config: {exc}") from exc
+
+
+def validate_makemkvcon(path: str | PathLike[str] | None) -> ToolValidationResult:
+    return _run_probe(path, ["-r", "--version"])
+
+
+def _resolve_ffprobe_from_dir(dirpath: str | PathLike[str] | None) -> str | None:
+    """Given a directory, look for ffprobe.exe inside it."""
+    normalized = _normalize_pathlike(dirpath)
+    if not normalized or not os.path.isdir(normalized):
+        return None
+    for subpath in ("ffprobe.exe", os.path.join("bin", "ffprobe.exe")):
+        candidate = os.path.join(normalized, subpath)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def validate_ffprobe(path: str | PathLike[str] | None) -> ToolValidationResult:
+    """Validate ffprobe. Accepts a direct exe path or a folder containing it."""
+    normalized = _normalize_pathlike(path)
+    if os.path.isdir(normalized):
+        resolved = _resolve_ffprobe_from_dir(normalized)
+        if not resolved:
+            return False, "No ffprobe.exe found in folder"
+        return _run_probe(resolved, ["-version"])
+    return _run_probe(normalized, ["-version"])
+
+
+def should_keep_current_tool_path(
+    current_path: str | PathLike[str] | None,
+    candidate_path: str | PathLike[str] | None,
+    validator: ToolValidator,
+) -> bool:
+    """Return True when current working path should be preserved."""
+    current = _normalize_pathlike(current_path)
+    candidate = _normalize_pathlike(candidate_path)
 
     if not current or candidate == current:
         return False
@@ -108,20 +199,22 @@ def should_keep_current_tool_path(current_path, candidate_path, validator):
     return not candidate_ok
 
 
-def resolve_tool(configured_path, common_paths, env_tool_name):
+def resolve_tool(
+    configured_path: str | PathLike[str] | None,
+    common_paths: Iterable[str],
+    env_tool_name: str,
+) -> str:
     """Resolve an executable path in order: config, common paths, then PATH."""
-    if _is_file(configured_path):
-        return configured_path
+    configured = _normalize_pathlike(configured_path)
+    if _is_file(configured):
+        return configured
     for path in common_paths:
         if _is_file(path):
-            return path
-    found = shutil.which(env_tool_name)
-    if found:
-        return found
-    return configured_path
+            return _normalize_pathlike(path)
+    return shutil.which(env_tool_name) or configured
 
 
-def resolve_makemkvcon(configured_path):
+def resolve_makemkvcon(configured_path: str | PathLike[str] | None) -> str:
     fallbacks = [
         r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
         r"C:\Program Files\MakeMKV\makemkvcon.exe",
@@ -129,175 +222,130 @@ def resolve_makemkvcon(configured_path):
     return resolve_tool(configured_path, fallbacks, "makemkvcon")
 
 
-def _resolve_ffprobe_from_dir(dirpath):
-    """Given a directory, look for ffprobe.exe inside it."""
-    if not dirpath or not os.path.isdir(dirpath):
-        return None
-    for subpath in [
-        "ffprobe.exe",
-        os.path.join("bin", "ffprobe.exe"),
-    ]:
-        candidate = os.path.join(dirpath, subpath)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+def resolve_ffprobe(configured_path: str | PathLike[str] | None) -> tuple[str, str]:
+    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder)."""
+    configured = _normalize_pathlike(configured_path)
+    if _is_file(configured):
+        return configured, "configured"
 
-
-def resolve_ffprobe(configured_path):
-    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder).
-
-    Returns (resolved_path, source) where source describes how it was found.
-    """
-    # If configured path is a direct exe, use it
-    if _is_file(configured_path):
-        return configured_path, "configured"
-    # If configured path is a directory, look for ffprobe inside it
-    found = _resolve_ffprobe_from_dir(configured_path)
+    found = _resolve_ffprobe_from_dir(configured)
     if found:
         return found, "configured folder"
-    # Try common install directories
-    for d in [
+
+    for directory in (
         r"C:\Program Files\ffmpeg",
         r"C:\Program Files\ffmpeg\bin",
         r"C:\Program Files (x86)\ffmpeg",
         r"C:\Program Files (x86)\ffmpeg\bin",
         r"C:\ffmpeg",
         r"C:\ffmpeg\bin",
-    ]:
-        found = _resolve_ffprobe_from_dir(d)
+    ):
+        found = _resolve_ffprobe_from_dir(directory)
         if found:
-            return found, f"common path ({d})"
-    # PATH lookup
+            return found, f"common path ({directory})"
+
     found = shutil.which("ffprobe")
     if found:
         return found, f"PATH ({found})"
-    return configured_path or "", "not found"
+    return configured, "not found"
 
 
-def _locate_makemkvcon_registry():
-    """Check Windows registry for a MakeMKV installation directory.
-
-    MakeMKV's Windows installer writes to:
-      HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MakeMKV
-    with a 'DisplayIcon' value pointing directly to MakeMKVcon.exe and an
-    'UninstallString' value pointing to uninst.exe in the same folder.
-    There is NO InstallLocation value written by the official installer.
-    """
+def _locate_makemkvcon_registry() -> str | None:
+    """Check Windows registry for a MakeMKV installation directory."""
     if platform.system() != "Windows":
         return None
     try:
         import winreg
+
         reg_paths = [
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
-            # Kept as fallbacks for non-standard or future installs
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MakeMKV"),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\MakeMKV"),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\MakeMKV"),
         ]
         for hive, subkey in reg_paths:
             try:
                 with winreg.OpenKey(hive, subkey) as key:
-                    # DisplayIcon is the value the real installer writes — check it first
                     for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
                         try:
-                            val, _ = winreg.QueryValueEx(key, value_name)
-                            if not val:
+                            value, _ = winreg.QueryValueEx(key, value_name)
+                            if not value:
                                 continue
-                            # Value may point directly to the exe
-                            if val.lower().endswith(".exe") and os.path.isfile(val):
-                                return val
-                            # Or it may be an install directory
-                            candidate = os.path.join(val, "makemkvcon.exe")
+                            raw = str(value).strip().strip('"')
+                            if raw.lower().endswith(".exe") and os.path.isfile(raw):
+                                return raw
+                            candidate = os.path.join(raw, "makemkvcon.exe")
                             if os.path.isfile(candidate):
                                 return candidate
                         except OSError:
                             continue
-                    # Last resort: derive install dir from UninstallString
                     try:
                         uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
-                        if uninstall:
-                            install_dir = os.path.dirname(uninstall)
-                            candidate = os.path.join(install_dir, "makemkvcon.exe")
-                            if os.path.isfile(candidate):
-                                return candidate
+                        install_dir = os.path.dirname(str(uninstall).strip().strip('"'))
+                        candidate = os.path.join(install_dir, "makemkvcon.exe")
+                        if os.path.isfile(candidate):
+                            return candidate
                     except OSError:
                         pass
             except OSError:
                 continue
-    except Exception as e:
-        import logging
-        logging.warning("_locate_makemkvcon_registry failed: %s", e)
+    except Exception as exc:
+        logging.warning("_locate_makemkvcon_registry failed: %s", exc)
     return None
 
 
-def _locate_ffprobe_registry():
+def _locate_ffprobe_registry() -> str | None:
     """Check Windows registry and known package-manager paths for ffprobe."""
     if platform.system() != "Windows":
         return None
     try:
         import winreg
+
         reg_paths = [
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
-            (winreg.HKEY_LOCAL_MACHINE,
-             r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Gyan.FFmpeg"),
         ]
         for hive, subkey in reg_paths:
             try:
                 with winreg.OpenKey(hive, subkey) as key:
                     for value_name in ("DisplayIcon", "InstallLocation", "InstallDir", "Path"):
                         try:
-                            val, _ = winreg.QueryValueEx(key, value_name)
-                            if val:
-                                val = str(val).strip().strip('"')
-                                if val.lower().endswith(".exe"):
-                                    if os.path.isfile(val) and os.path.basename(val).lower() == "ffprobe.exe":
-                                        return val
-                                    found = _resolve_ffprobe_from_dir(os.path.dirname(val))
-                                else:
-                                    found = _resolve_ffprobe_from_dir(val)
-                                if found:
-                                    return found
+                            value, _ = winreg.QueryValueEx(key, value_name)
+                            raw = str(value).strip().strip('"')
+                            if not raw:
+                                continue
+                            if raw.lower().endswith(".exe"):
+                                if os.path.isfile(raw) and os.path.basename(raw).lower() == "ffprobe.exe":
+                                    return raw
+                                found = _resolve_ffprobe_from_dir(os.path.dirname(raw))
+                            else:
+                                found = _resolve_ffprobe_from_dir(raw)
+                            if found:
+                                return found
                         except OSError:
                             continue
                     try:
                         uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
-                        if uninstall:
-                            uninstall = str(uninstall).strip().strip('"')
-                            install_dir = os.path.dirname(uninstall)
-                            found = _resolve_ffprobe_from_dir(install_dir)
-                            if found:
-                                return found
+                        install_dir = os.path.dirname(str(uninstall).strip().strip('"'))
+                        found = _resolve_ffprobe_from_dir(install_dir)
+                        if found:
+                            return found
                     except OSError:
                         pass
             except OSError:
                 continue
-    except Exception as e:
-        import logging
-        logging.warning("_locate_ffprobe_registry failed: %s", e)
-    # Chocolatey default path
+    except Exception as exc:
+        logging.warning("_locate_ffprobe_registry failed: %s", exc)
+
     choco = r"C:\tools\ffmpeg"
-    found = _resolve_ffprobe_from_dir(choco)
-    if found:
-        return found
-    return None
+    return _resolve_ffprobe_from_dir(choco)
 
 
-def auto_locate_tools():
-    """Find MakeMKV and ffprobe using Windows registry, common paths, and PATH.
-
-    Returns:
-        (makemkvcon_path, ffprobe_path) — empty string for any tool not found.
-    """
+def auto_locate_tools() -> tuple[str, str]:
+    """Find MakeMKV and ffprobe using Windows registry, common paths, and PATH."""
     makemkvcon = _locate_makemkvcon_registry() or resolve_makemkvcon("")
-    # resolve_makemkvcon returns the configured_path arg when nothing is found,
-    # so filter out the empty-string fallback.
     if not makemkvcon or not os.path.isfile(makemkvcon):
         makemkvcon = ""
 
@@ -311,16 +359,21 @@ def auto_locate_tools():
 
 
 __all__ = [
+    "AppConfig",
     "CONFIG_FILE",
     "DEFAULTS",
-    "get_config_dir",
+    "auto_locate_ffmpeg",
+    "auto_locate_handbrake",
     "auto_locate_tools",
+    "get_config_dir",
     "load_config",
+    "resolve_ffprobe",
     "resolve_makemkvcon",
     "resolve_tool",
-    "resolve_ffprobe",
     "save_config",
     "should_keep_current_tool_path",
+    "validate_ffmpeg",
     "validate_ffprobe",
+    "validate_handbrake",
     "validate_makemkvcon",
 ]

@@ -1,3 +1,10 @@
+from config import AppConfig
+# Example test using direct AppConfig construction
+def test_appconfig_direct_construction():
+    config = AppConfig(source="makemkvcon.exe", output="ffprobe.exe", quality="high")
+    assert config.source == "makemkvcon.exe"
+    assert config.output == "ffprobe.exe"
+    assert config.quality == "high"
 import os
 import sys
 
