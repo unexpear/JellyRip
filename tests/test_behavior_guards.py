@@ -722,6 +722,7 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
             monkeypatch.setattr(
                 "controller.controller.os.startfile",
                 lambda path: opened.append(path),
+                raising=False,
             )
         else:
             # Patch a dummy attribute so test runs on non-Windows
