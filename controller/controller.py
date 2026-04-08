@@ -1,5 +1,6 @@
 ﻿
 """Controller layer implementation."""
+# pyright: reportUnusedImport=false, reportUnusedVariable=false
 import os
 import re
 import shutil
@@ -124,6 +125,8 @@ class RipperController(LegacyControllerMixin):
         return self.engine.run_job(job)
 
     def emit(self, event: Event) -> None:
+        if not self.ui:
+            return
         if hasattr(self.ui, "handle_event"):
             self.ui.handle_event(event)
         # else: do nothing (no fallback to direct UI calls)
