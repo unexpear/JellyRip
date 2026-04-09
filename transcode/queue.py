@@ -2,8 +2,17 @@ from typing import List
 from .engine import TranscodeEngine
 
 class TranscodeQueue:
-    def __init__(self, log_dir: str = "logs"):
-        self.engine = TranscodeEngine(log_dir=log_dir)
+    def __init__(
+        self,
+        log_dir: str = "logs",
+        ffmpeg_exe: str = "ffmpeg",
+        handbrake_exe: str = "HandBrakeCLI",
+    ):
+        self.engine = TranscodeEngine(
+            log_dir=log_dir,
+            ffmpeg_exe=ffmpeg_exe,
+            handbrake_exe=handbrake_exe,
+        )
         self.jobs = []
         self.completed = []
         self.failed = []

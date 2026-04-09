@@ -67,6 +67,8 @@ _DEFAULT_MOVIES = (
 DEFAULTS: dict[str, ConfigScalar] = {
     "makemkvcon_path": r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
     "ffprobe_path": "",
+    "ffmpeg_path": "",
+    "handbrake_path": "",
     "temp_folder": _DEFAULT_TEMP,
     "tv_folder": _DEFAULT_TV,
     "movies_folder": _DEFAULT_MOVIES,

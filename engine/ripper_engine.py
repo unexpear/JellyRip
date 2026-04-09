@@ -1201,7 +1201,9 @@ class RipperEngine:
         order, not submission order.
 
         Returns list of (filepath, duration_seconds, size_mb) tuples,
-        sorted longest-first with unknowns appended at the end.
+        sorted longest-first. Ties fall back to larger files first, then
+        pathname order for determinism. Unknown-duration files are appended
+        at the end and sorted largest-first.
         """
         ffprobe = resolve_ffprobe(
             os.path.normpath(self.cfg["ffprobe_path"])
@@ -1244,9 +1246,23 @@ class RipperEngine:
                         f"{os.path.basename(res[0])}"
                     )
 
-        known   = [x for x in results if x[1] > 0]
+        known = [x for x in results if x[1] > 0]
         unknown = [x for x in results if x[1] <= 0]
-        known.sort(key=lambda x: x[1], reverse=True)
+        known.sort(
+            key=lambda x: (
+                -x[1],
+                -x[2],
+                os.path.basename(x[0]).lower(),
+                os.path.normpath(x[0]).lower(),
+            )
+        )
+        unknown.sort(
+            key=lambda x: (
+                -x[2],
+                os.path.basename(x[0]).lower(),
+                os.path.normpath(x[0]).lower(),
+            )
+        )
         return known + unknown
 
     def _probe_file_duration_and_size(self, path, ffprobe=None, honor_abort=False,

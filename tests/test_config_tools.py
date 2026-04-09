@@ -67,6 +67,15 @@ def test_resolve_tool_falls_back_to_env_path(monkeypatch, tmp_path):
     assert os.path.normpath(resolved) == os.path.normpath(str(env_tool))
 
 
+def test_auto_locate_ffmpeg_prefers_bundled_binary(monkeypatch, tmp_path):
+    bundled = tmp_path / "ffmpeg.exe"
+    bundled.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(config, "_bundled_binary_candidates", lambda _name: [str(bundled)])
+
+    assert os.path.normpath(config.auto_locate_ffmpeg()) == os.path.normpath(str(bundled))
+
+
 def test_should_keep_current_tool_path_when_new_is_invalid():
     def validator(path):
         return (path == "good.exe", "bad")

@@ -1,6 +1,7 @@
+import copy
 import json
 import os
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 PROFILE_SCHEMA = {
     # Video stream selection and encoding options
@@ -49,6 +50,52 @@ PROFILE_SCHEMA = {
 class ProfileValidationError(Exception):
     pass
 
+
+def _default_profile_data() -> Dict[str, Any]:
+    return {
+        "video": {
+            "codec": "h265",
+            "mode": "crf",
+            "crf": 22,
+            "bitrate": None,
+            "preset": "medium",
+            "hw_accel": "auto_prefer",
+        },
+        "audio": {
+            "mode": "copy",
+            "language": None,
+            "tracks": "all",
+        },
+        "subtitles": {
+            "mode": "all",
+            "burn": False,
+            "language": None,
+        },
+        "output": {
+            "container": "mkv",
+            "naming": "{title}_{profile}",
+            "overwrite": False,
+            "auto_increment": True,
+        },
+        "constraints": {
+            "skip_if_below_gb": 7,
+            "skip_if_codec_matches": True,
+        },
+        "metadata": {
+            "preserve": True,
+        },
+    }
+
+
+def _normalize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(_default_profile_data())
+    for section, section_value in data.items():
+        if isinstance(section_value, dict) and isinstance(normalized.get(section), dict):
+            normalized[section].update(section_value)
+        else:
+            normalized[section] = section_value
+    return normalized
+
 class TranscodeProfile:
     def __init__(self, name: str, data: Dict[str, Any]):
         self.name = name
@@ -91,7 +138,10 @@ class ProfileLoader:
             raw = json.load(f)
         self.profiles = {}
         for name, data in raw.get("transcode_profiles", {}).items():
-            self.profiles[name] = TranscodeProfile(name, data)
+            self.profiles[name] = TranscodeProfile(
+                name,
+                _normalize_profile_data(data),
+            )
         self.default = raw.get("default_profile", "Balanced (Recommended)")
 
     def save(self):
@@ -103,36 +153,7 @@ class ProfileLoader:
             json.dump(out, f, indent=2)
 
     def _create_default(self):
-        default_profile = {
-            "video": {
-                "codec": "h265",
-                "mode": "crf",
-                "crf": 22,
-                "bitrate": None,
-                "preset": "medium",
-                "hw_accel": "auto_prefer"
-            },
-            "audio": {
-                "mode": "copy",
-                "language": None,
-                "tracks": "all"
-            },
-            "subtitles": {
-                "mode": "all",
-                "burn": False,
-                "language": None
-            },
-            "output": {
-                "container": "mkv",
-                "naming": "{title}_{profile}",
-                "overwrite": False,
-                "auto_increment": True
-            },
-            "constraints": {
-                "skip_if_below_gb": 7,
-                "skip_if_codec_matches": True
-            }
-        }
+        default_profile = _default_profile_data()
         out = {
             "transcode_profiles": {"Balanced (Recommended)": default_profile},
             "default_profile": "Balanced (Recommended)"
