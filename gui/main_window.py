@@ -319,8 +319,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         util_frame = tk.Frame(self, bg=BG)
         util_frame.pack(fill="x", padx=20)
         tk.Button(
-            util_frame, text="📂  Folder Scanner",
-            command=self._open_folder_scanner,
+            util_frame, text="📂  Browse Folder",
+            command=self._browse_folder_in_explorer,
             bg="#21262d", fg="#8b949e",
             font=("Segoe UI", 10), relief="flat"
         ).pack(side="right", padx=4)
@@ -344,6 +344,12 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10), relief="flat"
         )
         self.settings_btn.pack(side="right", padx=4)
+    def _browse_folder_in_explorer(self):
+        folder = self.ask_directory("Browse Folder", "Choose a folder to open")
+        if not folder:
+            return
+        self._open_path_in_explorer(folder)
+
     def _open_folder_scanner(self):
         from tools.folder_scanner import scan_folder
         folder = self.ask_directory("Folder Scanner", "Choose a folder to scan")
@@ -463,13 +469,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         tk.Label(win, text=f"Mode: {mode_text} (read-only, no changes made)", bg=BG, fg="#8b949e", font=("Segoe UI", 10, "italic")).pack(pady=(0, 10))
         frame = tk.Frame(win, bg=BG)
         frame.pack(fill="both", expand=True, padx=16, pady=8)
-        tree = ttk.Treeview(frame, columns=("type", "size", "bad"), show="headings", style="Disc.Treeview")
+        tree = ttk.Treeview(frame, columns=("type", "size", "status"), show="headings", style="Disc.Treeview")
         tree.heading("type", text="Type")
         tree.heading("size", text="Size (MB)")
-        tree.heading("bad", text="Name Status")
+        tree.heading("status", text="Scan Status")
         tree.column("type", width=80, anchor="center")
         tree.column("size", width=100, anchor="e")
-        tree.column("bad", width=180, anchor="center")
+        tree.column("status", width=180, anchor="center")
         vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -479,10 +485,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             print("[DEBUG] No results to display in scan results window.")
         for entry in results:
             size_mb = entry["size"] / (1024*1024)
+            status_text = entry.get("status", "BAD/WEIRD" if entry["bad_name"] else "OK")
             tree.insert("", "end", values=(
                 "DIR" if entry["is_dir"] else "FILE",
                 f"{size_mb:8.2f}",
-                "BAD/WEIRD" if entry["bad_name"] else "OK"
+                status_text,
             ), text=entry["name"])
         # Add a close button
         tk.Button(win, text="Close", command=win.destroy, bg="#21262d", fg="#8b949e", font=("Segoe UI", 10), relief="flat").pack(pady=12)
@@ -846,6 +853,80 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
         return self._run_on_main(_pick)
 
+    def ask_open_file(
+        self,
+        title,
+        prompt,
+        initialdir="",
+        initialfile="",
+        filetypes=(("All files", "*.*"),),
+    ):
+        """Open a native file picker and return selected path or None."""
+        def _pick():
+            try:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.update_idletasks()
+            except Exception:
+                pass
+
+            chosen = filedialog.askopenfilename(
+                title=f"{title}: {prompt}",
+                initialdir=initialdir or os.path.expanduser("~"),
+                initialfile=initialfile or "",
+                filetypes=filetypes,
+                parent=self,
+            )
+
+            try:
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
+
+            return chosen if chosen else None
+
+        return self._run_on_main(_pick)
+
+    def ask_save_file(
+        self,
+        title,
+        prompt,
+        initialdir="",
+        initialfile="",
+        defaultextension="",
+        filetypes=(("All files", "*.*"),),
+    ):
+        """Open a native save dialog and return selected path or None."""
+        def _pick():
+            try:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.update_idletasks()
+            except Exception:
+                pass
+
+            chosen = filedialog.asksaveasfilename(
+                title=f"{title}: {prompt}",
+                initialdir=initialdir or os.path.expanduser("~"),
+                initialfile=initialfile or "",
+                defaultextension=defaultextension,
+                filetypes=filetypes,
+                parent=self,
+            )
+
+            try:
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
+
+            return chosen if chosen else None
+
+        return self._run_on_main(_pick)
+
     def ask_duplicate_resolution(self, prompt,
                                  retry_text="Swap and Retry",
                                  bypass_text="Not a Dup",
@@ -1070,6 +1151,94 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self._run_on_main(
             lambda: messagebox.showerror(title, msg, parent=self)
         )
+
+    def _open_path_in_explorer(self, path):
+        normalized = os.path.normpath(str(path))
+        if not os.path.exists(normalized):
+            self.show_error("Open in Explorer", f"Path not found:\n{normalized}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(normalized)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", normalized])
+            else:
+                subprocess.Popen(["xdg-open", normalized])
+        except Exception as e:
+            self.show_error("Open in Explorer", f"Could not open path:\n{normalized}\n\n{e}")
+
+    def _reveal_path_in_explorer(self, path):
+        normalized = os.path.normpath(str(path))
+        if not os.path.exists(normalized):
+            self.show_error("Reveal in Explorer", f"Path not found:\n{normalized}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                target = normalized
+                if os.path.isdir(normalized):
+                    self._open_path_in_explorer(normalized)
+                    return
+                subprocess.Popen(["explorer", f"/select,{target}"])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", normalized])
+            else:
+                self._open_path_in_explorer(os.path.dirname(normalized) or normalized)
+        except Exception as e:
+            self.show_error("Reveal in Explorer", f"Could not reveal path:\n{normalized}\n\n{e}")
+
+    def _browse_settings_path(self, key, label, current_path=""):
+        normalized = os.path.normpath(current_path) if current_path else ""
+        current_dir = ""
+        if normalized:
+            current_dir = normalized if os.path.isdir(normalized) else os.path.dirname(normalized)
+
+        folder_keys = {"ffprobe_path", "temp_folder", "tv_folder", "movies_folder"}
+        if key in folder_keys:
+            return self.ask_directory("Browse", f"Choose {label.lower()}", initialdir=current_dir)
+
+        if key == "log_file":
+            default_name = os.path.basename(normalized) if normalized else "jellyrip.log"
+            return self.ask_save_file(
+                "Log File",
+                f"Choose {label.lower()}",
+                initialdir=current_dir,
+                initialfile=default_name,
+                defaultextension=".log",
+                filetypes=(("Log files", "*.log *.txt"), ("All files", "*.*")),
+            )
+
+        default_name = os.path.basename(normalized) if normalized else ""
+        return self.ask_open_file(
+            "Tool Path",
+            f"Choose {label.lower()}",
+            initialdir=current_dir,
+            initialfile=default_name,
+            filetypes=(("Executable files", "*.exe"), ("All files", "*.*")),
+        )
+
+    def _open_settings_path(self, key, label, raw_path):
+        normalized = os.path.normpath(raw_path.strip()) if raw_path else ""
+        if not normalized:
+            self.show_info("Open in Explorer", f"No path set for {label.lower()} yet.")
+            return
+
+        folder_keys = {"ffprobe_path", "temp_folder", "tv_folder", "movies_folder"}
+        if key in folder_keys:
+            self._open_path_in_explorer(normalized)
+            return
+
+        if os.path.exists(normalized):
+            self._reveal_path_in_explorer(normalized)
+            return
+
+        parent = os.path.dirname(normalized)
+        if parent and os.path.isdir(parent):
+            self._open_path_in_explorer(parent)
+            return
+
+        self.show_error("Open in Explorer", f"Path not found:\n{normalized}")
 
     def ask_space_override(self, required_gb, free_gb):
         if threading.current_thread() is threading.main_thread():
@@ -1948,6 +2117,36 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     insertbackground="white",
                     relief="flat", bd=3, width=28
                 ).pack(side="left", padx=4)
+
+                def browse_path():
+                    chosen = self._browse_settings_path(
+                        key,
+                        label,
+                        var.get().strip(),
+                    )
+                    if chosen:
+                        var.set(os.path.normpath(chosen))
+
+                tk.Button(
+                    row, text="Browse",
+                    bg="#21262d", fg="#c9d1d9",
+                    font=("Segoe UI", 9),
+                    relief="flat", bd=0, padx=8, pady=2,
+                    cursor="hand2",
+                    command=browse_path,
+                ).pack(side="left", padx=(4, 2))
+                tk.Button(
+                    row, text="Open",
+                    bg="#21262d", fg="#8b949e",
+                    font=("Segoe UI", 9),
+                    relief="flat", bd=0, padx=8, pady=2,
+                    cursor="hand2",
+                    command=lambda: self._open_settings_path(
+                        key,
+                        label,
+                        var.get(),
+                    ),
+                ).pack(side="left", padx=(2, 0))
 
                 vars_map[key] = ("str", var)
 
