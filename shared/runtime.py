@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.12"
+__version__ = "1.0.13"
 
 ConfigScalar: TypeAlias = str | int | bool | float
 LogFn: TypeAlias = Callable[[str], None]
@@ -118,6 +118,7 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_naming_mode": "timestamp",
     "opt_extras_folder_mode": "single",
     "opt_bonus_folder_name": "featurettes",
+    "opt_ffmpeg_source_mode": "safe_copy",
     "opt_minlength_seconds": 0,
     "opt_makemkv_global_args": "",
     "opt_makemkv_info_args": "",

@@ -1,5 +1,8 @@
 from typing import List
-from .engine import TranscodeEngine
+from .engine import (
+    FFMPEG_SOURCE_MODE_SAFE_COPY,
+    TranscodeEngine,
+)
 
 class TranscodeQueue:
     def __init__(
@@ -7,11 +10,13 @@ class TranscodeQueue:
         log_dir: str = "logs",
         ffmpeg_exe: str = "ffmpeg",
         handbrake_exe: str = "HandBrakeCLI",
+        ffmpeg_source_mode: str = FFMPEG_SOURCE_MODE_SAFE_COPY,
     ):
         self.engine = TranscodeEngine(
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
             handbrake_exe=handbrake_exe,
+            ffmpeg_source_mode=ffmpeg_source_mode,
         )
         self.jobs = []
         self.completed = []

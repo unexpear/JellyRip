@@ -10,7 +10,7 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.12` (latest published pre-release)
+- Current unstable line: `v1.0.13` (next unstable pre-release)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -29,7 +29,7 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.12` unstable pre-release)
+(recommended, currently `v1.0.13` unstable pre-release)
 
 1. Go to the [latest release page](https://github.com/unexpear/JellyRip/releases/latest).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
@@ -116,8 +116,12 @@ Contribution and security guidance:
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name JellyRip main.py
+pyinstaller JellyRip.spec
 ```
+
+The spec bundles `ffmpeg.exe`, `ffprobe.exe`, and `ffplay.exe`. Put an
+extracted FFmpeg build under `.\ffmpeg\` or `..\ffmpeg\`, or set
+`JELLYRIP_FFMPEG_DIR` before building.
 
 ### Executable plus installer
 
@@ -136,18 +140,20 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.12
+release.bat 1.0.13
 ```
 
 This runs tests, checks version consistency, builds both executables,
 pushes code, and publishes a GitHub release with assets attached in the
-correct order. Never create a release without assets.
+correct order. It also refuses to run from a dirty working tree or a
+branch other than `main`. Never create a release without assets.
 
 ## Support and Reporting
 
 - Issues: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Release post text: [release_notes.md](release_notes.md)
+- Release post text: [release_notes.txt](release_notes.txt)
+- Readable release notes: [release_notes.md](release_notes.md)
 - Tester worksheet: [TESTERS.md](TESTERS.md)
 
 If Windows Defender flags the executable, whitelist the download folder

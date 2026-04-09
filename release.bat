@@ -1,16 +1,16 @@
 @echo off
 REM ============================================================
 REM  JellyRip release pipeline — enforces correct order:
-REM    tests -> build -> verify -> push -> publish
+REM    git-check -> tests -> build -> verify -> push -> publish
 REM
-REM  Usage:  release.bat 1.0.12
+REM  Usage:  release.bat 1.0.13
 REM ============================================================
 setlocal enabledelayedexpansion
 
 set VERSION=%~1
 if "%VERSION%"=="" (
     echo Usage: release.bat ^<version^>
-    echo Example: release.bat 1.0.12
+    echo Example: release.bat 1.0.13
     exit /b 1
 )
 
@@ -26,8 +26,27 @@ echo  JellyRip Release Pipeline v%VERSION%
 echo ========================================
 echo.
 
-REM ---- Step 1: Run tests ----
-echo [1/7] Running tests...
+REM ---- Step 1: Verify git state ----
+echo [1/8] Verifying git state...
+for /f %%I in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set CURRENT_BRANCH=%%I
+if errorlevel 1 (
+    echo ABORT: Could not determine current git branch.
+    exit /b 1
+)
+if /I not "%CURRENT_BRANCH%"=="main" (
+    echo ABORT: Releases must be created from branch main. Current branch: %CURRENT_BRANCH%
+    exit /b 1
+)
+for /f "delims=" %%I in ('git status --porcelain --untracked-files=normal') do (
+    echo ABORT: Working tree is not clean. Commit, stash, or ignore pending files before releasing.
+    echo        First pending entry: %%I
+    exit /b 1
+)
+echo       Git branch and working tree look clean.
+echo.
+
+REM ---- Step 2: Run tests ----
+echo [2/8] Running tests...
 %PYTHON_EXE% -m pytest tests/ -q --tb=short
 if errorlevel 1 (
     echo.
@@ -37,8 +56,8 @@ if errorlevel 1 (
 echo       Tests passed.
 echo.
 
-REM ---- Step 2: Check version consistency ----
-echo [2/7] Checking version consistency...
+REM ---- Step 3: Check version consistency ----
+echo [3/8] Checking version consistency...
 
 findstr /C:"__version__ = \"%VERSION%\"" shared\runtime.py >nul 2>&1
 if errorlevel 1 (
@@ -64,11 +83,17 @@ if errorlevel 1 (
     echo ABORT: CHANGELOG.md has no entry for %VERSION%
     exit /b 1
 )
+
+findstr /C:"v%VERSION%" release_notes.txt >nul 2>&1
+if errorlevel 1 (
+    echo ABORT: release_notes.txt does not mention v%VERSION%
+    exit /b 1
+)
 echo       All files show v%VERSION%.
 echo.
 
-REM ---- Step 3: Build exe ----
-echo [3/7] Building JellyRip.exe...
+REM ---- Step 4: Build exe ----
+echo [4/8] Building JellyRip.exe...
 %PYTHON_EXE% -m PyInstaller JellyRip.spec >nul 2>&1
 if errorlevel 1 (
     echo ABORT: PyInstaller build failed.
@@ -81,8 +106,8 @@ if not exist dist\JellyRip.exe (
 echo       dist\JellyRip.exe built.
 echo.
 
-REM ---- Step 4: Build installer ----
-echo [4/7] Building JellyRipInstaller.exe...
+REM ---- Step 5: Build installer ----
+echo [5/8] Building JellyRipInstaller.exe...
 if not exist "%ISCC_EXE%" (
     echo ABORT: Inno Setup compiler not found.
     exit /b 1
@@ -99,8 +124,8 @@ if not exist dist\JellyRipInstaller.exe (
 echo       dist\JellyRipInstaller.exe built.
 echo.
 
-REM ---- Step 5: Verify build outputs ----
-echo [5/7] Verifying build outputs...
+REM ---- Step 6: Verify build outputs ----
+echo [6/8] Verifying build outputs...
 for %%F in (dist\JellyRip.exe) do (
     if %%~zF LSS 1000000 (
         echo ABORT: JellyRip.exe is suspiciously small (%%~zF bytes).
@@ -116,8 +141,8 @@ for %%F in (dist\JellyRipInstaller.exe) do (
 echo       Both executables verified.
 echo.
 
-REM ---- Step 6: Push code ----
-echo [6/7] Pushing to GitHub...
+REM ---- Step 7: Push code ----
+echo [7/8] Pushing to GitHub...
 git push origin main
 if errorlevel 1 (
     echo ABORT: git push failed.
@@ -126,8 +151,8 @@ if errorlevel 1 (
 echo       Code pushed.
 echo.
 
-REM ---- Step 7: Create release with assets ----
-echo [7/7] Publishing release v%VERSION% with assets...
+REM ---- Step 8: Create release with assets ----
+echo [8/8] Publishing release v%VERSION% with assets...
 gh release create v%VERSION% dist\JellyRip.exe dist\JellyRipInstaller.exe --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
 if errorlevel 1 (
     echo ABORT: gh release create failed.

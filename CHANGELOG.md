@@ -2,6 +2,22 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.13] - 2026-04-09
+
+### Added
+
+- FFmpeg source handling now offers two user-facing modes: `Safe (Copy First)` and `Fast (Read Original)`, with plain-language explanations in Settings and the queue builder.
+
+### Changed
+
+- The current working release line is now aligned as `1.0.13`, with `1.0.12` left as the previous git revision point.
+- FFmpeg queue jobs and one-click recommendations now carry the selected source-handling mode through to logs and execution.
+
+### Fixed
+
+- `JellyRip.exe` now embeds Windows file and product version metadata so the next build shows a clean application version in Explorer.
+- Release metadata files (`README`, release notes, installer version, and release script examples) are synchronized for the `1.0.13` line.
+
 ## [1.0.12] - 2026-04-04
 
 ### Changed
