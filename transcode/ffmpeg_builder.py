@@ -2,11 +2,19 @@ from typing import Dict, Any, List
 from .profiles import TranscodeProfile
 
 class FFmpegBuilder:
-    def __init__(self, profile: TranscodeProfile, input_path: str, output_path: str, metadata: Dict[str, Any] = None):
+    def __init__(
+        self,
+        profile: TranscodeProfile,
+        input_path: str,
+        output_path: str,
+        metadata: Dict[str, Any] | None = None,
+        executable_path: str = "ffmpeg",
+    ):
         self.profile = profile
         self.input_path = input_path
         self.output_path = output_path
         self.metadata = metadata or {}
+        self.executable_path = executable_path or "ffmpeg"
 
     def build_command(self) -> List[str]:
         """
@@ -32,7 +40,7 @@ class FFmpegBuilder:
         # Remux/copy mode: all streams copied, preserve metadata and chapters
         if video == 'copy' and audio_mode == 'copy' and not sub_burn:
             cmd = [
-                'ffmpeg', '-i', self.input_path,
+                self.executable_path, '-i', self.input_path,
                 '-map', '0',  # map all streams
                 '-c', 'copy',
                 '-map_metadata', '0',
@@ -42,7 +50,7 @@ class FFmpegBuilder:
             ]
             return cmd
         # Transcode mode (video or audio or subtitle needs processing)
-        cmd = ['ffmpeg', '-i', self.input_path]
+        cmd = [self.executable_path, '-i', self.input_path]
         # Hardware acceleration (auto, nvenc, qsv, or CPU)
         if hw_accel and hw_accel.startswith('nvenc'):
             vcodec = f'h264_nvenc' if video == 'h264' else f'hevc_nvenc'

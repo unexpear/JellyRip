@@ -6,39 +6,31 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main  # type: ignore[import-not-found]
 
 
-def test_autofill_updates_invalid_paths(monkeypatch):
+def test_main_has_no_startup_autofill_helper():
+    assert not hasattr(main, "_autofill_tool_paths")
+
+
+def test_main_launches_gui_with_loaded_config(monkeypatch):
     cfg = {
         "makemkvcon_path": "",
         "ffprobe_path": "",
+        "ffmpeg_path": "",
+        "handbrake_path": "",
     }
-    saved = {"called": False}
+    launched = {"config": None, "mainloop_called": False}
 
-    monkeypatch.setattr(main, "auto_locate_tools", lambda: ("mkv.exe", "ffp.exe"))
-    monkeypatch.setattr(main, "validate_makemkvcon", lambda p: (p == "mkv.exe", "bad"))
-    monkeypatch.setattr(main, "validate_ffprobe", lambda p: (p == "ffp.exe", "bad"))
-    monkeypatch.setattr(main, "save_config", lambda _cfg: saved.__setitem__("called", True))
+    class _FakeGUI:
+        def __init__(self, config):
+            launched["config"] = config
 
-    main._autofill_tool_paths(cfg)
+        def mainloop(self):
+            launched["mainloop_called"] = True
 
-    assert cfg["makemkvcon_path"] == "mkv.exe"
-    assert cfg["ffprobe_path"] == "ffp.exe"
-    assert saved["called"] is True
+    monkeypatch.setattr(main, "load_config", lambda: cfg)
+    monkeypatch.setattr(main, "JellyRipperGUI", _FakeGUI)
+    monkeypatch.setattr(main.sys, "platform", "linux")
 
+    main.main()
 
-def test_autofill_keeps_working_paths(monkeypatch):
-    cfg = {
-        "makemkvcon_path": "current-mkv.exe",
-        "ffprobe_path": "current-ffp.exe",
-    }
-    saved = {"called": False}
-
-    monkeypatch.setattr(main, "auto_locate_tools", lambda: ("new-mkv.exe", "new-ffp.exe"))
-    monkeypatch.setattr(main, "validate_makemkvcon", lambda p: (p == "current-mkv.exe", "bad"))
-    monkeypatch.setattr(main, "validate_ffprobe", lambda p: (p == "current-ffp.exe", "bad"))
-    monkeypatch.setattr(main, "save_config", lambda _cfg: saved.__setitem__("called", True))
-
-    main._autofill_tool_paths(cfg)
-
-    assert cfg["makemkvcon_path"] == "current-mkv.exe"
-    assert cfg["ffprobe_path"] == "current-ffp.exe"
-    assert saved["called"] is False
+    assert launched["config"] is cfg
+    assert launched["mainloop_called"] is True

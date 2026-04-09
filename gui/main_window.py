@@ -106,13 +106,19 @@ from shared.runtime import (
 )
 
 from config import (
+    auto_locate_ffmpeg,
+    auto_locate_handbrake,
     auto_locate_tools,
     load_config,
+    resolve_ffprobe,
     save_config,
     should_keep_current_tool_path,
+    validate_ffmpeg,
     validate_ffprobe,
+    validate_handbrake,
     validate_makemkvcon,
 )
+from core.pipeline import PipelineController, TranscodeJob, choose_available_output_path
 from controller.controller import RipperController
 from controller.naming import (
     build_fallback_title,
@@ -121,6 +127,13 @@ from controller.naming import (
     resolve_naming_mode,
 )
 from engine.ripper_engine import RipperEngine
+from transcode.profiles import ProfileLoader, TranscodeProfile
+from transcode.queue import TranscodeQueue
+from transcode.recommendations import (
+    build_ffmpeg_recommendations,
+    format_analysis_summary,
+    probe_media_for_recommendation,
+)
 from utils.helpers import (
     get_available_drives,
     is_network_path,
@@ -129,6 +142,74 @@ from utils.helpers import (
 from utils.scoring import choose_best_title, format_audio_summary
 
 from gui.update_ui import check_for_updates, launch_downloaded_update
+
+
+HANDBRAKE_PRESETS = [
+    "Fast 1080p30",
+    "HQ 1080p30 Surround",
+    "Fast 2160p60 4K HEVC",
+    "HQ 2160p60 4K HEVC Surround",
+    "Super HQ 1080p30 Surround",
+]
+TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
+
+
+def _transcode_backend_label(backend: str) -> str:
+    return "HandBrake" if str(backend).strip().lower() == "handbrake" else "FFmpeg"
+
+
+def _suggest_transcode_output_root(scan_root: str, backend: str) -> str:
+    normalized_root = os.path.normpath(scan_root)
+    trimmed_root = normalized_root.rstrip("\\/")
+    parent = os.path.dirname(trimmed_root)
+    if not parent:
+        drive, _tail = os.path.splitdrive(trimmed_root)
+        parent = (drive + os.sep) if drive else normalized_root
+    folder_name = os.path.basename(trimmed_root) or "MKVs"
+    suffix = "HandBrake Output" if str(backend).strip().lower() == "handbrake" else "FFmpeg Output"
+    return os.path.join(parent, f"{folder_name} - {suffix}")
+
+
+def _build_transcode_plan(
+    scan_root: str,
+    selected_paths: list[str],
+    output_root: str,
+) -> list[dict[str, str]]:
+    normalized_root = os.path.normpath(scan_root)
+    normalized_output = os.path.normpath(output_root)
+    plans: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+
+    for input_path in selected_paths:
+        normalized_input = os.path.normpath(input_path)
+        dedupe_key = os.path.normcase(normalized_input)
+        if dedupe_key in seen_paths:
+            continue
+        seen_paths.add(dedupe_key)
+
+        try:
+            relative_path = os.path.relpath(normalized_input, normalized_root)
+        except ValueError:
+            relative_path = os.path.basename(normalized_input)
+
+        if relative_path.startswith(".."):
+            relative_path = os.path.basename(normalized_input)
+
+        relative_base, _relative_ext = os.path.splitext(relative_path)
+        output_relative_path = f"{relative_base}.mkv"
+        output_path = os.path.normpath(
+            os.path.join(normalized_output, output_relative_path)
+        )
+        plans.append(
+            {
+                "input_path": normalized_input,
+                "relative_path": relative_path,
+                "output_relative_path": output_relative_path,
+                "output_path": output_path,
+            }
+        )
+
+    return plans
 
 
 class JellyRipperGUI(tk.Tk, UIAdapter):
@@ -299,16 +380,34 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         mode_frame = tk.Frame(self, bg=BG)
         mode_frame.pack(pady=(12, 4))
         self.mode_buttons = {}
+
+        primary_row = tk.Frame(mode_frame, bg=BG)
+        primary_row.pack()
+        secondary_row = tk.Frame(mode_frame, bg=BG)
+        secondary_row.pack(pady=(8, 0))
+
         buttons_row1 = [
-            ("📀  Rip TV Show Disc",       "t",  "#238636", 20),
-            ("🎬  Rip Movie Disc",          "m",  "#238636", 20),
-            ("💾  Dump All Titles",         "d",  "#1f6feb", 18),
-            ("📁  Organize Existing MKVs", "i",  "#6e40c9", 22),
+            (primary_row, "📀  Rip TV Show Disc", "t", "#238636", 20, lambda: self.start_task("t")),
+            (primary_row, "🎬  Rip Movie Disc", "m", "#238636", 20, lambda: self.start_task("m")),
+            (primary_row, "💾  Dump All Titles", "d", "#1f6feb", 18, lambda: self.start_task("d")),
         ]
-        for text, mode, color, width in buttons_row1:
+        buttons_row2 = [
+            (secondary_row, "📁  Organize Existing MKVs", "i", "#6e40c9", 22, lambda: self.start_task("i")),
+            (
+                secondary_row,
+                "🧰  Prep MKVs For FFmpeg / HandBrake",
+                "scan",
+                "#9a6700",
+                30,
+                self._open_folder_scanner,
+            ),
+        ]
+
+        for parent, text, mode, color, width, command in buttons_row1 + buttons_row2:
             btn = tk.Button(
-                mode_frame, text=text,
-                command=lambda m=mode: self.start_task(m),
+                parent,
+                text=text,
+                command=command,
                 bg=color, fg="white",
                 font=("Segoe UI", 11),
                 width=width, height=2, relief="flat"
@@ -344,155 +443,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10), relief="flat"
         )
         self.settings_btn.pack(side="right", padx=4)
-    def _browse_folder_in_explorer(self):
-        folder = self.ask_directory("Browse Folder", "Choose a folder to open")
-        if not folder:
-            return
-        self._open_path_in_explorer(folder)
-
-    def _open_folder_scanner(self):
-        from tools.folder_scanner import scan_folder
-        folder = self.ask_directory("Folder Scanner", "Choose a folder to scan")
-        if not folder:
-            self.show_info("Folder Scanner", "No folder selected.")
-            return
-        # Ask for mode
-        mode = self._ask_folder_scan_mode()
-        if mode is None:
-            self.show_info("Folder Scanner", "Scan cancelled.")
-            return
-
-        # Determine log location (same dir as main log, but separate file)
-        main_log = self.cfg.get("log_file", "")
-        log_dir = os.path.dirname(main_log) if main_log else os.path.expanduser("~")
-        scan_log_path = os.path.join(log_dir, "folder_scan_log.txt")
-
-        # Progress popup
-        progress_win = tk.Toplevel(self)
-        progress_win.title("Scanning Folder...")
-        progress_win.geometry("400x120")
-        progress_win.configure(bg="#161b22")
-        progress_win.grab_set()
-        tk.Label(progress_win, text=f"Scanning: {folder}", bg="#161b22", fg="#58a6ff", font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
-        progress_var = tk.DoubleVar(value=0)
-        progress_bar = ttk.Progressbar(progress_win, variable=progress_var, maximum=100, mode="determinate")
-        progress_bar.pack(fill="x", padx=30, pady=(0, 12))
-        status_var = tk.StringVar(value="Starting scan...")
-        tk.Label(progress_win, textvariable=status_var, bg="#161b22", fg="#8b949e", font=("Segoe UI", 10, "italic")).pack()
-
-        results = []
-        def do_scan():
-            nonlocal results
-            import traceback
-            try:
-                def progress_cb(current, total):
-                    try:
-                        pct = (current / total) * 100 if total else 0
-                        progress_var.set(pct)
-                        status_var.set(f"Scanning {current} of {total} items...")
-                        progress_win.update_idletasks()
-                    except Exception as cb_exc:
-                        print("[ERROR] Exception in progress_cb:", cb_exc)
-                        traceback.print_exc()
-                results = scan_folder(folder, mode, progress_cb=progress_cb, log_path=scan_log_path)
-            except Exception as e:
-                print("[ERROR] Exception in folder scan thread:", e)
-                traceback.print_exc()
-                results.append(e)
-            self.after(0, on_done)
-
-        def on_done():
-            try:
-                progress_win.destroy()
-            except Exception as destroy_exc:
-                print("[ERROR] Exception destroying progress_win:", destroy_exc)
-            if results and isinstance(results[0], Exception):
-                import traceback
-                tb = traceback.format_exc()
-                print(f"[ERROR] Folder Scanner error: {results[0]}\nTraceback:\n{tb}")
-                self.show_error("Folder Scanner", f"Error scanning folder:\n{results[0]}\n\nSee terminal for traceback.")
-                return
-            try:
-                self._show_folder_scan_results(folder, results, mode)
-            except Exception as show_exc:
-                print("[ERROR] Exception showing scan results:", show_exc)
-                import traceback
-                traceback.print_exc()
-                self.show_error("Folder Scanner", f"Error displaying scan results:\n{show_exc}\n\nSee terminal for traceback.")
-
-        threading.Thread(target=do_scan, daemon=True).start()
-
-    def _ask_folder_scan_mode(self):
-        # Simple modal dialog for mode selection
-        win = tk.Toplevel(self)
-        win.title("Folder Scanner — Choose Mode")
-        win.configure(bg="#161b22")
-        win.grab_set()
-        win.resizable(False, False)
-        var = tk.IntVar(value=1)
-        tk.Label(win, text="Choose scan mode:", bg="#161b22", fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(padx=18, pady=(18, 6))
-        modes = [
-            ("1: Largest to Smallest", 1),
-            ("2: Bad/Weird Names", 2),
-            ("3: Alphabetical", 3),
-        ]
-        for text, val in modes:
-            tk.Radiobutton(win, text=text, variable=var, value=val, bg="#161b22", fg="#c9d1d9", selectcolor="#21262d", font=("Segoe UI", 11)).pack(anchor="w", padx=24)
-        btn_row = tk.Frame(win, bg="#161b22")
-        btn_row.pack(pady=16)
-        result = [None]
-        def ok():
-            result[0] = var.get()
-            win.destroy()
-        def cancel():
-            result[0] = None
-            win.destroy()
-        tk.Button(btn_row, text="OK", command=ok, bg="#238636", fg="white", font=("Segoe UI", 10, "bold"), width=10, relief="flat").pack(side="left", padx=8)
-        tk.Button(btn_row, text="Cancel", command=cancel, bg="#30363d", fg="#8b949e", font=("Segoe UI", 10), width=10, relief="flat").pack(side="left", padx=8)
-        win.wait_window()
-        return result[0]
-
-    def _show_folder_scan_results(self, folder, results, mode):
-        BG = "#0d1117"
-        import logging
-        logging.warning(f"[DEBUG] _show_folder_scan_results called. Results: {len(results)} entries. Mode: {mode}")
-        print(f"[DEBUG] _show_folder_scan_results called. Results: {len(results)} entries. Mode: {mode}")
-        win = tk.Toplevel(self)
-        win.title(f"Folder Scanner Results — {os.path.basename(folder)}")
-        win.configure(bg=BG)
-        win.geometry("900x600")
-        win.grab_set()
-        win.lift()
-        win.focus_force()
-        tk.Label(win, text=f"Scan Results for:\n{folder}", bg=BG, fg="#58a6ff", font=("Segoe UI", 12, "bold")).pack(pady=(16, 4))
-        mode_text = {1: "Largest to Smallest", 2: "Bad/Weird Names", 3: "Alphabetical"}.get(mode, "?")
-        tk.Label(win, text=f"Mode: {mode_text} (read-only, no changes made)", bg=BG, fg="#8b949e", font=("Segoe UI", 10, "italic")).pack(pady=(0, 10))
-        frame = tk.Frame(win, bg=BG)
-        frame.pack(fill="both", expand=True, padx=16, pady=8)
-        tree = ttk.Treeview(frame, columns=("type", "size", "status"), show="headings", style="Disc.Treeview")
-        tree.heading("type", text="Type")
-        tree.heading("size", text="Size (MB)")
-        tree.heading("status", text="Scan Status")
-        tree.column("type", width=80, anchor="center")
-        tree.column("size", width=100, anchor="e")
-        tree.column("status", width=180, anchor="center")
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        if not results:
-            logging.warning("[DEBUG] No results to display in scan results window.")
-            print("[DEBUG] No results to display in scan results window.")
-        for entry in results:
-            size_mb = entry["size"] / (1024*1024)
-            status_text = entry.get("status", "BAD/WEIRD" if entry["bad_name"] else "OK")
-            tree.insert("", "end", values=(
-                "DIR" if entry["is_dir"] else "FILE",
-                f"{size_mb:8.2f}",
-                status_text,
-            ), text=entry["name"])
-        # Add a close button
-        tk.Button(win, text="Close", command=win.destroy, bg="#21262d", fg="#8b949e", font=("Segoe UI", 10), relief="flat").pack(pady=12)
 
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
@@ -524,7 +474,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         )
         self.log_text.tag_configure("prompt", foreground="#f0e68c")
         self.log_text.tag_configure("answer", foreground="#90ee90")
-
 
         self.input_bar = tk.Frame(self, bg="#21262d")
         self.input_bar.pack(fill="x", padx=20, pady=4)
@@ -564,7 +513,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             command=self._skip_input, relief="flat"
         ).pack(side="left", padx=4, pady=8)
 
-        # Add abort button to the right side of the input bar
+        # Keep abort visible when the inline prompt bar is open.
         self.abort_btn = tk.Button(
             self.input_bar, text="ABORT SESSION",
             bg="#c94b4b", fg="white",
@@ -583,6 +532,1504 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         # Do not auto-probe optical drives on startup; probing can spin up
         # physical media drives and stall on some systems. Users can refresh
         # explicitly with the Refresh button.
+
+    def _browse_folder_in_explorer(self):
+        folder = self.ask_directory("Browse Folder", "Choose a folder to open")
+        if not folder:
+            return
+        self._open_path_in_explorer(folder)
+
+    def _open_folder_scanner(self):
+        from tools.folder_scanner import scan_folder
+
+        folder = self.ask_directory("Folder Scanner", "Choose a folder to scan")
+        if not folder:
+            self.show_info("Folder Scanner", "No folder selected.")
+            return
+
+        scan_options = self._ask_folder_scan_options()
+        if scan_options is None:
+            self.show_info("Folder Scanner", "Scan cancelled.")
+            return
+
+        main_log = self.cfg.get("log_file", "")
+        log_dir = os.path.dirname(main_log) if main_log else os.path.expanduser("~")
+        scan_log_path = os.path.join(log_dir, "folder_scan_log.txt")
+        ffprobe_exe = None
+        if str(scan_options.get("mode")) in {"duration_desc", "duration_asc"}:
+            ffprobe_exe = resolve_ffprobe(
+                os.path.normpath(self.cfg.get("ffprobe_path", ""))
+            )[0] or None
+
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Scanning MKVs...")
+        progress_win.geometry("400x120")
+        progress_win.configure(bg="#161b22")
+        progress_win.grab_set()
+        tk.Label(
+            progress_win,
+            text=f"Scanning: {folder}",
+            bg="#161b22",
+            fg="#58a6ff",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(pady=(18, 8))
+        progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(
+            progress_win,
+            variable=progress_var,
+            maximum=100,
+            mode="determinate",
+        )
+        progress_bar.pack(fill="x", padx=30, pady=(0, 12))
+        status_var = tk.StringVar(value="Starting scan...")
+        tk.Label(
+            progress_win,
+            textvariable=status_var,
+            bg="#161b22",
+            fg="#8b949e",
+            font=("Segoe UI", 10, "italic"),
+        ).pack()
+
+        results = []
+
+        def do_scan():
+            nonlocal results
+            import traceback
+
+            try:
+                def progress_cb(current, total):
+                    def _update_progress() -> None:
+                        pct = (current / total) * 100 if total else 0
+                        progress_var.set(pct)
+                        if total:
+                            status_var.set(f"Scanning {current} of {total} items...")
+                        else:
+                            status_var.set(f"Scanning {current} item(s)...")
+
+                    self.after(0, _update_progress)
+
+                results = scan_folder(
+                    folder,
+                    mode=scan_options["mode"],
+                    progress_cb=progress_cb,
+                    log_path=scan_log_path,
+                    recursive=bool(scan_options.get("recursive", True)),
+                    include_dirs=False,
+                    ffprobe_exe=ffprobe_exe,
+                )
+            except Exception as e:
+                print("[ERROR] Exception in folder scan thread:", e)
+                traceback.print_exc()
+                results.append(e)
+            self.after(0, on_done)
+
+        def on_done():
+            try:
+                progress_win.destroy()
+            except Exception as destroy_exc:
+                print("[ERROR] Exception destroying progress_win:", destroy_exc)
+            if results and isinstance(results[0], Exception):
+                import traceback
+
+                tb = traceback.format_exc()
+                print(f"[ERROR] Folder Scanner error: {results[0]}\nTraceback:\n{tb}")
+                self.show_error(
+                    "Folder Scanner",
+                    f"Error scanning folder:\n{results[0]}\n\nSee terminal for traceback.",
+                )
+                return
+            try:
+                self._show_folder_scan_results(folder, results, scan_options)
+            except Exception as show_exc:
+                print("[ERROR] Exception showing scan results:", show_exc)
+                import traceback
+
+                traceback.print_exc()
+                self.show_error(
+                    "Folder Scanner",
+                    f"Error displaying scan results:\n{show_exc}\n\nSee terminal for traceback.",
+                )
+
+        threading.Thread(target=do_scan, daemon=True).start()
+
+    def _ask_folder_scan_options(self):
+        from tools.folder_scanner import SORT_MODE_LABELS
+
+        win = tk.Toplevel(self)
+        win.title("MKV Scanner — Sort Options")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.resizable(False, False)
+        sort_var = tk.StringVar(value="size_desc")
+        recursive_var = tk.BooleanVar(value=True)
+        tk.Label(
+            win,
+            text="Scan MKV files for ffmpeg / HandBrake prep",
+            bg="#161b22",
+            fg="#58a6ff",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(padx=18, pady=(18, 6))
+        tk.Label(
+            win,
+            text="Only .mkv files are shown. Subfolders are scanned by default.",
+            bg="#161b22",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=420,
+            justify="left",
+        ).pack(padx=18, pady=(0, 10), anchor="w")
+        for mode, label in SORT_MODE_LABELS.items():
+            tk.Radiobutton(
+                win,
+                text=label,
+                variable=sort_var,
+                value=mode,
+                bg="#161b22",
+                fg="#c9d1d9",
+                selectcolor="#21262d",
+                font=("Segoe UI", 11),
+                anchor="w",
+            ).pack(anchor="w", padx=24)
+        tk.Checkbutton(
+            win,
+            text="Scan subfolders recursively",
+            variable=recursive_var,
+            bg="#161b22",
+            fg="#c9d1d9",
+            selectcolor="#21262d",
+            activebackground="#161b22",
+            activeforeground="#c9d1d9",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=24, pady=(8, 0))
+        btn_row = tk.Frame(win, bg="#161b22")
+        btn_row.pack(pady=16)
+        result = [None]
+
+        def ok():
+            result[0] = {
+                "mode": sort_var.get(),
+                "recursive": bool(recursive_var.get()),
+            }
+            win.destroy()
+
+        def cancel():
+            result[0] = None
+            win.destroy()
+
+        tk.Button(
+            btn_row,
+            text="Scan",
+            command=ok,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            width=10,
+            relief="flat",
+        ).pack(side="left", padx=8)
+        tk.Button(
+            btn_row,
+            text="Cancel",
+            command=cancel,
+            bg="#30363d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            width=10,
+            relief="flat",
+        ).pack(side="left", padx=8)
+        win.wait_window()
+        return result[0]
+
+    def _show_folder_scan_results(self, folder, results, scan_options):
+        from tools.folder_scanner import get_sort_mode_label
+
+        BG = "#0d1117"
+        win = tk.Toplevel(self)
+        win.title(f"MKV Scanner Results — {os.path.basename(folder)}")
+        win.configure(bg=BG)
+        win.geometry("1100x650")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        tk.Label(
+            win,
+            text=f"MKV Scan Results for:\n{folder}",
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(pady=(16, 4))
+        mode_text = get_sort_mode_label(scan_options["mode"])
+        recursive_text = (
+            "Recursive"
+            if scan_options.get("recursive", True)
+            else "Current folder only"
+        )
+        tk.Label(
+            win,
+            text=f"Sort: {mode_text} | Scope: {recursive_text} | MKV files only",
+            bg=BG,
+            fg="#8b949e",
+            font=("Segoe UI", 10, "italic"),
+        ).pack(pady=(0, 10))
+        frame = tk.Frame(win, bg=BG)
+        frame.pack(fill="both", expand=True, padx=16, pady=8)
+        tree = ttk.Treeview(
+            frame,
+            columns=("name", "folder", "size", "duration", "modified", "status"),
+            show="headings",
+            style="Disc.Treeview",
+            selectmode="extended",
+        )
+        tree.heading("name", text="Name")
+        tree.heading("folder", text="Folder")
+        tree.heading("size", text="Size")
+        tree.heading("duration", text="Runtime")
+        tree.heading("modified", text="Modified")
+        tree.heading("status", text="Status")
+        tree.column("name", width=280, anchor="w")
+        tree.column("folder", width=320, anchor="w")
+        tree.column("size", width=110, anchor="e")
+        tree.column("duration", width=90, anchor="e")
+        tree.column("modified", width=140, anchor="center")
+        tree.column("status", width=110, anchor="center")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        path_by_iid = {}
+        for index, entry in enumerate(results):
+            iid = f"scan_{index}"
+            path_by_iid[iid] = entry["path"]
+            relative_folder = os.path.dirname(entry["relative_path"]) or "."
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    entry["name"],
+                    relative_folder,
+                    entry["size_str"],
+                    entry["duration_str"],
+                    entry["modified_str"],
+                    entry["status"],
+                ),
+            )
+
+        footer = tk.Frame(win, bg=BG)
+        footer.pack(fill="x", padx=16, pady=(0, 12))
+        status_var = tk.StringVar(
+            value=(
+                f"{len(results)} MKV file(s) found"
+                if results else
+                "No MKV files found"
+            )
+        )
+        tk.Label(
+            footer,
+            textvariable=status_var,
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left")
+
+        def _selected_paths():
+            selected_iids = set(tree.selection())
+            return [
+                path_by_iid[iid]
+                for iid in tree.get_children("")
+                if iid in selected_iids and iid in path_by_iid
+            ]
+
+        def _reveal_selected(_event=None):
+            selected_paths = _selected_paths()
+            if not selected_paths:
+                status_var.set("Select at least one MKV file first.")
+                return
+            self._reveal_path_in_explorer(selected_paths[0])
+            status_var.set(f"Revealed: {os.path.basename(selected_paths[0])}")
+
+        def _copy_selected():
+            selected_paths = _selected_paths()
+            if not selected_paths:
+                status_var.set("Select at least one MKV file first.")
+                return
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(selected_paths))
+            status_var.set(f"Copied {len(selected_paths)} path(s) to the clipboard.")
+
+        def _select_all(_event=None):
+            children = tree.get_children("")
+            if not children:
+                status_var.set("No MKV files are available to select.")
+                return "break"
+            tree.selection_set(children)
+            status_var.set(f"Selected {len(children)} MKV file(s).")
+            return "break"
+
+        def _queue_selected():
+            selected_paths = _selected_paths()
+            if not selected_paths:
+                status_var.set("Select at least one MKV file first.")
+                return
+            self._open_transcode_queue_builder(folder, selected_paths)
+
+        def _recommend_selected():
+            selected_paths = _selected_paths()
+            if not selected_paths:
+                status_var.set("Select one MKV file first.")
+                return
+            if len(selected_paths) != 1:
+                status_var.set("Select exactly one MKV file for recommendations.")
+                return
+            self._open_ffmpeg_recommendation_scan(folder, selected_paths[0])
+
+        tree.bind("<Double-1>", _reveal_selected)
+        tree.bind("<Control-a>", _select_all)
+        tree.bind("<Control-A>", _select_all)
+        tree.focus_set()
+
+        button_row = tk.Frame(win, bg=BG)
+        button_row.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Button(
+            button_row,
+            text="Copy Selected Paths",
+            command=_copy_selected,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="Build Queue",
+            command=_queue_selected,
+            bg="#1f6feb",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="Recommend For Selected",
+            command=_recommend_selected,
+            bg="#9a6700",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="Reveal Selected",
+            command=_reveal_selected,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="Close",
+            command=win.destroy,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="right", padx=4)
+
+    def _open_ffmpeg_recommendation_scan(self, scan_root, input_path):
+        ffprobe_exe = resolve_ffprobe(
+            os.path.normpath(self.cfg.get("ffprobe_path", ""))
+        )[0] or ""
+        if not ffprobe_exe or not os.path.isfile(ffprobe_exe):
+            self.show_error(
+                "FFmpeg Recommendation",
+                "ffprobe is required for recommendations and was not found.\n\n"
+                "Open Settings > Paths and confirm the ffmpeg / ffprobe folder.",
+            )
+            return
+
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Analyzing MKV...")
+        progress_win.geometry("420x130")
+        progress_win.configure(bg="#161b22")
+        progress_win.grab_set()
+        tk.Label(
+            progress_win,
+            text=f"Analyzing:\n{os.path.basename(input_path)}",
+            bg="#161b22",
+            fg="#58a6ff",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(pady=(18, 8))
+        tk.Label(
+            progress_win,
+            text="Running a second pass with ffprobe to recommend safer FFmpeg settings.",
+            bg="#161b22",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=360,
+            justify="center",
+        ).pack(pady=(0, 12))
+        status_var = tk.StringVar(value="Starting analysis...")
+        tk.Label(
+            progress_win,
+            textvariable=status_var,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "italic"),
+        ).pack()
+
+        result_holder = {
+            "analysis": None,
+            "recommendation_result": None,
+            "error": None,
+        }
+
+        def _worker():
+            try:
+                result_holder["analysis"] = probe_media_for_recommendation(
+                    input_path,
+                    ffprobe_exe,
+                )
+                result_holder["recommendation_result"] = build_ffmpeg_recommendations(
+                    result_holder["analysis"]
+                )
+            except Exception as exc:
+                result_holder["error"] = exc
+            self.after(0, _on_done)
+
+        def _on_done():
+            try:
+                progress_win.destroy()
+            except Exception:
+                pass
+
+            error = result_holder["error"]
+            if error is not None:
+                self.show_error(
+                    "FFmpeg Recommendation",
+                    f"Could not analyze the selected MKV:\n{error}",
+                )
+                return
+
+            self._show_ffmpeg_recommendations(
+                scan_root,
+                result_holder["analysis"],
+                result_holder["recommendation_result"],
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_ffmpeg_recommendation_queue(
+        self,
+        scan_root,
+        analysis,
+        recommendation,
+        output_root,
+    ):
+        ffmpeg_exe, ffmpeg_status = self._resolve_transcode_backend_path("ffmpeg")
+        if not ffmpeg_exe:
+            self.show_error(
+                "FFmpeg Recommendation",
+                f"{ffmpeg_status}\n\nSet the FFmpeg executable in Settings > Paths.",
+            )
+            return False
+
+        if not output_root:
+            self.show_error(
+                "FFmpeg Recommendation",
+                "Choose an output folder before queuing the recommendation.",
+            )
+            return False
+
+        try:
+            os.makedirs(output_root, exist_ok=True)
+        except Exception as exc:
+            self.show_error(
+                "FFmpeg Recommendation",
+                f"Could not create the output folder:\n{exc}",
+            )
+            return False
+
+        plans = _build_transcode_plan(scan_root, [analysis["path"]], output_root)
+        if not plans:
+            self.show_error(
+                "FFmpeg Recommendation",
+                "The selected file could not be added to the queue.",
+            )
+            return False
+
+        profile = TranscodeProfile(
+            recommendation["profile_name"],
+            recommendation["profile_data"],
+        )
+        output_path = choose_available_output_path(
+            plans[0]["output_path"],
+            overwrite=profile.get("output", "overwrite", False),
+            auto_increment=profile.get("output", "auto_increment", True),
+        )
+        metadata = {
+            "source_relative_path": plans[0]["relative_path"],
+            "recommendation_id": recommendation["id"],
+            "recommendation_label": recommendation["label"],
+            "recommendation_details": recommendation["details"],
+            "source_video_codec": analysis["video_codec"],
+            "source_resolution": f"{analysis['width']}x{analysis['height']}",
+            "source_bitrate_bps": analysis["bitrate_bps"],
+        }
+        job = TranscodeJob(
+            analysis["path"],
+            output_path,
+            profile,
+            metadata=metadata,
+            backend="ffmpeg",
+        )
+
+        log_dir = os.path.join(get_config_dir(), "transcode_logs")
+        transcode_queue = TranscodeQueue(
+            log_dir=log_dir,
+            ffmpeg_exe=ffmpeg_exe,
+            handbrake_exe=self._resolve_transcode_backend_path("handbrake")[0],
+        )
+        transcode_queue.add_job(job)
+        self.controller.log(
+            f"FFmpeg recommendation queued for {analysis['name']}: "
+            f"{recommendation['label']} (CRF {recommendation['crf']}, preset {recommendation['preset']})"
+        )
+        self._run_transcode_queue(
+            transcode_queue,
+            "FFmpeg",
+            os.path.normpath(output_root),
+            queue_detail=(
+                f"{recommendation['label']} recommendation | "
+                f"CRF {recommendation['crf']} | preset {recommendation['preset']}"
+            ),
+        )
+        return True
+
+    def _show_ffmpeg_recommendations(self, scan_root, analysis, recommendation_result):
+        BG = "#0d1117"
+        win = tk.Toplevel(self)
+        win.title(f"FFmpeg Recommendation - {analysis['name']}")
+        win.configure(bg=BG)
+        win.geometry("960x700")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+
+        tk.Label(
+            win,
+            text=f"FFmpeg recommendations for {analysis['name']}",
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(padx=18, pady=(18, 6), anchor="w")
+        tk.Label(
+            win,
+            text=(
+                "This second pass looks at the actual file and gives you three safer starting points "
+                "for making it smaller with FFmpeg."
+            ),
+            bg=BG,
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=900,
+            justify="left",
+        ).pack(padx=18, pady=(0, 12), anchor="w")
+
+        summary_frame = tk.Frame(win, bg="#161b22")
+        summary_frame.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(
+            summary_frame,
+            text="File summary",
+            bg="#161b22",
+            fg="#58a6ff",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+        for line in format_analysis_summary(analysis):
+            tk.Label(
+                summary_frame,
+                text=line,
+                bg="#161b22",
+                fg="#c9d1d9",
+                font=("Segoe UI", 10),
+                anchor="w",
+                justify="left",
+            ).pack(fill="x", padx=12)
+
+        recommended_id = recommendation_result["recommended_id"]
+        selected_var = tk.StringVar(value=recommended_id)
+        recommendation_map = {
+            rec["id"]: rec
+            for rec in recommendation_result["recommendations"]
+        }
+        status_var = tk.StringVar(
+            value=f"We recommend {recommendation_map[recommended_id]['label']}. "
+            f"{recommendation_result['recommendation_reason']}"
+        )
+
+        if recommendation_result["advisory"]:
+            advisory_frame = tk.Frame(win, bg="#2d1f04")
+            advisory_frame.pack(fill="x", padx=18, pady=(0, 10))
+            tk.Label(
+                advisory_frame,
+                text=recommendation_result["advisory"],
+                bg="#2d1f04",
+                fg="#ffd866",
+                font=("Segoe UI", 10, "bold"),
+                wraplength=900,
+                justify="left",
+            ).pack(fill="x", padx=12, pady=10)
+
+        tk.Label(
+            win,
+            textvariable=status_var,
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 10, "bold"),
+            wraplength=900,
+            justify="left",
+        ).pack(padx=18, pady=(0, 10), anchor="w")
+
+        options_frame = tk.Frame(win, bg=BG)
+        options_frame.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+        for recommendation in recommendation_result["recommendations"]:
+            is_recommended = recommendation["id"] == recommended_id
+            card = tk.Frame(
+                options_frame,
+                bg="#161b22" if is_recommended else "#0f141a",
+                highlightthickness=1,
+                highlightbackground="#58a6ff" if is_recommended else "#30363d",
+            )
+            card.pack(fill="x", pady=6)
+            tk.Radiobutton(
+                card,
+                text=(
+                    f"{recommendation['label']}"
+                    f"{' (Recommended)' if is_recommended else ''}"
+                ),
+                variable=selected_var,
+                value=recommendation["id"],
+                bg=card.cget("bg"),
+                fg="#c9d1d9",
+                selectcolor="#21262d",
+                activebackground=card.cget("bg"),
+                activeforeground="#c9d1d9",
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+                command=lambda rec=recommendation: status_var.set(
+                    f"{rec['label']}: {rec['why']}"
+                ),
+            ).pack(anchor="w", padx=12, pady=(10, 2))
+            tk.Label(
+                card,
+                text=recommendation["summary"],
+                bg=card.cget("bg"),
+                fg="#58a6ff",
+                font=("Segoe UI", 10, "bold"),
+                anchor="w",
+                justify="left",
+            ).pack(fill="x", padx=34)
+            tk.Label(
+                card,
+                text=recommendation["details"],
+                bg=card.cget("bg"),
+                fg="#c9d1d9",
+                font=("Segoe UI", 10),
+                anchor="w",
+                justify="left",
+                wraplength=860,
+            ).pack(fill="x", padx=34, pady=(2, 2))
+            tk.Label(
+                card,
+                text=recommendation["why"],
+                bg=card.cget("bg"),
+                fg="#8b949e",
+                font=("Segoe UI", 10, "italic"),
+                anchor="w",
+                justify="left",
+                wraplength=860,
+            ).pack(fill="x", padx=34, pady=(0, 10))
+
+        output_root_var = tk.StringVar(
+            value=_suggest_transcode_output_root(scan_root, "ffmpeg")
+        )
+        output_row = tk.Frame(win, bg=BG)
+        output_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(
+            output_row,
+            text="Output root:",
+            bg=BG,
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+            width=12,
+            anchor="w",
+        ).pack(side="left")
+        tk.Entry(
+            output_row,
+            textvariable=output_root_var,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+            bd=3,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def _browse_output_root():
+            current_output = output_root_var.get().strip()
+            initial_dir = current_output or os.path.dirname(scan_root) or scan_root
+            chosen = self.ask_directory(
+                "FFmpeg Recommendation",
+                "Choose an output folder",
+                initialdir=initial_dir,
+            )
+            if chosen:
+                output_root_var.set(os.path.normpath(chosen))
+
+        tk.Button(
+            output_row,
+            text="Browse",
+            command=_browse_output_root,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left")
+
+        button_row = tk.Frame(win, bg=BG)
+        button_row.pack(fill="x", padx=18, pady=(0, 18))
+
+        def _queue_recommendation():
+            selected_recommendation = recommendation_map.get(selected_var.get())
+            if not selected_recommendation:
+                self.show_error(
+                    "FFmpeg Recommendation",
+                    "Choose a recommendation first.",
+                )
+                return
+            if self._start_ffmpeg_recommendation_queue(
+                scan_root,
+                analysis,
+                selected_recommendation,
+                output_root_var.get().strip(),
+            ):
+                win.destroy()
+
+        tk.Button(
+            button_row,
+            text="Queue Chosen Recommendation",
+            command=_queue_recommendation,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="Open Regular Queue",
+            command=lambda: self._open_transcode_queue_builder(
+                scan_root,
+                [analysis["path"]],
+                backend="ffmpeg",
+            ),
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left")
+        tk.Button(
+            button_row,
+            text="Close",
+            command=win.destroy,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="right")
+
+    def _resolve_transcode_backend_path(self, backend):
+        backend_key = str(backend or "").strip().lower()
+        if backend_key == "handbrake":
+            cfg_key = "handbrake_path"
+            auto_locator = auto_locate_handbrake
+            validator = validate_handbrake
+        else:
+            backend_key = "ffmpeg"
+            cfg_key = "ffmpeg_path"
+            auto_locator = auto_locate_ffmpeg
+            validator = validate_ffmpeg
+
+        backend_label = _transcode_backend_label(backend_key)
+        configured_path = str(self.cfg.get(cfg_key, "") or "").strip()
+        if configured_path:
+            configured_path = os.path.normpath(configured_path)
+            ok, reason = validator(configured_path)
+            if ok:
+                return configured_path, f"Using configured {backend_label}: {configured_path}"
+
+            auto_path = auto_locator()
+            if auto_path:
+                auto_path = os.path.normpath(auto_path)
+                auto_ok, _auto_reason = validator(auto_path)
+                if auto_ok:
+                    reason_text = reason or "validation failed"
+                    return (
+                        auto_path,
+                        f"Configured {backend_label} path failed ({reason_text}). "
+                        f"Using auto-detected {backend_label}: {auto_path}",
+                    )
+
+            reason_text = reason or "validation failed"
+            return "", f"{backend_label} is not ready: {reason_text}"
+
+        auto_path = auto_locator()
+        if auto_path:
+            auto_path = os.path.normpath(auto_path)
+            ok, reason = validator(auto_path)
+            if ok:
+                return auto_path, f"Using auto-detected {backend_label}: {auto_path}"
+            if reason:
+                return "", f"Auto-detected {backend_label} failed validation: {reason}"
+
+        return "", f"{backend_label} executable not found. Set it in Settings > Paths."
+
+    def _get_transcode_profile_loader(self):
+        profile_path = os.path.join(get_config_dir(), TRANSCODE_PROFILE_FILENAME)
+        return ProfileLoader(profile_path)
+
+    def _open_transcode_queue_builder(self, scan_root, selected_paths, backend="ffmpeg"):
+        backend_key = str(backend or "").strip().lower()
+        if backend_key not in {"ffmpeg", "handbrake"}:
+            backend_key = "ffmpeg"
+
+        normalized_paths = [
+            os.path.normpath(path)
+            for path in selected_paths
+            if str(path or "").strip()
+        ]
+        if not normalized_paths:
+            self.show_info(
+                "Build Queue",
+                "Select at least one MKV file before building a queue.",
+            )
+            return
+
+        try:
+            profile_loader = self._get_transcode_profile_loader()
+        except Exception as exc:
+            self.show_error(
+                "Build Queue",
+                f"Could not load transcode profiles:\n{exc}",
+            )
+            return
+
+        backend_choices = {
+            "FFmpeg": "ffmpeg",
+            "HandBrake": "handbrake",
+        }
+        backend_key_to_label = {value: key for key, value in backend_choices.items()}
+        backend_var = tk.StringVar(
+            value=backend_key_to_label.get(backend_key, "FFmpeg")
+        )
+        output_root_var = tk.StringVar(
+            value=_suggest_transcode_output_root(scan_root, backend_key)
+        )
+        executable_var = tk.StringVar()
+        option_label_var = tk.StringVar()
+        option_var = tk.StringVar()
+        start_button_var = tk.StringVar()
+        status_var = tk.StringVar(
+            value=f"Ready to queue {len(normalized_paths)} MKV file(s)."
+        )
+        suggested_output_state = {"value": output_root_var.get()}
+
+        profile_names = list(profile_loader.profiles)
+        default_profile_name = profile_loader.default or (
+            profile_names[0] if profile_names else ""
+        )
+
+        win = tk.Toplevel(self)
+        win.title("Transcode Queue Builder")
+        win.configure(bg="#0d1117")
+        win.geometry("980x620")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+
+        tk.Label(
+            win,
+            text=f"Queue {len(normalized_paths)} MKV file(s) for FFmpeg or HandBrake",
+            bg="#0d1117",
+            fg="#58a6ff",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(padx=18, pady=(18, 6), anchor="w")
+        tk.Label(
+            win,
+            text="Choose a backend, review the output layout, and keep the selected MKVs organized before sending them to the encoder.",
+            bg="#0d1117",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=920,
+            justify="left",
+        ).pack(padx=18, pady=(0, 10), anchor="w")
+
+        backend_row = tk.Frame(win, bg="#0d1117")
+        backend_row.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(
+            backend_row,
+            text="Backend:",
+            bg="#0d1117",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+            width=14,
+            anchor="w",
+        ).pack(side="left")
+        ttk.Combobox(
+            backend_row,
+            textvariable=backend_var,
+            values=list(backend_choices),
+            state="readonly",
+            width=20,
+        ).pack(side="left", padx=(0, 8))
+
+        executable_row = tk.Frame(win, bg="#0d1117")
+        executable_row.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(
+            executable_row,
+            text="Executable:",
+            bg="#0d1117",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+            width=14,
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            executable_row,
+            textvariable=executable_var,
+            bg="#0d1117",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=760,
+            justify="left",
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        output_row = tk.Frame(win, bg="#0d1117")
+        output_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(
+            output_row,
+            text="Output root:",
+            bg="#0d1117",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+            width=14,
+            anchor="w",
+        ).pack(side="left")
+        tk.Entry(
+            output_row,
+            textvariable=output_root_var,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+            bd=3,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def _selected_backend_key():
+            return backend_choices.get(backend_var.get(), "ffmpeg")
+
+        def _browse_output_root():
+            current_output = output_root_var.get().strip()
+            initial_dir = current_output or os.path.dirname(scan_root) or scan_root
+            chosen = self.ask_directory(
+                "Build Queue",
+                "Choose an output folder",
+                initialdir=initial_dir,
+            )
+            if chosen:
+                output_root_var.set(os.path.normpath(chosen))
+
+        def _reveal_output_root():
+            current_output = output_root_var.get().strip()
+            if not current_output:
+                status_var.set("Choose an output folder first.")
+                return
+            normalized_output = os.path.normpath(current_output)
+            if not os.path.isdir(normalized_output):
+                status_var.set("Output folder will be created when the queue starts.")
+                return
+            self._open_path_in_explorer(normalized_output)
+
+        tk.Button(
+            output_row,
+            text="Browse",
+            command=_browse_output_root,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left", padx=(0, 6))
+        tk.Button(
+            output_row,
+            text="Reveal",
+            command=_reveal_output_root,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left")
+
+        option_row = tk.Frame(win, bg="#0d1117")
+        option_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(
+            option_row,
+            textvariable=option_label_var,
+            bg="#0d1117",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+            width=14,
+            anchor="w",
+        ).pack(side="left")
+        option_menu = ttk.Combobox(
+            option_row,
+            textvariable=option_var,
+            state="readonly",
+            width=36,
+        )
+        option_menu.pack(side="left", padx=(0, 8))
+
+        tk.Label(
+            win,
+            text="Queue preview",
+            bg="#0d1117",
+            fg="#58a6ff",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(padx=18, pady=(4, 4), anchor="w")
+
+        preview_frame = tk.Frame(win, bg="#0d1117")
+        preview_frame.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+        preview_tree = ttk.Treeview(
+            preview_frame,
+            columns=("source", "output"),
+            show="headings",
+            style="Disc.Treeview",
+        )
+        preview_tree.heading("source", text="Source (relative)")
+        preview_tree.heading("output", text="Output (relative)")
+        preview_tree.column("source", width=360, anchor="w")
+        preview_tree.column("output", width=520, anchor="w")
+        preview_scroll = ttk.Scrollbar(
+            preview_frame, orient="vertical", command=preview_tree.yview
+        )
+        preview_tree.configure(yscrollcommand=preview_scroll.set)
+        preview_tree.pack(side="left", fill="both", expand=True)
+        preview_scroll.pack(side="right", fill="y")
+
+        def _refresh_preview(*_args):
+            current_output = output_root_var.get().strip()
+            plans = _build_transcode_plan(scan_root, normalized_paths, current_output)
+            preview_tree.delete(*preview_tree.get_children(""))
+            for idx, plan in enumerate(plans):
+                preview_tree.insert(
+                    "",
+                    "end",
+                    iid=f"plan_{idx}",
+                    values=(
+                        plan["relative_path"],
+                        plan["output_relative_path"],
+                    ),
+                )
+            if plans:
+                status_var.set(
+                    f"Queue preview ready: {len(plans)} MKV file(s) preserving subfolders."
+                )
+            else:
+                status_var.set("Choose an output folder to build the queue preview.")
+
+        def _refresh_backend_state(*_args):
+            current_backend = _selected_backend_key()
+            backend_label = _transcode_backend_label(current_backend)
+            suggested_output = _suggest_transcode_output_root(scan_root, current_backend)
+            current_output = output_root_var.get().strip()
+            previous_suggested = suggested_output_state["value"]
+            if (
+                not current_output or
+                os.path.normcase(os.path.normpath(current_output)) ==
+                os.path.normcase(os.path.normpath(previous_suggested))
+            ):
+                output_root_var.set(suggested_output)
+            suggested_output_state["value"] = suggested_output
+
+            _chosen_executable, executable_status = self._resolve_transcode_backend_path(
+                current_backend
+            )
+            executable_var.set(executable_status)
+
+            if current_backend == "ffmpeg":
+                option_label_var.set("FFmpeg profile:")
+                option_menu.configure(values=profile_names)
+                selected_value = option_var.get().strip()
+                if selected_value not in profile_names:
+                    option_var.set(default_profile_name)
+            else:
+                option_label_var.set("HandBrake preset:")
+                option_menu.configure(values=HANDBRAKE_PRESETS)
+                selected_value = option_var.get().strip()
+                if selected_value not in HANDBRAKE_PRESETS:
+                    option_var.set(HANDBRAKE_PRESETS[0])
+
+            start_button_var.set(f"Start {backend_label} Queue")
+
+        output_root_var.trace_add("write", _refresh_preview)
+        backend_var.trace_add("write", _refresh_backend_state)
+        _refresh_backend_state()
+        _refresh_preview()
+
+        footer = tk.Frame(win, bg="#0d1117")
+        footer.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(
+            footer,
+            textvariable=status_var,
+            bg="#0d1117",
+            fg="#58a6ff",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left")
+
+        button_row = tk.Frame(win, bg="#0d1117")
+        button_row.pack(fill="x", padx=18, pady=(0, 18))
+
+        def _start_queue():
+            current_backend = _selected_backend_key()
+            backend_label = _transcode_backend_label(current_backend)
+            output_root = output_root_var.get().strip()
+            if not output_root:
+                status_var.set("Choose an output folder first.")
+                return
+            if os.path.isfile(output_root):
+                status_var.set("The output root points to a file. Choose a folder instead.")
+                return
+
+            chosen_executable, chosen_status = self._resolve_transcode_backend_path(
+                current_backend
+            )
+            executable_var.set(chosen_status)
+            if not chosen_executable:
+                self.show_error(
+                    "Build Queue",
+                    f"{chosen_status}\n\nSet the executable in Settings > Paths.",
+                )
+                return
+
+            plans = _build_transcode_plan(scan_root, normalized_paths, output_root)
+            if not plans:
+                status_var.set("Nothing to queue. Select at least one MKV file.")
+                return
+
+            try:
+                os.makedirs(output_root, exist_ok=True)
+            except Exception as exc:
+                self.show_error(
+                    "Build Queue",
+                    f"Could not create the output folder:\n{exc}",
+                )
+                return
+
+            pipeline = PipelineController(profile_loader)
+            queue_detail = ""
+
+            try:
+                if current_backend == "ffmpeg":
+                    selected_profile = option_var.get().strip()
+                    if not selected_profile:
+                        status_var.set("Choose an FFmpeg profile first.")
+                        return
+                    queue_detail = f"Profile: {selected_profile}"
+                    for plan in plans:
+                        pipeline.add_job(
+                            plan["input_path"],
+                            plan["output_path"],
+                            profile_name=selected_profile,
+                            metadata={
+                                "source_relative_path": plan["relative_path"],
+                            },
+                            backend="ffmpeg",
+                        )
+                else:
+                    selected_preset = option_var.get().strip() or HANDBRAKE_PRESETS[0]
+                    queue_detail = f"Preset: {selected_preset}"
+                    for plan in plans:
+                        pipeline.add_job(
+                            plan["input_path"],
+                            plan["output_path"],
+                            metadata={
+                                "source_relative_path": plan["relative_path"],
+                            },
+                            backend="handbrake",
+                            backend_options={"preset": selected_preset},
+                        )
+            except Exception as exc:
+                self.show_error(
+                    "Build Queue",
+                    f"Could not build the queue:\n{exc}",
+                )
+                return
+
+            jobs = list(pipeline.get_queue())
+            if not jobs:
+                status_var.set("No transcode jobs were added to the queue.")
+                return
+
+            try:
+                for job in jobs:
+                    os.makedirs(
+                        os.path.dirname(job.output_path) or output_root,
+                        exist_ok=True,
+                    )
+            except Exception as exc:
+                self.show_error(
+                    "Build Queue",
+                    f"Could not prepare the output folders:\n{exc}",
+                )
+                return
+
+            log_dir = os.path.join(get_config_dir(), "transcode_logs")
+            ffmpeg_path = (
+                chosen_executable if current_backend == "ffmpeg"
+                else self._resolve_transcode_backend_path("ffmpeg")[0]
+            )
+            handbrake_path = (
+                chosen_executable if current_backend == "handbrake"
+                else self._resolve_transcode_backend_path("handbrake")[0]
+            )
+            transcode_queue = TranscodeQueue(
+                log_dir=log_dir,
+                ffmpeg_exe=ffmpeg_path,
+                handbrake_exe=handbrake_path,
+            )
+            for job in jobs:
+                transcode_queue.add_job(job)
+
+            self.controller.log(
+                f"{backend_label} queue created with {len(jobs)} job(s). "
+                f"Output root: {os.path.normpath(output_root)}. {queue_detail}"
+            )
+            win.destroy()
+            self._run_transcode_queue(
+                transcode_queue,
+                backend_label,
+                os.path.normpath(output_root),
+                queue_detail=queue_detail,
+            )
+
+        tk.Button(
+            button_row,
+            textvariable=start_button_var,
+            command=_start_queue,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="Reveal Output Root",
+            command=_reveal_output_root,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left")
+        tk.Button(
+            button_row,
+            text="Cancel",
+            command=win.destroy,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="right")
+
+    def _run_transcode_queue(
+        self,
+        transcode_queue,
+        backend_label,
+        output_root,
+        queue_detail="",
+    ):
+        total_jobs = len(transcode_queue.jobs)
+        if total_jobs <= 0:
+            self.show_info(
+                f"{backend_label} Queue",
+                "No jobs were available to run.",
+            )
+            return
+
+        BG = "#0d1117"
+        win = tk.Toplevel(self)
+        win.title(f"{backend_label} Queue Progress")
+        win.configure(bg=BG)
+        win.geometry("760x460")
+        win.lift()
+        win.focus_force()
+
+        tk.Label(
+            win,
+            text=f"{backend_label} queue is running",
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(padx=18, pady=(18, 6), anchor="w")
+        tk.Label(
+            win,
+            text=f"Output root: {output_root}",
+            bg=BG,
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            wraplength=700,
+            justify="left",
+        ).pack(padx=18, pady=(0, 2), anchor="w")
+        if queue_detail:
+            tk.Label(
+                win,
+                text=queue_detail,
+                bg=BG,
+                fg="#8b949e",
+                font=("Segoe UI", 10),
+            ).pack(padx=18, pady=(0, 8), anchor="w")
+
+        progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(
+            win,
+            variable=progress_var,
+            maximum=100,
+            mode="determinate",
+        )
+        progress_bar.pack(fill="x", padx=18, pady=(0, 8))
+
+        status_var = tk.StringVar(
+            value=f"Queued {total_jobs} job(s). Processing will continue in the background thread."
+        )
+        tk.Label(
+            win,
+            textvariable=status_var,
+            bg=BG,
+            fg="#58a6ff",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(padx=18, pady=(0, 8), anchor="w")
+
+        log_text = scrolledtext.ScrolledText(
+            win,
+            bg="#161b22",
+            fg="#c9d1d9",
+            insertbackground="white",
+            font=("Consolas", 10),
+            relief="flat",
+            height=16,
+        )
+        log_text.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+
+        def _append_log_line(message):
+            try:
+                if not win.winfo_exists():
+                    return
+                log_text.insert("end", f"{message}\n")
+                log_text.see("end")
+            except tk.TclError:
+                return
+
+        _append_log_line(f"Output root: {output_root}")
+        _append_log_line(f"Log folder: {transcode_queue.engine.log_dir}")
+        if queue_detail:
+            _append_log_line(queue_detail)
+
+        button_row = tk.Frame(win, bg=BG)
+        button_row.pack(fill="x", padx=18, pady=(0, 18))
+        tk.Button(
+            button_row,
+            text="Open Output Folder",
+            command=lambda: self._open_path_in_explorer(output_root),
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="Open Log Folder",
+            command=lambda: self._open_path_in_explorer(transcode_queue.engine.log_dir),
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left")
+        tk.Button(
+            button_row,
+            text="Close",
+            command=win.destroy,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="right")
+
+        def _feedback(message):
+            self.controller.log(f"[{backend_label}] {message}")
+
+            def _update_ui():
+                try:
+                    if not win.winfo_exists():
+                        return
+                    status_var.set(message)
+                    _append_log_line(message)
+                except tk.TclError:
+                    return
+
+            self.after(0, _update_ui)
+
+        def _mark_progress():
+            finished = len(transcode_queue.completed) + len(transcode_queue.failed)
+            pct = (finished / total_jobs) * 100 if total_jobs else 0
+            summary = (
+                f"{backend_label} progress: {finished}/{total_jobs} complete "
+                f"(success: {len(transcode_queue.completed)}, failed: {len(transcode_queue.failed)})"
+            )
+            try:
+                if not win.winfo_exists():
+                    return
+                progress_var.set(pct)
+                status_var.set(summary)
+                _append_log_line(summary)
+            except tk.TclError:
+                return
+
+        def _finish(message):
+            try:
+                if not win.winfo_exists():
+                    return
+                progress_var.set(100)
+                status_var.set(message)
+                _append_log_line(message)
+            except tk.TclError:
+                return
+
+        def _worker():
+            try:
+                while transcode_queue.jobs:
+                    transcode_queue.run_next(feedback_cb=_feedback)
+                    self.after(0, _mark_progress)
+            except Exception as exc:
+                error_message = f"{backend_label} queue stopped with an unexpected error: {exc}"
+                self.controller.log(error_message)
+                self.after(0, lambda: _finish(error_message))
+                return
+
+            summary = (
+                f"{backend_label} queue complete. Success: {len(transcode_queue.completed)}, "
+                f"Failed: {len(transcode_queue.failed)}"
+            )
+            self.controller.log(summary)
+            self.after(0, lambda: _finish(summary))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _refresh_drives(self):
         def _load():
@@ -2243,12 +3690,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             section(paths_tab, "Apps")
             path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
             path_row(paths_tab, "ffprobe_path",    "ffmpeg / ffprobe folder")
+            path_row(paths_tab, "ffmpeg_path",     "FFmpeg executable")
+            path_row(paths_tab, "handbrake_path",  "HandBrakeCLI executable")
 
             # Auto Locate button
             _auto_status_var = tk.StringVar()
 
             def _do_auto_locate():
                 mkv, ffp = auto_locate_tools()
+                ffmpeg = auto_locate_ffmpeg()
+                handbrake = auto_locate_handbrake()
                 results = []
                 if mkv:
                     vars_map["makemkvcon_path"][1].set(mkv)
@@ -2256,6 +3707,12 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 if ffp:
                     vars_map["ffprobe_path"][1].set(ffp)
                     results.append("FFprobe")
+                if ffmpeg:
+                    vars_map["ffmpeg_path"][1].set(ffmpeg)
+                    results.append("FFmpeg")
+                if handbrake:
+                    vars_map["handbrake_path"][1].set(handbrake)
+                    results.append("HandBrakeCLI")
                 if results:
                     _auto_status_var.set(f"  Found: {', '.join(results)}")
                 else:
@@ -2468,6 +3925,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     tool_validators = {
                         "makemkvcon_path": validate_makemkvcon,
                         "ffprobe_path": validate_ffprobe,
+                        "ffmpeg_path": validate_ffmpeg,
+                        "handbrake_path": validate_handbrake,
                     }
 
                     # Stage all changes before touching live config.

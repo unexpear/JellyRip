@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from os import PathLike
@@ -74,8 +75,38 @@ def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> T
     return True, ""
 
 
+def _bundled_binary_candidates(filename: str) -> list[str]:
+    candidates: list[str] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(str(getattr(sys, "executable", "") or ""))
+        if exe_dir:
+            candidates.append(os.path.join(exe_dir, filename))
+        meipass = str(getattr(sys, "_MEIPASS", "") or "")
+        if meipass:
+            candidates.append(os.path.join(meipass, filename))
+
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(app_dir, filename))
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_pathlike(candidate)
+        if not normalized:
+            continue
+        key = os.path.normcase(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(normalized)
+    return resolved
+
+
 def auto_locate_ffmpeg() -> str:
     """Find ffmpeg using common paths and PATH."""
+    for path in _bundled_binary_candidates("ffmpeg.exe" if os.name == "nt" else "ffmpeg"):
+        if os.path.isfile(path):
+            return path
     candidates = [
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
         r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
@@ -90,6 +121,11 @@ def auto_locate_ffmpeg() -> str:
 
 def auto_locate_handbrake() -> str:
     """Find HandBrakeCLI using common paths and PATH."""
+    for path in _bundled_binary_candidates(
+        "HandBrakeCLI.exe" if os.name == "nt" else "HandBrakeCLI"
+    ):
+        if os.path.isfile(path):
+            return path
     candidates = [
         r"C:\Program Files\HandBrake\HandBrakeCLI.exe",
         r"C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe",
@@ -231,6 +267,10 @@ def resolve_ffprobe(configured_path: str | PathLike[str] | None) -> tuple[str, s
     found = _resolve_ffprobe_from_dir(configured)
     if found:
         return found, "configured folder"
+
+    for bundled in _bundled_binary_candidates("ffprobe.exe" if os.name == "nt" else "ffprobe"):
+        if os.path.isfile(bundled):
+            return bundled, "bundled"
 
     for directory in (
         r"C:\Program Files\ffmpeg",

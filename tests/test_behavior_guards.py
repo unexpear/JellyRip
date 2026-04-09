@@ -700,22 +700,22 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         "analyze_files",
         lambda files, _log: [(files[0], 40, 100)] if files else [],
     )
-    monkeypatch.setattr("controller.controller.shutil.which", lambda _x: None)
+    monkeypatch.setattr("controller.legacy_compat.shutil.which", lambda _x: None)
     real_isfile = controller_module.os.path.isfile
     monkeypatch.setattr(
-        "controller.controller.os.path.isfile",
+        "controller.legacy_compat.os.path.isfile",
         lambda path: False if "VideoLAN\\VLC\\vlc.exe" in str(path) else real_isfile(path),
     )
     monkeypatch.setattr(
-        "controller.controller.subprocess.Popen",
+        "controller.legacy_compat.subprocess.Popen",
         lambda args: opened.append(args),
     )
     monkeypatch.setattr(
-        "controller.controller.os.startfile",
+        "controller.legacy_compat.os.startfile",
         lambda path: opened.append(path),
         raising=False,
     )
-    monkeypatch.setattr("controller.controller.time.sleep", lambda _x: None)
+    monkeypatch.setattr("controller.legacy_compat.time.sleep", lambda _x: None)
 
     # Run thread target inline for deterministic test behavior.
     class _ImmediateThread:
@@ -735,7 +735,7 @@ def test_preview_title_finds_nested_mkv_output(tmp_path, monkeypatch):
         def is_alive(self):
             return self._alive
 
-    monkeypatch.setattr("controller.controller.threading.Thread", _ImmediateThread)
+    monkeypatch.setattr("controller.legacy_compat.threading.Thread", _ImmediateThread)
 
     controller.preview_title(0)
 
@@ -992,7 +992,7 @@ def test_safe_glob_timeout_returns_empty_and_logs_warning(monkeypatch):
         time.sleep(0.2)
         return ["x.mkv"]
 
-    monkeypatch.setattr("controller.controller.glob.glob", slow_glob)
+    monkeypatch.setattr("controller.legacy_compat.glob.glob", slow_glob)
 
     matches = controller._safe_glob("*.mkv", recursive=False, timeout=0.01, context="test glob")
 
