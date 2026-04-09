@@ -127,6 +127,12 @@ from controller.naming import (
     resolve_naming_mode,
 )
 from engine.ripper_engine import RipperEngine
+from transcode.engine import (
+    FFMPEG_SOURCE_MODE_FAST_DIRECT,
+    FFMPEG_SOURCE_MODE_SAFE_COPY,
+    describe_ffmpeg_source_mode,
+    normalize_ffmpeg_source_mode,
+)
 from transcode.profiles import ProfileLoader, TranscodeProfile
 from transcode.queue import TranscodeQueue
 from transcode.recommendations import (
@@ -152,6 +158,21 @@ HANDBRAKE_PRESETS = [
     "Super HQ 1080p30 Surround",
 ]
 TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
+FFMPEG_SOURCE_MODE_VALUE_TO_LABEL = {
+    FFMPEG_SOURCE_MODE_SAFE_COPY: "Safe (Copy First)",
+    FFMPEG_SOURCE_MODE_FAST_DIRECT: "Fast (Read Original)",
+}
+FFMPEG_SOURCE_MODE_LABEL_TO_VALUE = {
+    label: value for value, label in FFMPEG_SOURCE_MODE_VALUE_TO_LABEL.items()
+}
+
+
+def _ffmpeg_source_mode_label(value: str) -> str:
+    normalized = normalize_ffmpeg_source_mode(value)
+    return FFMPEG_SOURCE_MODE_VALUE_TO_LABEL.get(
+        normalized,
+        FFMPEG_SOURCE_MODE_VALUE_TO_LABEL[FFMPEG_SOURCE_MODE_SAFE_COPY],
+    )
 
 
 def _transcode_backend_label(backend: str) -> str:
@@ -1076,6 +1097,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             "source_resolution": f"{analysis['width']}x{analysis['height']}",
             "source_bitrate_bps": analysis["bitrate_bps"],
         }
+        ffmpeg_source_mode = normalize_ffmpeg_source_mode(
+            self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
+        )
+        metadata["ffmpeg_source_mode"] = ffmpeg_source_mode
         job = TranscodeJob(
             analysis["path"],
             output_path,
@@ -1089,11 +1114,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
             handbrake_exe=self._resolve_transcode_backend_path("handbrake")[0],
+            ffmpeg_source_mode=ffmpeg_source_mode,
         )
         transcode_queue.add_job(job)
         self.controller.log(
             f"FFmpeg recommendation queued for {analysis['name']}: "
-            f"{recommendation['label']} (CRF {recommendation['crf']}, preset {recommendation['preset']})"
+            f"{recommendation['label']} (CRF {recommendation['crf']}, preset {recommendation['preset']}, "
+            f"source {_ffmpeg_source_mode_label(ffmpeg_source_mode)})"
         )
         self._run_transcode_queue(
             transcode_queue,
@@ -1101,7 +1128,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             os.path.normpath(output_root),
             queue_detail=(
                 f"{recommendation['label']} recommendation | "
-                f"CRF {recommendation['crf']} | preset {recommendation['preset']}"
+                f"CRF {recommendation['crf']} | preset {recommendation['preset']} | "
+                f"source {_ffmpeg_source_mode_label(ffmpeg_source_mode)}"
             ),
         )
         return True
@@ -1436,6 +1464,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         executable_var = tk.StringVar()
         option_label_var = tk.StringVar()
         option_var = tk.StringVar()
+        source_mode_help_var = tk.StringVar()
         start_button_var = tk.StringVar()
         status_var = tk.StringVar(
             value=f"Ready to queue {len(normalized_paths)} MKV file(s)."
@@ -1596,6 +1625,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             width=36,
         )
         option_menu.pack(side="left", padx=(0, 8))
+        tk.Label(
+            win,
+            textvariable=source_mode_help_var,
+            bg="#0d1117",
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+            wraplength=920,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=18, pady=(0, 10))
 
         tk.Label(
             win,
@@ -1670,12 +1709,23 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 selected_value = option_var.get().strip()
                 if selected_value not in profile_names:
                     option_var.set(default_profile_name)
+                current_source_mode = normalize_ffmpeg_source_mode(
+                    self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
+                )
+                source_mode_help_var.set(
+                    f"FFmpeg source handling: {_ffmpeg_source_mode_label(current_source_mode)}. "
+                    f"{describe_ffmpeg_source_mode(current_source_mode)} "
+                    "Change this in Settings > Advanced."
+                )
             else:
                 option_label_var.set("HandBrake preset:")
                 option_menu.configure(values=HANDBRAKE_PRESETS)
                 selected_value = option_var.get().strip()
                 if selected_value not in HANDBRAKE_PRESETS:
                     option_var.set(HANDBRAKE_PRESETS[0])
+                source_mode_help_var.set(
+                    "HandBrake reads the selected source file directly and writes a separate output file."
+                )
 
             start_button_var.set(f"Start {backend_label} Queue")
 
@@ -1735,6 +1785,9 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             pipeline = PipelineController(profile_loader)
             queue_detail = ""
+            ffmpeg_source_mode = normalize_ffmpeg_source_mode(
+                self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
+            )
 
             try:
                 if current_backend == "ffmpeg":
@@ -1742,7 +1795,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     if not selected_profile:
                         status_var.set("Choose an FFmpeg profile first.")
                         return
-                    queue_detail = f"Profile: {selected_profile}"
+                    queue_detail = (
+                        f"Profile: {selected_profile} | "
+                        f"Source: {_ffmpeg_source_mode_label(ffmpeg_source_mode)}"
+                    )
                     for plan in plans:
                         pipeline.add_job(
                             plan["input_path"],
@@ -1750,6 +1806,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                             profile_name=selected_profile,
                             metadata={
                                 "source_relative_path": plan["relative_path"],
+                                "ffmpeg_source_mode": ffmpeg_source_mode,
                             },
                             backend="ffmpeg",
                         )
@@ -1804,6 +1861,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 log_dir=log_dir,
                 ffmpeg_exe=ffmpeg_path,
                 handbrake_exe=handbrake_path,
+                ffmpeg_source_mode=ffmpeg_source_mode,
             )
             for job in jobs:
                 transcode_queue.add_job(job)
@@ -3686,6 +3744,33 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 )
                 combo.pack(side="left")
                 vars_map[key] = ("choice", selected)
+                return selected
+
+            def choice_map_row(parent, key, label, label_to_value):
+                row = tk.Frame(parent, bg="#0d1117")
+                row.pack(fill="x", padx=16, pady=2)
+                tk.Label(
+                    row, text=label,
+                    bg="#0d1117", fg="#c9d1d9",
+                    font=("Segoe UI", 10), anchor="w", width=36
+                ).pack(side="left")
+                current_value = str(
+                    cfg.get(key, DEFAULTS.get(key, ""))
+                ).strip()
+                normalized_value = normalize_ffmpeg_source_mode(current_value)
+                selected = tk.StringVar(
+                    value=_ffmpeg_source_mode_label(normalized_value)
+                )
+                combo = ttk.Combobox(
+                    row,
+                    textvariable=selected,
+                    values=list(label_to_value.keys()),
+                    state="readonly",
+                    width=24,
+                )
+                combo.pack(side="left")
+                vars_map[key] = ("choice_map", selected, label_to_value)
+                return selected
 
             section(paths_tab, "Apps")
             path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
@@ -3884,6 +3969,37 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                        "Force file sync to disk during copy")
             number_row(advanced_tab, "opt_hard_block_gb",
                        "Stop when free space is below (GB):", 20)
+            section(advanced_tab, "FFmpeg")
+            ffmpeg_source_mode_var = choice_map_row(
+                advanced_tab,
+                "opt_ffmpeg_source_mode",
+                "FFmpeg source handling:",
+                FFMPEG_SOURCE_MODE_LABEL_TO_VALUE,
+            )
+            ffmpeg_source_help_var = tk.StringVar()
+            tk.Label(
+                advanced_tab,
+                textvariable=ffmpeg_source_help_var,
+                bg="#0d1117",
+                fg="#8b949e",
+                font=("Segoe UI", 9),
+                wraplength=760,
+                justify="left",
+                anchor="w",
+            ).pack(fill="x", padx=16, pady=(0, 4))
+
+            def update_ffmpeg_source_help(*_args):
+                selected_label = ffmpeg_source_mode_var.get().strip()
+                selected_mode = FFMPEG_SOURCE_MODE_LABEL_TO_VALUE.get(
+                    selected_label,
+                    FFMPEG_SOURCE_MODE_SAFE_COPY,
+                )
+                ffmpeg_source_help_var.set(
+                    describe_ffmpeg_source_mode(selected_mode)
+                )
+
+            ffmpeg_source_mode_var.trace_add("write", update_ffmpeg_source_help)
+            update_ffmpeg_source_help()
             section(advanced_tab, "Extra MakeMKV Arguments")
             text_row(
                 advanced_tab,
@@ -3932,7 +4048,9 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     # Stage all changes before touching live config.
                     staged = {}
                     rejected_fields = []
-                    for key, (vtype, var) in vars_map.items():
+                    for key, entry in vars_map.items():
+                        vtype = entry[0]
+                        var = entry[1]
                         if vtype == "str":
                             v = var.get().strip()
                             candidate = os.path.normpath(v) if v else ""
@@ -3968,6 +4086,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                                 rejected_fields.append(key)
                         elif vtype == "choice":
                             staged[key] = var.get().strip()
+                        elif vtype == "choice_map":
+                            selected = var.get().strip()
+                            label_to_value = entry[2]
+                            staged[key] = label_to_value.get(
+                                selected,
+                                DEFAULTS.get(key, ""),
+                            )
                         elif vtype == "naming_mode":
                             selected = var.get().strip()
                             staged[key] = naming_mode_label_to_value.get(
