@@ -118,7 +118,6 @@ from config import (
     validate_handbrake,
     validate_makemkvcon,
 )
-from core.pipeline import PipelineController, TranscodeJob, choose_available_output_path
 from controller.controller import RipperController
 from controller.naming import (
     build_fallback_title,
@@ -128,13 +127,24 @@ from controller.naming import (
 )
 from engine.ripper_engine import RipperEngine
 from transcode.engine import (
-    FFMPEG_SOURCE_MODE_FAST_DIRECT,
     FFMPEG_SOURCE_MODE_SAFE_COPY,
     describe_ffmpeg_source_mode,
     normalize_ffmpeg_source_mode,
 )
-from transcode.profiles import ProfileLoader, TranscodeProfile
-from transcode.queue import TranscodeQueue
+from transcode.planner import (
+    FFMPEG_SOURCE_MODE_LABEL_TO_VALUE,
+    build_transcode_plan,
+    ffmpeg_source_mode_label,
+    suggest_transcode_output_root,
+    transcode_backend_label,
+)
+from transcode.profiles import ProfileLoader
+from transcode.queue_builder import (
+    build_queue_jobs,
+    build_recommendation_job,
+    build_transcode_queue,
+    required_output_directories,
+)
 from transcode.recommendations import (
     build_ffmpeg_recommendations,
     format_analysis_summary,
@@ -158,37 +168,18 @@ HANDBRAKE_PRESETS = [
     "Super HQ 1080p30 Surround",
 ]
 TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
-FFMPEG_SOURCE_MODE_VALUE_TO_LABEL = {
-    FFMPEG_SOURCE_MODE_SAFE_COPY: "Safe (Copy First)",
-    FFMPEG_SOURCE_MODE_FAST_DIRECT: "Fast (Read Original)",
-}
-FFMPEG_SOURCE_MODE_LABEL_TO_VALUE = {
-    label: value for value, label in FFMPEG_SOURCE_MODE_VALUE_TO_LABEL.items()
-}
 
 
 def _ffmpeg_source_mode_label(value: str) -> str:
-    normalized = normalize_ffmpeg_source_mode(value)
-    return FFMPEG_SOURCE_MODE_VALUE_TO_LABEL.get(
-        normalized,
-        FFMPEG_SOURCE_MODE_VALUE_TO_LABEL[FFMPEG_SOURCE_MODE_SAFE_COPY],
-    )
+    return ffmpeg_source_mode_label(value)
 
 
 def _transcode_backend_label(backend: str) -> str:
-    return "HandBrake" if str(backend).strip().lower() == "handbrake" else "FFmpeg"
+    return transcode_backend_label(backend)
 
 
 def _suggest_transcode_output_root(scan_root: str, backend: str) -> str:
-    normalized_root = os.path.normpath(scan_root)
-    trimmed_root = normalized_root.rstrip("\\/")
-    parent = os.path.dirname(trimmed_root)
-    if not parent:
-        drive, _tail = os.path.splitdrive(trimmed_root)
-        parent = (drive + os.sep) if drive else normalized_root
-    folder_name = os.path.basename(trimmed_root) or "MKVs"
-    suffix = "HandBrake Output" if str(backend).strip().lower() == "handbrake" else "FFmpeg Output"
-    return os.path.join(parent, f"{folder_name} - {suffix}")
+    return suggest_transcode_output_root(scan_root, backend)
 
 
 def _build_transcode_plan(
@@ -196,41 +187,7 @@ def _build_transcode_plan(
     selected_paths: list[str],
     output_root: str,
 ) -> list[dict[str, str]]:
-    normalized_root = os.path.normpath(scan_root)
-    normalized_output = os.path.normpath(output_root)
-    plans: list[dict[str, str]] = []
-    seen_paths: set[str] = set()
-
-    for input_path in selected_paths:
-        normalized_input = os.path.normpath(input_path)
-        dedupe_key = os.path.normcase(normalized_input)
-        if dedupe_key in seen_paths:
-            continue
-        seen_paths.add(dedupe_key)
-
-        try:
-            relative_path = os.path.relpath(normalized_input, normalized_root)
-        except ValueError:
-            relative_path = os.path.basename(normalized_input)
-
-        if relative_path.startswith(".."):
-            relative_path = os.path.basename(normalized_input)
-
-        relative_base, _relative_ext = os.path.splitext(relative_path)
-        output_relative_path = f"{relative_base}.mkv"
-        output_path = os.path.normpath(
-            os.path.join(normalized_output, output_relative_path)
-        )
-        plans.append(
-            {
-                "input_path": normalized_input,
-                "relative_path": relative_path,
-                "output_relative_path": output_relative_path,
-                "output_path": output_path,
-            }
-        )
-
-    return plans
+    return build_transcode_plan(scan_root, selected_paths, output_root)
 
 
 class JellyRipperGUI(tk.Tk, UIAdapter):
@@ -1086,39 +1043,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             )
             return False
 
-        profile = TranscodeProfile(
-            recommendation["profile_name"],
-            recommendation["profile_data"],
-        )
-        output_path = choose_available_output_path(
-            plans[0]["output_path"],
-            overwrite=profile.get("output", "overwrite", False),
-            auto_increment=profile.get("output", "auto_increment", True),
-        )
-        metadata = {
-            "source_relative_path": plans[0]["relative_path"],
-            "recommendation_id": recommendation["id"],
-            "recommendation_label": recommendation["label"],
-            "recommendation_details": recommendation["details"],
-            "source_video_codec": analysis["video_codec"],
-            "source_resolution": f"{analysis['width']}x{analysis['height']}",
-            "source_bitrate_bps": analysis["bitrate_bps"],
-            "source_duration_seconds": analysis["duration_seconds"],
-        }
         ffmpeg_source_mode = normalize_ffmpeg_source_mode(
             self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
         )
-        metadata["ffmpeg_source_mode"] = ffmpeg_source_mode
-        job = TranscodeJob(
-            analysis["path"],
-            output_path,
-            profile,
-            metadata=metadata,
-            backend="ffmpeg",
+        build_result = build_recommendation_job(
+            plan=plans[0],
+            analysis=analysis,
+            recommendation=recommendation,
+            ffmpeg_source_mode=ffmpeg_source_mode,
         )
 
         log_dir = os.path.join(get_config_dir(), "transcode_logs")
-        transcode_queue = TranscodeQueue(
+        transcode_queue = build_transcode_queue(
+            jobs=build_result.jobs,
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
             ffprobe_exe=resolve_ffprobe(
@@ -1130,7 +1067,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
             ),
         )
-        transcode_queue.add_job(job)
         self.controller.log(
             f"FFmpeg recommendation queued for {analysis['name']}: "
             f"{recommendation['label']} (CRF {recommendation['crf']}, preset {recommendation['preset']}, "
@@ -1140,11 +1076,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             transcode_queue,
             "FFmpeg",
             os.path.normpath(output_root),
-            queue_detail=(
-                f"{recommendation['label']} recommendation | "
-                f"CRF {recommendation['crf']} | preset {recommendation['preset']} | "
-                f"source {_ffmpeg_source_mode_label(ffmpeg_source_mode)}"
-            ),
+            queue_detail=build_result.queue_detail,
         )
         return True
 
@@ -1454,11 +1386,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             for path in selected_paths
             if str(path or "").strip()
         ]
-        entry_by_path = {}
-        for entry in selected_entries or []:
-            entry_path = os.path.normpath(str(entry.get("path", "") or ""))
-            if entry_path:
-                entry_by_path[os.path.normcase(entry_path)] = entry
         if not normalized_paths:
             self.show_info(
                 "Build Queue",
@@ -1808,55 +1735,20 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 )
                 return
 
-            pipeline = PipelineController(profile_loader)
-            queue_detail = ""
             ffmpeg_source_mode = normalize_ffmpeg_source_mode(
                 self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
             )
 
             try:
-                if current_backend == "ffmpeg":
-                    selected_profile = option_var.get().strip()
-                    if not selected_profile:
-                        status_var.set("Choose an FFmpeg profile first.")
-                        return
-                    queue_detail = (
-                        f"Profile: {selected_profile} | "
-                        f"Source: {_ffmpeg_source_mode_label(ffmpeg_source_mode)}"
-                    )
-                    for plan in plans:
-                        metadata = {
-                            "source_relative_path": plan["relative_path"],
-                            "ffmpeg_source_mode": ffmpeg_source_mode,
-                        }
-                        selected_entry = entry_by_path.get(
-                            os.path.normcase(plan["input_path"])
-                        )
-                        duration_seconds = None
-                        if isinstance(selected_entry, dict):
-                            duration_seconds = selected_entry.get("duration_seconds")
-                        if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
-                            metadata["source_duration_seconds"] = float(duration_seconds)
-                        pipeline.add_job(
-                            plan["input_path"],
-                            plan["output_path"],
-                            profile_name=selected_profile,
-                            metadata=metadata,
-                            backend="ffmpeg",
-                        )
-                else:
-                    selected_preset = option_var.get().strip() or HANDBRAKE_PRESETS[0]
-                    queue_detail = f"Preset: {selected_preset}"
-                    for plan in plans:
-                        pipeline.add_job(
-                            plan["input_path"],
-                            plan["output_path"],
-                            metadata={
-                                "source_relative_path": plan["relative_path"],
-                            },
-                            backend="handbrake",
-                            backend_options={"preset": selected_preset},
-                        )
+                build_result = build_queue_jobs(
+                    plans=plans,
+                    profile_loader=profile_loader,
+                    backend=current_backend,
+                    option_value=option_var.get().strip(),
+                    ffmpeg_source_mode=ffmpeg_source_mode,
+                    selected_entries=selected_entries,
+                    default_handbrake_preset=HANDBRAKE_PRESETS[0],
+                )
             except Exception as exc:
                 self.show_error(
                     "Build Queue",
@@ -1864,17 +1756,14 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 )
                 return
 
-            jobs = list(pipeline.get_queue())
+            jobs = build_result.jobs
             if not jobs:
                 status_var.set("No transcode jobs were added to the queue.")
                 return
 
             try:
-                for job in jobs:
-                    os.makedirs(
-                        os.path.dirname(job.output_path) or output_root,
-                        exist_ok=True,
-                    )
+                for directory in required_output_directories(jobs, output_root):
+                    os.makedirs(directory, exist_ok=True)
             except Exception as exc:
                 self.show_error(
                     "Build Queue",
@@ -1891,7 +1780,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 chosen_executable if current_backend == "handbrake"
                 else self._resolve_transcode_backend_path("handbrake")[0]
             )
-            transcode_queue = TranscodeQueue(
+            transcode_queue = build_transcode_queue(
+                jobs=jobs,
                 log_dir=log_dir,
                 ffmpeg_exe=ffmpeg_path,
                 ffprobe_exe=resolve_ffprobe(
@@ -1903,19 +1793,17 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
                 ),
             )
-            for job in jobs:
-                transcode_queue.add_job(job)
 
             self.controller.log(
                 f"{backend_label} queue created with {len(jobs)} job(s). "
-                f"Output root: {os.path.normpath(output_root)}. {queue_detail}"
+                f"Output root: {os.path.normpath(output_root)}. {build_result.queue_detail}"
             )
             win.destroy()
             self._run_transcode_queue(
                 transcode_queue,
                 backend_label,
                 os.path.normpath(output_root),
-                queue_detail=queue_detail,
+                queue_detail=build_result.queue_detail,
             )
 
         tk.Button(
