@@ -120,6 +120,7 @@ def test_ffmpeg_engine_stages_temp_copy_and_leaves_original_untouched(tmp_path, 
 
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
+    temp_root = tmp_path / "temp"
     input_path = source_dir / "movie.mkv"
     output_path = output_dir / "movie_h265.mkv"
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +135,7 @@ def test_ffmpeg_engine_stages_temp_copy_and_leaves_original_untouched(tmp_path, 
     engine = TranscodeEngine(
         log_dir=str(tmp_path / "logs"),
         ffmpeg_exe="C:\\Tools\\ffmpeg.exe",
+        temp_root=str(temp_root),
     )
 
     captured = {}
@@ -145,6 +147,8 @@ def test_ffmpeg_engine_stages_temp_copy_and_leaves_original_untouched(tmp_path, 
             captured["staged_input"] = staged_input
             assert staged_input != str(input_path)
             assert os.path.exists(staged_input)
+            assert os.path.commonpath([staged_input, str(temp_root)]) == str(temp_root)
+            assert os.path.commonpath([staged_input, str(output_dir)]) != str(output_dir)
             with open(staged_input, "r", encoding="utf-8") as fh:
                 assert fh.read() == "original-mkv-data"
             self.stdout = io.StringIO("ffmpeg output\n")
@@ -168,6 +172,7 @@ def test_ffmpeg_engine_stages_temp_copy_and_leaves_original_untouched(tmp_path, 
     log_text = (tmp_path / "logs" / os.path.basename(log_path)).read_text(encoding="utf-8")
     assert "FFMPEG_SOURCE_MODE: safe_copy" in log_text
     assert f"ORIGINAL_INPUT: {input_path}" in log_text
+    assert f"STAGING_ROOT: {temp_root}" in log_text
     assert "WORKING_INPUT:" in log_text
 
 
@@ -217,6 +222,156 @@ def test_ffmpeg_engine_fast_mode_reads_original_directly(tmp_path, monkeypatch):
     assert f"INPUT: {input_path}" in log_text
     assert f"WORKING_INPUT: {input_path}" in log_text
     assert "ORIGINAL_INPUT:" not in log_text
+
+
+def test_ffmpeg_engine_reports_copy_and_encode_progress(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TranscodeEngine
+    from transcode.profiles import ProfileLoader
+
+    input_path = tmp_path / "movie.mkv"
+    output_path = tmp_path / "movie_h265.mkv"
+    input_path.write_bytes(b"x" * (1024 * 1024))
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    job = TranscodeJob(
+        str(input_path),
+        str(output_path),
+        loader.get_profile(),
+        metadata={"source_duration_seconds": 100.0},
+    )
+    engine = TranscodeEngine(
+        log_dir=str(tmp_path / "logs"),
+        ffmpeg_exe="C:\\Tools\\ffmpeg.exe",
+        temp_root=str(tmp_path / "temp"),
+    )
+
+    progress_events = []
+    feedback_messages = []
+
+    class _Proc:
+        def __init__(self, cmd):
+            self.stdout = io.StringIO(
+                "frame=1 fps=1.0 time=00:00:25.00 bitrate=1000.0kbits/s\n"
+                "frame=2 fps=1.0 time=00:00:50.00 bitrate=1000.0kbits/s\n"
+                "frame=3 fps=1.0 time=00:01:40.00 bitrate=1000.0kbits/s\n"
+            )
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(
+        "transcode.engine.subprocess.Popen",
+        lambda cmd, stdout, stderr, text: _Proc(cmd),
+    )
+
+    ret, _log_path = engine.run_job(
+        job,
+        feedback_cb=feedback_messages.append,
+        progress_cb=progress_events.append,
+    )
+
+    assert ret == 0
+    copy_events = [event for event in progress_events if event.get("phase") == "copy"]
+    encode_events = [event for event in progress_events if event.get("phase") == "encode"]
+    assert copy_events
+    assert encode_events
+    assert copy_events[0]["percent"] == 0.0
+    assert copy_events[-1]["percent"] == 100.0
+    assert round(encode_events[0]["percent"], 1) == 25.0
+    assert round(encode_events[-1]["percent"], 1) == 100.0
+    assert any("Copying source to temp" in message for message in feedback_messages)
+    assert any("FFmpeg progress: 50%" in message for message in feedback_messages)
+
+
+def test_ffmpeg_engine_probes_duration_when_metadata_is_missing(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TranscodeEngine
+    from transcode.profiles import ProfileLoader
+
+    input_path = tmp_path / "movie.mkv"
+    output_path = tmp_path / "movie_h265.mkv"
+    ffprobe_path = tmp_path / "ffprobe.exe"
+    input_path.write_bytes(b"x" * 1024)
+    ffprobe_path.write_text("stub", encoding="utf-8")
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    job = TranscodeJob(
+        str(input_path),
+        str(output_path),
+        loader.get_profile(),
+    )
+    engine = TranscodeEngine(
+        log_dir=str(tmp_path / "logs"),
+        ffmpeg_exe="C:\\Tools\\ffmpeg.exe",
+        ffprobe_exe=str(ffprobe_path),
+        temp_root=str(tmp_path / "temp"),
+    )
+
+    class _RunResult:
+        returncode = 0
+        stdout = "120.0\n"
+        stderr = ""
+
+    class _Proc:
+        def __init__(self, cmd):
+            self.stdout = io.StringIO(
+                "frame=1 fps=1.0 time=00:01:00.00 bitrate=1000.0kbits/s\n"
+            )
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr("transcode.engine.subprocess.run", lambda *args, **kwargs: _RunResult())
+    monkeypatch.setattr(
+        "transcode.engine.subprocess.Popen",
+        lambda cmd, stdout, stderr, text: _Proc(cmd),
+    )
+
+    progress_events = []
+    ret, _log_path = engine.run_job(job, progress_cb=progress_events.append)
+
+    assert ret == 0
+    encode_events = [event for event in progress_events if event.get("phase") == "encode"]
+    assert encode_events
+    assert round(encode_events[0]["percent"], 1) == 50.0
+    assert job.metadata["source_duration_seconds"] == 120.0
+
+
+def test_transcode_queue_maps_ffmpeg_progress_to_overall_percent(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.profiles import ProfileLoader
+    from transcode.queue import TranscodeQueue
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    queue = TranscodeQueue(log_dir=str(tmp_path / "logs"))
+    job = TranscodeJob(
+        "input.mkv",
+        "output.mkv",
+        loader.get_profile(),
+        metadata={"ffmpeg_source_mode": "safe_copy", "source_duration_seconds": 100.0},
+    )
+    queue.add_job(job)
+
+    def _fake_run_job(job, dry_run=False, feedback_cb=None, progress_cb=None):
+        progress_cb({"phase": "copy", "percent": 50.0, "message": "copy halfway"})
+        progress_cb({"phase": "copy", "percent": 100.0, "message": "copy done"})
+        progress_cb({"phase": "encode", "percent": 50.0, "message": "encode halfway"})
+        return 0, str(tmp_path / "logs" / "sample.log")
+
+    monkeypatch.setattr(queue.engine, "run_job", _fake_run_job)
+
+    progress_events = []
+    result = queue.run_next(progress_cb=progress_events.append)
+
+    assert result[0] == 0
+    overall_progress = [round(event["overall_percent"], 1) for event in progress_events]
+    assert 12.5 in overall_progress
+    assert 25.0 in overall_progress
+    assert 62.5 in overall_progress
+    assert overall_progress[-1] == 100.0
 
 
 def test_pipeline_controller_supports_handbrake_jobs_without_profile(tmp_path):

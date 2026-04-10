@@ -817,10 +817,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        path_by_iid = {}
+        entry_by_iid = {}
         for index, entry in enumerate(results):
             iid = f"scan_{index}"
-            path_by_iid[iid] = entry["path"]
+            entry_by_iid[iid] = entry
             relative_folder = os.path.dirname(entry["relative_path"]) or "."
             tree.insert(
                 "",
@@ -853,13 +853,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10, "bold"),
         ).pack(side="left")
 
-        def _selected_paths():
+        def _selected_entries():
             selected_iids = set(tree.selection())
             return [
-                path_by_iid[iid]
+                entry_by_iid[iid]
                 for iid in tree.get_children("")
-                if iid in selected_iids and iid in path_by_iid
+                if iid in selected_iids and iid in entry_by_iid
             ]
+
+        def _selected_paths():
+            return [entry["path"] for entry in _selected_entries()]
 
         def _reveal_selected(_event=None):
             selected_paths = _selected_paths()
@@ -888,11 +891,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             return "break"
 
         def _queue_selected():
-            selected_paths = _selected_paths()
-            if not selected_paths:
+            selected_entries = _selected_entries()
+            if not selected_entries:
                 status_var.set("Select at least one MKV file first.")
                 return
-            self._open_transcode_queue_builder(folder, selected_paths)
+            self._open_transcode_queue_builder(
+                folder,
+                [entry["path"] for entry in selected_entries],
+                selected_entries=selected_entries,
+            )
 
         def _recommend_selected():
             selected_paths = _selected_paths()
@@ -1096,6 +1103,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             "source_video_codec": analysis["video_codec"],
             "source_resolution": f"{analysis['width']}x{analysis['height']}",
             "source_bitrate_bps": analysis["bitrate_bps"],
+            "source_duration_seconds": analysis["duration_seconds"],
         }
         ffmpeg_source_mode = normalize_ffmpeg_source_mode(
             self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
@@ -1113,8 +1121,14 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         transcode_queue = TranscodeQueue(
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
+            ffprobe_exe=resolve_ffprobe(
+                os.path.normpath(self.cfg.get("ffprobe_path", ""))
+            )[0],
             handbrake_exe=self._resolve_transcode_backend_path("handbrake")[0],
             ffmpeg_source_mode=ffmpeg_source_mode,
+            temp_root=os.path.normpath(
+                self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
+            ),
         )
         transcode_queue.add_job(job)
         self.controller.log(
@@ -1424,7 +1438,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         profile_path = os.path.join(get_config_dir(), TRANSCODE_PROFILE_FILENAME)
         return ProfileLoader(profile_path)
 
-    def _open_transcode_queue_builder(self, scan_root, selected_paths, backend="ffmpeg"):
+    def _open_transcode_queue_builder(
+        self,
+        scan_root,
+        selected_paths,
+        backend="ffmpeg",
+        selected_entries=None,
+    ):
         backend_key = str(backend or "").strip().lower()
         if backend_key not in {"ffmpeg", "handbrake"}:
             backend_key = "ffmpeg"
@@ -1434,6 +1454,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             for path in selected_paths
             if str(path or "").strip()
         ]
+        entry_by_path = {}
+        for entry in selected_entries or []:
+            entry_path = os.path.normpath(str(entry.get("path", "") or ""))
+            if entry_path:
+                entry_by_path[os.path.normcase(entry_path)] = entry
         if not normalized_paths:
             self.show_info(
                 "Build Queue",
@@ -1800,14 +1825,23 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                         f"Source: {_ffmpeg_source_mode_label(ffmpeg_source_mode)}"
                     )
                     for plan in plans:
+                        metadata = {
+                            "source_relative_path": plan["relative_path"],
+                            "ffmpeg_source_mode": ffmpeg_source_mode,
+                        }
+                        selected_entry = entry_by_path.get(
+                            os.path.normcase(plan["input_path"])
+                        )
+                        duration_seconds = None
+                        if isinstance(selected_entry, dict):
+                            duration_seconds = selected_entry.get("duration_seconds")
+                        if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
+                            metadata["source_duration_seconds"] = float(duration_seconds)
                         pipeline.add_job(
                             plan["input_path"],
                             plan["output_path"],
                             profile_name=selected_profile,
-                            metadata={
-                                "source_relative_path": plan["relative_path"],
-                                "ffmpeg_source_mode": ffmpeg_source_mode,
-                            },
+                            metadata=metadata,
                             backend="ffmpeg",
                         )
                 else:
@@ -1860,8 +1894,14 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             transcode_queue = TranscodeQueue(
                 log_dir=log_dir,
                 ffmpeg_exe=ffmpeg_path,
+                ffprobe_exe=resolve_ffprobe(
+                    os.path.normpath(self.cfg.get("ffprobe_path", ""))
+                )[0],
                 handbrake_exe=handbrake_path,
                 ffmpeg_source_mode=ffmpeg_source_mode,
+                temp_root=os.path.normpath(
+                    self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
+                ),
             )
             for job in jobs:
                 transcode_queue.add_job(job)
@@ -1982,6 +2022,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Consolas", 10),
             relief="flat",
             height=16,
+            state="disabled",
         )
         log_text.pack(fill="both", expand=True, padx=18, pady=(0, 10))
 
@@ -1989,10 +2030,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             try:
                 if not win.winfo_exists():
                     return
+                log_text.config(state="normal")
                 log_text.insert("end", f"{message}\n")
                 log_text.see("end")
             except tk.TclError:
                 return
+            finally:
+                try:
+                    log_text.config(state="disabled")
+                except tk.TclError:
+                    return
 
         _append_log_line(f"Output root: {output_root}")
         _append_log_line(f"Log folder: {transcode_queue.engine.log_dir}")
@@ -2043,6 +2090,28 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             self.after(0, _update_ui)
 
+        def _progress(event):
+            if not isinstance(event, dict):
+                return
+
+            overall_percent = event.get("overall_percent")
+            message = str(event.get("message", "") or "").strip()
+
+            def _update_ui():
+                try:
+                    if not win.winfo_exists():
+                        return
+                    if isinstance(overall_percent, (int, float)):
+                        progress_var.set(
+                            max(0.0, min(100.0, float(overall_percent)))
+                        )
+                    if message:
+                        status_var.set(message)
+                except tk.TclError:
+                    return
+
+            self.after(0, _update_ui)
+
         def _mark_progress():
             finished = len(transcode_queue.completed) + len(transcode_queue.failed)
             pct = (finished / total_jobs) * 100 if total_jobs else 0
@@ -2072,7 +2141,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         def _worker():
             try:
                 while transcode_queue.jobs:
-                    transcode_queue.run_next(feedback_cb=_feedback)
+                    transcode_queue.run_next(
+                        feedback_cb=_feedback,
+                        progress_cb=_progress,
+                    )
                     self.after(0, _mark_progress)
             except Exception as exc:
                 error_message = f"{backend_label} queue stopped with an unexpected error: {exc}"
