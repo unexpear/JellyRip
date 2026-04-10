@@ -118,6 +118,12 @@ from config import (
     validate_handbrake,
     validate_makemkvcon,
 )
+from core.media_scan import (
+    build_folder_scan_request,
+    build_folder_scan_results_model,
+    select_folder_scan_entries,
+    select_folder_scan_paths,
+)
 from controller.controller import RipperController
 from controller.naming import (
     build_fallback_title,
@@ -530,14 +536,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             self.show_info("Folder Scanner", "Scan cancelled.")
             return
 
-        main_log = self.cfg.get("log_file", "")
-        log_dir = os.path.dirname(main_log) if main_log else os.path.expanduser("~")
-        scan_log_path = os.path.join(log_dir, "folder_scan_log.txt")
-        ffprobe_exe = None
-        if str(scan_options.get("mode")) in {"duration_desc", "duration_asc"}:
-            ffprobe_exe = resolve_ffprobe(
-                os.path.normpath(self.cfg.get("ffprobe_path", ""))
-            )[0] or None
+        scan_request = build_folder_scan_request(
+            folder=folder,
+            scan_options=scan_options,
+            main_log=str(self.cfg.get("log_file", "") or ""),
+            ffprobe_path=str(self.cfg.get("ffprobe_path", "") or ""),
+            include_dirs=False,
+        )
 
         progress_win = tk.Toplevel(self)
         progress_win.title("Scanning MKVs...")
@@ -587,13 +592,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     self.after(0, _update_progress)
 
                 results = scan_folder(
-                    folder,
-                    mode=scan_options["mode"],
+                    scan_request.folder,
+                    mode=scan_request.mode,
                     progress_cb=progress_cb,
-                    log_path=scan_log_path,
-                    recursive=bool(scan_options.get("recursive", True)),
-                    include_dirs=False,
-                    ffprobe_exe=ffprobe_exe,
+                    log_path=scan_request.log_path,
+                    recursive=scan_request.recursive,
+                    include_dirs=scan_request.include_dirs,
+                    ffprobe_exe=scan_request.ffprobe_exe,
                 )
             except Exception as e:
                 print("[ERROR] Exception in folder scan thread:", e)
@@ -718,9 +723,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         return result[0]
 
     def _show_folder_scan_results(self, folder, results, scan_options):
-        from tools.folder_scanner import get_sort_mode_label
-
         BG = "#0d1117"
+        results_model = build_folder_scan_results_model(results, scan_options)
         win = tk.Toplevel(self)
         win.title(f"MKV Scanner Results — {os.path.basename(folder)}")
         win.configure(bg=BG)
@@ -735,15 +739,9 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             fg="#58a6ff",
             font=("Segoe UI", 12, "bold"),
         ).pack(pady=(16, 4))
-        mode_text = get_sort_mode_label(scan_options["mode"])
-        recursive_text = (
-            "Recursive"
-            if scan_options.get("recursive", True)
-            else "Current folder only"
-        )
         tk.Label(
             win,
-            text=f"Sort: {mode_text} | Scope: {recursive_text} | MKV files only",
+            text=results_model.subtitle,
             bg=BG,
             fg="#8b949e",
             font=("Segoe UI", 10, "italic"),
@@ -774,34 +772,17 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        entry_by_iid = {}
-        for index, entry in enumerate(results):
-            iid = f"scan_{index}"
-            entry_by_iid[iid] = entry
-            relative_folder = os.path.dirname(entry["relative_path"]) or "."
+        for row in results_model.rows:
             tree.insert(
                 "",
                 "end",
-                iid=iid,
-                values=(
-                    entry["name"],
-                    relative_folder,
-                    entry["size_str"],
-                    entry["duration_str"],
-                    entry["modified_str"],
-                    entry["status"],
-                ),
+                iid=row["iid"],
+                values=row["values"],
             )
 
         footer = tk.Frame(win, bg=BG)
         footer.pack(fill="x", padx=16, pady=(0, 12))
-        status_var = tk.StringVar(
-            value=(
-                f"{len(results)} MKV file(s) found"
-                if results else
-                "No MKV files found"
-            )
-        )
+        status_var = tk.StringVar(value=results_model.status_text)
         tk.Label(
             footer,
             textvariable=status_var,
@@ -811,15 +792,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         ).pack(side="left")
 
         def _selected_entries():
-            selected_iids = set(tree.selection())
-            return [
-                entry_by_iid[iid]
-                for iid in tree.get_children("")
-                if iid in selected_iids and iid in entry_by_iid
-            ]
+            return select_folder_scan_entries(results_model.rows, tree.selection())
 
         def _selected_paths():
-            return [entry["path"] for entry in _selected_entries()]
+            return select_folder_scan_paths(results_model.rows, tree.selection())
 
         def _reveal_selected(_event=None):
             selected_paths = _selected_paths()
