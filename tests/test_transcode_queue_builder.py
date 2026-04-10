@@ -1,13 +1,10 @@
 import os
 import io
-import unittest.mock
-
-
-class _FakeTkBase:
-    pass
 
 
 def test_build_transcode_plan_preserves_relative_mkv_paths(tmp_path):
+    from transcode.planner import build_transcode_plan
+
     source_root = tmp_path / "source"
     output_root = tmp_path / "output"
     first = source_root / "Season 01" / "episode01.mkv"
@@ -17,10 +14,7 @@ def test_build_transcode_plan_preserves_relative_mkv_paths(tmp_path):
     first.write_text("x", encoding="utf-8")
     second.write_text("x", encoding="utf-8")
 
-    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
-        from gui.main_window import _build_transcode_plan
-
-    plans = _build_transcode_plan(
+    plans = build_transcode_plan(
         str(source_root),
         [str(first), str(second), str(first)],
         str(output_root),
@@ -41,15 +35,14 @@ def test_build_transcode_plan_preserves_relative_mkv_paths(tmp_path):
 
 
 def test_build_transcode_plan_falls_back_to_basename_for_outside_path(tmp_path):
+    from transcode.planner import build_transcode_plan
+
     source_root = tmp_path / "source"
     outside_file = tmp_path / "other" / "movie.mkv"
     outside_file.parent.mkdir(parents=True, exist_ok=True)
     outside_file.write_text("x", encoding="utf-8")
 
-    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
-        from gui.main_window import _build_transcode_plan
-
-    plans = _build_transcode_plan(
+    plans = build_transcode_plan(
         str(source_root),
         [str(outside_file)],
         str(tmp_path / "output"),
@@ -61,17 +54,129 @@ def test_build_transcode_plan_falls_back_to_basename_for_outside_path(tmp_path):
 
 
 def test_suggest_transcode_output_root_mentions_backend(tmp_path):
+    from transcode.planner import suggest_transcode_output_root
+
     scan_root = tmp_path / "My MKVs"
     scan_root.mkdir()
 
-    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
-        from gui.main_window import _suggest_transcode_output_root
-
-    ffmpeg_output = _suggest_transcode_output_root(str(scan_root), "ffmpeg")
-    handbrake_output = _suggest_transcode_output_root(str(scan_root), "handbrake")
+    ffmpeg_output = suggest_transcode_output_root(str(scan_root), "ffmpeg")
+    handbrake_output = suggest_transcode_output_root(str(scan_root), "handbrake")
 
     assert ffmpeg_output.endswith("My MKVs - FFmpeg Output")
     assert handbrake_output.endswith("My MKVs - HandBrake Output")
+
+
+def test_build_queue_jobs_for_ffmpeg_uses_scan_metadata(tmp_path):
+    from transcode.planner import build_transcode_plan
+    from transcode.profiles import ProfileLoader
+    from transcode.queue_builder import build_queue_jobs
+
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    input_path = source_root / "Season 01" / "episode01.mkv"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text("x", encoding="utf-8")
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    plans = build_transcode_plan(str(source_root), [str(input_path)], str(output_root))
+    result = build_queue_jobs(
+        plans=plans,
+        profile_loader=loader,
+        backend="ffmpeg",
+        option_value=loader.default or "",
+        ffmpeg_source_mode="safe_copy",
+        selected_entries=[
+            {
+                "path": str(input_path),
+                "duration_seconds": 123.4,
+            }
+        ],
+    )
+
+    assert result.queue_detail == "Profile: Balanced (Recommended) | Source: Safe (Copy First)"
+    assert len(result.jobs) == 1
+    job = result.jobs[0]
+    assert job.backend == "ffmpeg"
+    assert job.metadata["source_relative_path"] == os.path.normpath("Season 01\\episode01.mkv")
+    assert job.metadata["ffmpeg_source_mode"] == "safe_copy"
+    assert job.metadata["source_duration_seconds"] == 123.4
+
+
+def test_build_recommendation_job_returns_plain_job_and_queue_detail(tmp_path):
+    from transcode.planner import build_transcode_plan
+    from transcode.queue_builder import build_recommendation_job
+
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    input_path = source_root / "movie.mkv"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text("x", encoding="utf-8")
+
+    plan = build_transcode_plan(str(source_root), [str(input_path)], str(output_root))[0]
+    result = build_recommendation_job(
+        plan=plan,
+        analysis={
+            "path": str(input_path),
+            "name": "movie.mkv",
+            "video_codec": "mpeg2video",
+            "width": 1920,
+            "height": 1080,
+            "bitrate_bps": 8_000_000,
+            "duration_seconds": 5400.0,
+        },
+        recommendation={
+            "id": "balanced",
+            "label": "Balanced",
+            "details": "Good tradeoff",
+            "crf": 20,
+            "preset": "slow",
+            "profile_name": "Balanced",
+            "profile_data": {
+                "video": {
+                    "codec": "h265",
+                    "mode": "crf",
+                    "crf": 20,
+                    "bitrate": None,
+                    "preset": "slow",
+                    "hw_accel": "cpu",
+                },
+                "audio": {
+                    "mode": "copy",
+                    "language": None,
+                    "tracks": "all",
+                },
+                "subtitles": {
+                    "mode": "all",
+                    "burn": False,
+                    "language": None,
+                },
+                "output": {
+                    "container": "mkv",
+                    "naming": "{title}_{profile}",
+                    "overwrite": False,
+                    "auto_increment": True,
+                },
+                "constraints": {
+                    "skip_if_below_gb": None,
+                    "skip_if_codec_matches": False,
+                },
+                "metadata": {
+                    "preserve": True,
+                },
+            },
+        },
+        ffmpeg_source_mode="safe_copy",
+    )
+
+    assert len(result.jobs) == 1
+    job = result.jobs[0]
+    assert job.input_path == str(input_path)
+    assert job.backend == "ffmpeg"
+    assert job.metadata["recommendation_id"] == "balanced"
+    assert job.metadata["source_resolution"] == "1920x1080"
+    assert result.queue_detail == (
+        "Balanced recommendation | CRF 20 | preset slow | source Safe (Copy First)"
+    )
 
 
 def test_ffmpeg_builder_uses_custom_executable(tmp_path):
