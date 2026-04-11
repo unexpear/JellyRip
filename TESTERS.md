@@ -3,7 +3,7 @@
 Use this during live ripping. Mark pass or fail for each line, then
 attach this sheet (or copy/paste results) into a GitHub issue.
 
-Current unstable test target: `v1.0.14`
+Current unstable test target: `v1.0.15`
 
 Issue tracker: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 

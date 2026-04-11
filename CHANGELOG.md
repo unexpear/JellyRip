@@ -2,6 +2,13 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.15] - 2026-04-11
+
+### Fixed
+
+- Restored a visible top-level `ABORT SESSION` control so the user can abort a running task even when the inline prompt bar is hidden.
+- Fixed log auto-follow behavior by checking whether the log was already near the bottom before appending new text.
+
 ## [1.0.14] - 2026-04-11
 
 ### Added
