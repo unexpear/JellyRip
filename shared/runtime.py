@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.13"
+__version__ = "1.0.14"
 
 ConfigScalar: TypeAlias = str | int | bool | float
 LogFn: TypeAlias = Callable[[str], None]

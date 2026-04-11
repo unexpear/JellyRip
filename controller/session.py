@@ -2,6 +2,7 @@ import os
 import json
 import time
 from datetime import datetime
+from controller.session_recovery import select_resumable_session
 from utils.state_machine import SessionState
 
 
@@ -135,27 +136,10 @@ class SessionHelpers:
         resumable = self.controller.engine.find_resumable_sessions(temp_root)
         if not resumable:
             return None
-        for full_path, name, meta, file_count in resumable:
-            if media_type and meta.get("media_type") not in {None, media_type}:
-                continue
-            title = meta.get("title", "Unknown")
-            ts    = meta.get("timestamp", name)
-            phase = meta.get("phase", meta.get("status", "unknown"))
-            ask_yesno = getattr(self.callbacks, "ask_yesno", None)
-            prompt = (
-                f"Resume previous session?\n\n"
-                f"Title: {title}\n"
-                f"Started: {ts}\n"
-                f"Phase: {phase}\n"
-                f"Files so far: {file_count}\n\n"
-                "This reloads saved workflow metadata only. Any partial "
-                "rip files will be replaced by a fresh rip."
-            )
-            if ask_yesno and ask_yesno(prompt):
-                self.log(f"Resuming session: {name}")
-                return {
-                    "path": full_path,
-                    "name": name,
-                    "meta": meta,
-                }
-        return None
+        ask_yesno = getattr(self.callbacks, "ask_yesno", None)
+        return select_resumable_session(
+            resumable,
+            media_type=media_type,
+            ask_yesno=ask_yesno if callable(ask_yesno) else None,
+            log_fn=self.log,
+        )

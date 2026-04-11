@@ -2,6 +2,20 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.14] - 2026-04-11
+
+### Added
+
+- Added plain controller boundary modules for session paths, rip validation/retry policy, session recovery, and TV library scanning.
+- Added direct unit coverage for those extracted modules so the logic can be tested without importing Tk or the legacy controller mixin.
+- Added a release consistency guard that checks version alignment and prevents the root `JellyRip.exe` binary from being tracked in git.
+
+### Changed
+
+- Shrank `controller/legacy_compat.py` by turning session path, rip validation, session recovery, and library scan helpers into thin compatibility wrappers.
+- Moved resume selection prompt-model logic out of `SessionHelpers.check_resume` while keeping the UI yes/no callback at the edge.
+- Kept the full behavior-guard suite passing while expanding the test suite to cover 250 checks.
+
 ## [1.0.13] - 2026-04-09
 
 ### Added

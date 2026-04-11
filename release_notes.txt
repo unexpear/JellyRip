@@ -1,24 +1,25 @@
-## JellyRip v1.0.13 Release Notes (UNSTABLE)
+## JellyRip v1.0.14 Release Notes (UNSTABLE)
 
 Release channel: unstable pre-release.
 
 ### Download
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.13/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.13/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.13
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.14/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.14/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.14
 - All releases: https://github.com/unexpear/JellyRip/releases
 
-### What's New in 1.0.13
+### What's New in 1.0.14
 
-FFmpeg source handling
-- New Safe (Copy First) mode copies the source MKV to a temporary working file before FFmpeg starts.
-- New Fast (Read Original) mode reads the original MKV directly while still writing a separate output file.
-- The UI now explains both options in plain language in Settings and in the transcode queue builder.
+Controller boundary cleanup
+- Session path setup and validation now live in a plain controller helper module.
+- Rip validation, size sanity checks, ffprobe integrity checks, and the one-shot retry policy now live outside the legacy controller mixin.
+- Session recovery helpers now own resume prompt modeling, selected-title restoration, and failed-session metadata/wipe behavior.
+- TV library scanning helpers now own episode filename parsing, Season 00/Specials detection, and highest-episode lookup.
 
-Release cleanup
-- The working release line is now cleanly aligned to 1.0.13, with 1.0.12 treated as the previous revision point in git history.
-- Release metadata files are synced so the README, installer, release notes, and release script all point at the same version.
+Testability
+- New direct unit tests cover the extracted controller helper modules without importing Tk.
+- The full test suite now covers 250 checks.
 
-Build polish
-- JellyRip.exe now includes Windows file and product version metadata for a cleaner Explorer/version-info experience.
-- Release consistency coverage remains in place so future version bumps are easier to verify.
+Release hygiene
+- Release consistency coverage now checks version alignment across the repo.
+- The root JellyRip.exe release binary is guarded against being tracked in git.
