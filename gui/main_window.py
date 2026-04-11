@@ -306,6 +306,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         """Append one line to the log widget from the Tk main thread only."""
         with self._log_widget_lock:
             self.log_text.config(state="normal")
+            at_bottom = self.log_text.yview()[1] > 0.95
             text = msg if msg.endswith("\n") else f"{msg}\n"
             if tag:
                 self.log_text.insert("end", text, tag)
@@ -317,9 +318,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             if line_count > cap:
                 trim = int(self.cfg.get("opt_log_trim_lines", 200000))
                 self.log_text.delete("1.0", f"{line_count - trim}.0")
-            # Only auto-scroll if user is already near the bottom.
-            visible_end = self.log_text.yview()[1]
-            if visible_end > 0.95:
+            # Only auto-scroll if the user was already near the bottom.
+            if at_bottom:
                 self.log_text.see("end")
             self.log_text.config(state="disabled")
 
@@ -442,6 +442,17 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10, "italic")
         ).pack(anchor="w", padx=22)
 
+        session_controls = tk.Frame(self, bg=BG)
+        session_controls.pack(fill="x", padx=20, pady=(4, 6))
+        self.abort_btn = tk.Button(
+            session_controls, text="ABORT SESSION",
+            bg="#c94b4b", fg="white",
+            font=("Segoe UI", 11, "bold"),
+            width=20, command=self.request_abort, relief="flat",
+            state="disabled"
+        )
+        self.abort_btn.pack(side="right")
+
         tk.Label(
             self, text="Live Log",
             bg=BG, fg="#8b949e",
@@ -496,15 +507,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10),
             command=self._skip_input, relief="flat"
         ).pack(side="left", padx=4, pady=8)
-
-        # Keep abort visible when the inline prompt bar is open.
-        self.abort_btn = tk.Button(
-            self.input_bar, text="ABORT SESSION",
-            bg="#c94b4b", fg="white",
-            font=("Segoe UI", 12, "bold"),
-            width=20, command=self.request_abort, relief="flat"
-        )
-        self.abort_btn.pack(side="right", padx=(10, 0), pady=8)
 
         # Keep bottom interaction controls clear of the Windows taskbar area
         # on machines where the app window can overlap shell-reserved space.
@@ -4206,6 +4208,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if messages:
             with self._log_widget_lock:
                 self.log_text.config(state="normal")
+                at_bottom = self.log_text.yview()[1] > 0.95
                 batch_text = "\n".join(messages) + "\n"
                 self.log_text.insert("end", batch_text)
                 # Trim widget (same cap/trim as _append_log_text_main).
@@ -4214,9 +4217,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 if line_count > cap:
                     trim = int(self.cfg.get("opt_log_trim_lines", 200000))
                     self.log_text.delete("1.0", f"{line_count - trim}.0")
-                # Only auto-scroll if user is already near the bottom.
-                visible_end = self.log_text.yview()[1]
-                if visible_end > 0.95:
+                # Only auto-scroll if the user was already near the bottom.
+                if at_bottom:
                     self.log_text.see("end")
                 self.log_text.config(state="disabled")
         self.after(100, self.process_queue)

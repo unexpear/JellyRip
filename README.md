@@ -10,7 +10,7 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.14` (next unstable pre-release)
+- Current unstable line: `v1.0.15` (next unstable pre-release)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -29,7 +29,7 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.14` unstable pre-release)
+(recommended, currently `v1.0.15` unstable pre-release)
 
 1. Go to the [latest release page](https://github.com/unexpear/JellyRip/releases/latest).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
@@ -140,7 +140,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.14
+release.bat 1.0.15
 ```
 
 This runs tests, checks version consistency, builds both executables,
