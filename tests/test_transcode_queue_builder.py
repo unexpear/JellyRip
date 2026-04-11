@@ -1,5 +1,6 @@
 import os
 import io
+import threading
 
 
 def test_build_transcode_plan_preserves_relative_mkv_paths(tmp_path):
@@ -390,6 +391,114 @@ def test_ffmpeg_engine_reports_copy_and_encode_progress(tmp_path, monkeypatch):
     assert any("FFmpeg progress: 50%" in message for message in feedback_messages)
 
 
+def test_ffmpeg_safe_copy_logs_only_when_displayed_percent_changes(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TranscodeEngine
+    from transcode.profiles import ProfileLoader
+
+    input_path = tmp_path / "movie.mkv"
+    output_path = tmp_path / "movie_h265.mkv"
+    input_path.write_bytes(b"x" * 250)
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    job = TranscodeJob(
+        str(input_path),
+        str(output_path),
+        loader.get_profile(),
+    )
+    engine = TranscodeEngine(
+        log_dir=str(tmp_path / "logs"),
+        ffmpeg_exe="C:\\Tools\\ffmpeg.exe",
+        temp_root=str(tmp_path / "temp"),
+    )
+    feedback_messages = []
+
+    class _Proc:
+        stdout = io.StringIO("")
+        returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    tick = {"value": 0.0}
+
+    def _fake_monotonic():
+        tick["value"] += 2.0
+        return tick["value"]
+
+    monkeypatch.setattr("transcode.engine._FFMPEG_COPY_CHUNK_SIZE", 1)
+    monkeypatch.setattr("transcode.engine.time.monotonic", _fake_monotonic)
+    monkeypatch.setattr(
+        "transcode.engine.subprocess.Popen",
+        lambda cmd, stdout, stderr, text: _Proc(),
+    )
+
+    ret, _log_path = engine.run_job(job, feedback_cb=feedback_messages.append)
+
+    assert ret == 0
+    copy_lines = [
+        message for message in feedback_messages
+        if str(message).startswith("Copying source to temp:")
+    ]
+    displayed_percents = [
+        int(str(message).split(": ", 1)[1].split("%", 1)[0])
+        for message in copy_lines
+    ]
+    assert displayed_percents[0] == 0
+    assert displayed_percents[-1] == 100
+    assert displayed_percents == sorted(set(displayed_percents))
+
+
+def test_ffmpeg_engine_aborts_during_safe_copy(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TRANSCODE_ABORT_RETURN_CODE, TranscodeEngine
+    from transcode.profiles import ProfileLoader
+
+    input_path = tmp_path / "movie.mkv"
+    output_path = tmp_path / "movie_h265.mkv"
+    temp_root = tmp_path / "temp"
+    input_path.write_bytes(b"0123456789abcdef")
+    abort_event = threading.Event()
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    job = TranscodeJob(
+        str(input_path),
+        str(output_path),
+        loader.get_profile(),
+    )
+    engine = TranscodeEngine(
+        log_dir=str(tmp_path / "logs"),
+        ffmpeg_exe="C:\\Tools\\ffmpeg.exe",
+        temp_root=str(temp_root),
+        abort_event=abort_event,
+    )
+
+    feedback_messages = []
+
+    def _feedback(message):
+        feedback_messages.append(message)
+        if str(message).startswith("Copying source to temp:"):
+            abort_event.set()
+
+    def _unexpected_popen(*args, **kwargs):
+        raise AssertionError("FFmpeg should not start after safe-copy abort")
+
+    monkeypatch.setattr("transcode.engine._FFMPEG_COPY_CHUNK_SIZE", 4)
+    monkeypatch.setattr("transcode.engine.subprocess.Popen", _unexpected_popen)
+
+    ret, log_path = engine.run_job(job, feedback_cb=_feedback)
+
+    assert ret == TRANSCODE_ABORT_RETURN_CODE
+    assert input_path.exists()
+    assert not output_path.exists()
+    assert not list(temp_root.glob("JellyRipFFmpeg_*"))
+    assert any("Transcode job aborted" in message for message in feedback_messages)
+    assert "ABORTED: Transcode job was aborted." in open(
+        log_path,
+        encoding="utf-8",
+    ).read()
+
+
 def test_ffmpeg_engine_probes_duration_when_metadata_is_missing(tmp_path, monkeypatch):
     from core.pipeline import TranscodeJob
     from transcode.engine import TranscodeEngine
@@ -477,6 +586,41 @@ def test_transcode_queue_maps_ffmpeg_progress_to_overall_percent(tmp_path, monke
     assert 25.0 in overall_progress
     assert 62.5 in overall_progress
     assert overall_progress[-1] == 100.0
+
+
+def test_transcode_queue_records_aborted_jobs(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TRANSCODE_ABORT_RETURN_CODE
+    from transcode.profiles import ProfileLoader
+    from transcode.queue import TranscodeQueue
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    queue = TranscodeQueue(log_dir=str(tmp_path / "logs"))
+    job = TranscodeJob(
+        "input.mkv",
+        "output.mkv",
+        loader.get_profile(),
+        metadata={"ffmpeg_source_mode": "safe_copy"},
+    )
+    queue.add_job(job)
+
+    def _fake_run_job(job, dry_run=False, feedback_cb=None, progress_cb=None):
+        return TRANSCODE_ABORT_RETURN_CODE, str(tmp_path / "logs" / "sample.log")
+
+    monkeypatch.setattr(queue.engine, "run_job", _fake_run_job)
+
+    feedback_messages = []
+    progress_events = []
+    result = queue.run_next(
+        feedback_cb=feedback_messages.append,
+        progress_cb=progress_events.append,
+    )
+
+    assert result[0] == TRANSCODE_ABORT_RETURN_CODE
+    assert queue.aborted == [(job, str(tmp_path / "logs" / "sample.log"))]
+    assert queue.failed == []
+    assert any(message.startswith("ABORTED:") for message in feedback_messages)
+    assert progress_events[-1]["phase"] == "aborted"
 
 
 def test_pipeline_controller_supports_handbrake_jobs_without_profile(tmp_path):

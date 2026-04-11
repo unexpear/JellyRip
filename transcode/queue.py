@@ -1,5 +1,6 @@
 from .engine import (
     FFMPEG_SOURCE_MODE_SAFE_COPY,
+    TRANSCODE_ABORT_RETURN_CODE,
     TranscodeEngine,
     normalize_ffmpeg_source_mode,
 )
@@ -53,6 +54,7 @@ class TranscodeQueue:
         handbrake_exe: str = "HandBrakeCLI",
         ffmpeg_source_mode: str = FFMPEG_SOURCE_MODE_SAFE_COPY,
         temp_root: str | None = None,
+        abort_event=None,
     ):
         self.engine = TranscodeEngine(
             log_dir=log_dir,
@@ -61,10 +63,12 @@ class TranscodeQueue:
             handbrake_exe=handbrake_exe,
             ffmpeg_source_mode=ffmpeg_source_mode,
             temp_root=temp_root,
+            abort_event=abort_event,
         )
         self.jobs = []
         self.completed = []
         self.failed = []
+        self.aborted = []
 
     def add_job(self, job):
         self.jobs.append(job)
@@ -72,11 +76,14 @@ class TranscodeQueue:
     def run_next(self, feedback_cb=None, progress_cb=None):
         if not self.jobs:
             return None
-        total_jobs = len(self.jobs) + len(self.completed) + len(self.failed)
+        total_jobs = (
+            len(self.jobs) + len(self.completed) + len(self.failed) + len(self.aborted)
+        )
         job = self.jobs.pop(0)
-        current_index = len(self.completed) + len(self.failed) + 1
+        current_index = len(self.completed) + len(self.failed) + len(self.aborted) + 1
         if feedback_cb:
             feedback_cb(f"Starting job: {getattr(job, 'input_path', job)}")
+        last_job_percent = {"value": 0.0}
 
         def _engine_progress(event):
             payload = dict(event or {})
@@ -86,6 +93,7 @@ class TranscodeQueue:
             payload.setdefault("output_path", getattr(job, "output_path", ""))
             job_percent = _job_percent_from_event(job, payload)
             if job_percent is not None and total_jobs > 0:
+                last_job_percent["value"] = job_percent
                 payload["job_percent"] = job_percent
                 payload["overall_percent"] = (
                     ((current_index - 1) + (job_percent / 100.0)) / total_jobs
@@ -101,20 +109,33 @@ class TranscodeQueue:
             self.completed.append((job, log_path))
             if feedback_cb:
                 feedback_cb(f"Completed: {getattr(job, 'output_path', job)}")
+        elif ret == TRANSCODE_ABORT_RETURN_CODE:
+            self.aborted.append((job, log_path))
+            if feedback_cb:
+                feedback_cb(f"ABORTED: {getattr(job, 'input_path', job)}")
         else:
             self.failed.append((job, log_path))
             if feedback_cb:
                 feedback_cb(f"FAILED: {getattr(job, 'input_path', job)} (see {log_path})")
 
+        final_job_percent = (
+            last_job_percent["value"]
+            if ret == TRANSCODE_ABORT_RETURN_CODE
+            else 100.0
+        )
         final_percent = (
-            ((current_index - 1) + 1.0) / total_jobs
-        ) * 100.0 if total_jobs > 0 else 100.0
+            ((current_index - 1) + (final_job_percent / 100.0)) / total_jobs
+        ) * 100.0 if total_jobs > 0 else final_job_percent
         _safe_progress_event(
             progress_cb,
             {
-                "phase": "complete" if ret == 0 else "failed",
+                "phase": (
+                    "complete" if ret == 0
+                    else "aborted" if ret == TRANSCODE_ABORT_RETURN_CODE
+                    else "failed"
+                ),
                 "percent": 100.0,
-                "job_percent": 100.0,
+                "job_percent": final_job_percent,
                 "overall_percent": final_percent,
                 "job_index": current_index,
                 "job_total": total_jobs,
@@ -123,6 +144,8 @@ class TranscodeQueue:
                 "message": (
                     f"Completed: {getattr(job, 'output_path', job)}"
                     if ret == 0
+                    else f"ABORTED: {getattr(job, 'input_path', job)}"
+                    if ret == TRANSCODE_ABORT_RETURN_CODE
                     else f"FAILED: {getattr(job, 'input_path', job)}"
                 ),
             },

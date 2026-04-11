@@ -85,3 +85,31 @@ def test_confirm_input_preserves_empty_string():
 
     assert gui._input_result == ""
     assert gui._input_event.is_set()
+
+
+def test_on_close_destroys_window_without_force_exit(monkeypatch):
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
+        import gui.main_window as main_window
+        from gui.main_window import JellyRipperGUI
+
+    gui = object.__new__(JellyRipperGUI)
+    gui.engine = unittest.mock.Mock()
+    gui.rip_thread = None
+    gui.destroy = unittest.mock.Mock()
+
+    monkeypatch.setattr(
+        main_window.messagebox,
+        "askokcancel",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        main_window.os,
+        "_exit",
+        unittest.mock.Mock(side_effect=AssertionError("os._exit should not run")),
+    )
+
+    gui.on_close()
+
+    gui.engine.abort.assert_called_once_with()
+    gui.destroy.assert_called_once_with()
+    main_window.os._exit.assert_not_called()

@@ -1044,6 +1044,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             temp_root=os.path.normpath(
                 self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
             ),
+            abort_event=self.engine.abort_event,
         )
         self.controller.log(
             f"FFmpeg recommendation queued for {analysis['name']}: "
@@ -1770,6 +1771,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 temp_root=os.path.normpath(
                     self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
                 ),
+                abort_event=self.engine.abort_event,
             )
 
             self.controller.log(
@@ -1826,6 +1828,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 "No jobs were available to run.",
             )
             return
+        self.engine.abort_event.clear()
+        self.disable_buttons()
 
         BG = "#0d1117"
         win = tk.Toplevel(self)
@@ -1934,6 +1938,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         ).pack(side="left")
         tk.Button(
             button_row,
+            text="Abort Queue",
+            command=self.request_abort,
+            bg="#da3633",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            button_row,
             text="Close",
             command=win.destroy,
             bg="#21262d",
@@ -1979,11 +1992,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             self.after(0, _update_ui)
 
         def _mark_progress():
-            finished = len(transcode_queue.completed) + len(transcode_queue.failed)
+            aborted = len(getattr(transcode_queue, "aborted", []))
+            finished = len(transcode_queue.completed) + len(transcode_queue.failed) + aborted
             pct = (finished / total_jobs) * 100 if total_jobs else 0
             summary = (
                 f"{backend_label} progress: {finished}/{total_jobs} complete "
-                f"(success: {len(transcode_queue.completed)}, failed: {len(transcode_queue.failed)})"
+                f"(success: {len(transcode_queue.completed)}, failed: {len(transcode_queue.failed)}, "
+                f"aborted: {aborted})"
             )
             try:
                 if not win.winfo_exists():
@@ -1994,36 +2009,53 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             except tk.TclError:
                 return
 
-        def _finish(message):
+        def _finish(message, complete=True):
             try:
                 if not win.winfo_exists():
                     return
-                progress_var.set(100)
+                if complete:
+                    progress_var.set(100)
                 status_var.set(message)
                 _append_log_line(message)
             except tk.TclError:
                 return
+            finally:
+                self.enable_buttons()
 
         def _worker():
             try:
                 while transcode_queue.jobs:
+                    if self.engine.abort_event.is_set():
+                        break
                     transcode_queue.run_next(
                         feedback_cb=_feedback,
                         progress_cb=_progress,
                     )
                     self.after(0, _mark_progress)
+                    if self.engine.abort_event.is_set():
+                        break
             except Exception as exc:
                 error_message = f"{backend_label} queue stopped with an unexpected error: {exc}"
                 self.controller.log(error_message)
                 self.after(0, lambda: _finish(error_message))
                 return
 
-            summary = (
-                f"{backend_label} queue complete. Success: {len(transcode_queue.completed)}, "
-                f"Failed: {len(transcode_queue.failed)}"
-            )
+            aborted = len(getattr(transcode_queue, "aborted", []))
+            if self.engine.abort_event.is_set() or aborted:
+                summary = (
+                    f"{backend_label} queue aborted. Success: {len(transcode_queue.completed)}, "
+                    f"Failed: {len(transcode_queue.failed)}, Aborted: {aborted}, "
+                    f"Not run: {len(transcode_queue.jobs)}"
+                )
+                complete = False
+            else:
+                summary = (
+                    f"{backend_label} queue complete. Success: {len(transcode_queue.completed)}, "
+                    f"Failed: {len(transcode_queue.failed)}"
+                )
+                complete = True
             self.controller.log(summary)
-            self.after(0, lambda: _finish(summary))
+            self.after(0, lambda: _finish(summary, complete=complete))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4262,9 +4294,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 except Exception:
                     pass
             self.destroy()
-            # As a last resort, force kill the process (kills all threads/subprocesses)
-            import os
-            os._exit(0)
 
     def _pick_movie_mode(self):
         choice = self._run_on_main(
