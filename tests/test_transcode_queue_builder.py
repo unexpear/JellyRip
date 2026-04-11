@@ -623,6 +623,49 @@ def test_transcode_queue_records_aborted_jobs(tmp_path, monkeypatch):
     assert progress_events[-1]["phase"] == "aborted"
 
 
+def test_transcode_queue_owns_private_abort_event_by_default(tmp_path):
+    from transcode.queue import TranscodeQueue
+
+    first = TranscodeQueue(log_dir=str(tmp_path / "logs_a"))
+    second = TranscodeQueue(log_dir=str(tmp_path / "logs_b"))
+    shared_event = threading.Event()
+    third = TranscodeQueue(log_dir=str(tmp_path / "logs_c"), abort_event=shared_event)
+
+    assert first.abort_event is first.engine.abort_event
+    assert second.abort_event is second.engine.abort_event
+    assert first.abort_event is not second.abort_event
+    assert third.abort_event is shared_event
+    assert third.engine.abort_event is shared_event
+
+
+def test_transcode_queue_abort_cancels_pending_jobs(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.engine import TRANSCODE_ABORT_RETURN_CODE
+    from transcode.profiles import ProfileLoader
+    from transcode.queue import TranscodeQueue
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    queue = TranscodeQueue(log_dir=str(tmp_path / "logs"))
+    first_job = TranscodeJob("first.mkv", "first_out.mkv", loader.get_profile())
+    second_job = TranscodeJob("second.mkv", "second_out.mkv", loader.get_profile())
+    queue.add_job(first_job)
+    queue.add_job(second_job)
+
+    def _fake_run_job(job, dry_run=False, feedback_cb=None, progress_cb=None):
+        queue.abort()
+        return TRANSCODE_ABORT_RETURN_CODE, str(tmp_path / "logs" / "first.log")
+
+    monkeypatch.setattr(queue.engine, "run_job", _fake_run_job)
+
+    results = queue.run_all()
+
+    assert len(results) == 1
+    assert results[0][0] == TRANSCODE_ABORT_RETURN_CODE
+    assert queue.jobs == []
+    assert [job for job, _log_path in queue.aborted] == [first_job, second_job]
+    assert queue.failed == []
+
+
 def test_pipeline_controller_supports_handbrake_jobs_without_profile(tmp_path):
     from core.pipeline import PipelineController
     from transcode.profiles import ProfileLoader

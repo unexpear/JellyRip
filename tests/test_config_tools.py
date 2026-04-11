@@ -76,6 +76,47 @@ def test_auto_locate_ffmpeg_prefers_bundled_binary(monkeypatch, tmp_path):
     assert os.path.normpath(config.auto_locate_ffmpeg()) == os.path.normpath(str(bundled))
 
 
+def test_validate_ffmpeg_rejects_old_panda3d_style_build(monkeypatch, tmp_path):
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_text("x", encoding="utf-8")
+
+    class _Result:
+        returncode = 0
+        stdout = (
+            b"ffmpeg version N-55702-g920046a\n"
+            b"libavcodec     55. 29.100 / 55. 29.100\n"
+        )
+        stderr = b""
+
+    monkeypatch.setattr(config.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    ok, reason = config.validate_ffmpeg(str(ffmpeg))
+
+    assert ok is False
+    assert "too old" in reason
+    assert "libavcodec 55" in reason
+
+
+def test_validate_ffmpeg_accepts_modern_build(monkeypatch, tmp_path):
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_text("x", encoding="utf-8")
+
+    class _Result:
+        returncode = 0
+        stdout = (
+            b"ffmpeg version 2026-04-01-git-eedf8f0165-full_build\n"
+            b"libavcodec     62. 29.101 / 62. 29.101\n"
+        )
+        stderr = b""
+
+    monkeypatch.setattr(config.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    ok, reason = config.validate_ffmpeg(str(ffmpeg))
+
+    assert ok is True
+    assert reason == ""
+
+
 def test_should_keep_current_tool_path_when_new_is_invalid():
     def validator(path):
         return (path == "good.exe", "bad")

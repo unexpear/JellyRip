@@ -21,6 +21,7 @@ from PyInstaller.utils.win32.versioninfo import (
 PROJECT_ROOT = Path.cwd()
 FFMPEG_ENV_VARS = ("JELLYRIP_FFMPEG_DIR", "FFMPEG_DIR")
 FFMPEG_FILENAMES = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")
+FFMPEG_NOTICE_FILENAMES = ("LICENSE", "README.txt")
 
 
 def _configure_tcl_tk_environment() -> None:
@@ -96,25 +97,30 @@ def _build_version_info(version: str) -> VSVersionInfo:
         ],
     )
 
+def _add_search_root(roots: list[Path], root: Path) -> None:
+    roots.append(root)
+    if root.name.lower() == "bin":
+        roots.append(root.parent)
+
+
 def _search_roots() -> list[Path]:
     roots: list[Path] = []
     for env_name in FFMPEG_ENV_VARS:
         raw = os.environ.get(env_name, "").strip()
         if raw:
-            roots.append(Path(raw).expanduser())
+            _add_search_root(roots, Path(raw).expanduser())
 
-    roots.extend(
-        [
-            PROJECT_ROOT / "ffmpeg",
-            PROJECT_ROOT / "ffmpeg" / "bin",
-            PROJECT_ROOT.parent / "ffmpeg",
-            PROJECT_ROOT.parent / "ffmpeg" / "bin",
-        ]
-    )
+    for root in (
+        PROJECT_ROOT / "ffmpeg",
+        PROJECT_ROOT / "ffmpeg" / "bin",
+        PROJECT_ROOT.parent / "ffmpeg",
+        PROJECT_ROOT.parent / "ffmpeg" / "bin",
+    ):
+        _add_search_root(roots, root)
     return roots
 
 
-def _find_bundle_binary(filename: str) -> str:
+def _find_bundle_file(filename: str) -> str:
     seen: set[str] = set()
     for root in _search_roots():
         try:
@@ -140,23 +146,29 @@ def _find_bundle_binary(filename: str) -> str:
                 return str(candidate)
 
     search_hint = (
-        "Could not find the bundled FFmpeg tools required by JellyRip.spec.\n"
-        "Set JELLYRIP_FFMPEG_DIR (or FFMPEG_DIR) to a folder containing "
-        "ffmpeg.exe, ffprobe.exe, and ffplay.exe, or place an extracted "
-        "FFmpeg build under .\\ffmpeg\\ or ..\\ffmpeg\\."
+        f"Could not find {filename} from the FFmpeg build required by JellyRip.spec.\n"
+        "Set JELLYRIP_FFMPEG_DIR (or FFMPEG_DIR) to the Gyan FFmpeg full build "
+        "folder, or place the extracted build under .\\ffmpeg\\ or ..\\ffmpeg\\."
     )
     raise SystemExit(search_hint)
 
 
 APP_VERSION = _read_app_version()
 APP_VERSION_INFO = _build_version_info(APP_VERSION)
-FFMPEG_BINARIES = [(_find_bundle_binary(name), ".") for name in FFMPEG_FILENAMES]
+FFMPEG_BINARIES = [(_find_bundle_file(name), ".") for name in FFMPEG_FILENAMES]
+FFMPEG_NOTICE_DATAS = [
+    (_find_bundle_file(name), "licenses/ffmpeg") for name in FFMPEG_NOTICE_FILENAMES
+]
 
 a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=FFMPEG_BINARIES,
-    datas=[],
+    datas=[
+        ("LICENSE", "."),
+        ("THIRD_PARTY_NOTICES.md", "."),
+        *FFMPEG_NOTICE_DATAS,
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

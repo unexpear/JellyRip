@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from shared.runtime import CONFIG_FILE, DEFAULTS, get_config_dir
 ConfigDict: TypeAlias = dict[str, object]
 ToolValidationResult: TypeAlias = tuple[bool, str]
 ToolValidator: TypeAlias = Callable[[str], ToolValidationResult]
+_MIN_FFMPEG_LIBAVCODEC_MAJOR = 58
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,13 @@ def _is_file(path: str | PathLike[str] | None) -> bool:
     return bool(normalized) and os.path.isfile(normalized)
 
 
-def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> ToolValidationResult:
+def _run_probe_output(
+    executable: str | PathLike[str] | None,
+    args: Iterable[str],
+) -> tuple[bool, str, str]:
     exe = _normalize_pathlike(executable)
     if not _is_file(exe):
-        return False, "Path does not exist"
+        return False, "Path does not exist", ""
 
     command = [exe, *list(args)]
     try:
@@ -68,11 +73,20 @@ def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> T
                 timeout=10,
             )
     except Exception as exc:
-        return False, str(exc)
+        return False, str(exc), ""
+
+    output = b"\n".join(
+        part for part in (proc.stdout, proc.stderr) if isinstance(part, bytes)
+    ).decode("utf-8", errors="replace")
 
     if proc.returncode != 0:
-        return False, f"Exited with code {proc.returncode}"
-    return True, ""
+        return False, f"Exited with code {proc.returncode}", output
+    return True, "", output
+
+
+def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> ToolValidationResult:
+    ok, reason, _output = _run_probe_output(executable, args)
+    return ok, reason
 
 
 def _bundled_binary_candidates(filename: str) -> list[str]:
@@ -87,6 +101,7 @@ def _bundled_binary_candidates(filename: str) -> list[str]:
 
     app_dir = os.path.dirname(os.path.abspath(__file__))
     candidates.append(os.path.join(app_dir, filename))
+    candidates.append(os.path.join(app_dir, "dist", filename))
 
     resolved: list[str] = []
     seen: set[str] = set()
@@ -137,8 +152,32 @@ def auto_locate_handbrake() -> str:
     return shutil.which("HandBrakeCLI") or ""
 
 
+def _ffmpeg_libavcodec_major(version_output: str) -> int | None:
+    match = re.search(r"libavcodec\s+(\d+)\.", version_output)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def validate_ffmpeg(path: str | PathLike[str] | None) -> ToolValidationResult:
-    return _run_probe(path, ["-version"])
+    ok, reason, output = _run_probe_output(path, ["-version"])
+    if not ok:
+        return ok, reason
+
+    libavcodec_major = _ffmpeg_libavcodec_major(output)
+    if libavcodec_major is None:
+        return False, "Could not read FFmpeg libavcodec version"
+    if libavcodec_major < _MIN_FFMPEG_LIBAVCODEC_MAJOR:
+        return (
+            False,
+            "FFmpeg is too old for JellyRip transcode commands "
+            f"(libavcodec {libavcodec_major}; need "
+            f"{_MIN_FFMPEG_LIBAVCODEC_MAJOR}+ / FFmpeg 4.0+).",
+        )
+    return True, ""
 
 
 def validate_handbrake(path: str | PathLike[str] | None) -> ToolValidationResult:

@@ -54,18 +54,49 @@ def test_release_script_checks_git_state_and_release_notes():
     assert "git status --porcelain" in release_script
     assert "git rev-parse --abbrev-ref HEAD" in release_script
     assert 'findstr /C:"v%VERSION%" release_notes.txt' in release_script
+    assert "tools\\stage_ffmpeg_bundle.ps1" in release_script
+    assert "LICENSE THIRD_PARTY_NOTICES.md dist\\FFmpeg-LICENSE.txt dist\\FFmpeg-README.txt" in release_script
+    assert "dist\\ffmpeg.exe dist\\ffprobe.exe dist\\ffplay.exe" in release_script
+    assert "is missing; JellyRip releases intentionally bundle FFmpeg" in release_script
     assert f"REM  Usage:  release.bat {version}" in release_script
     assert f"echo Example: release.bat {version}" in release_script
 
 
-def test_spec_avoids_machine_specific_ffmpeg_paths():
+def test_release_metadata_tracks_license_notices():
+    readme = _read("README.md")
+    pyproject = _read("pyproject.toml")
+    installer = _read("installer/JellyRip.iss")
+    notices = _read("THIRD_PARTY_NOTICES.md")
+
+    assert 'license = { text = "GPL-3.0-only" }' in pyproject
+    assert "GNU General Public License v3 (GPLv3)" in pyproject
+    assert "THIRD_PARTY_NOTICES.md" in readme
+    assert "2026-04-01-git-eedf8f0165-full_build-www.gyan.dev" in notices
+    assert "https://github.com/FFmpeg/FFmpeg/commit/eedf8f0165" in notices
+    assert 'Source: "..\\dist\\ffmpeg.exe"' in installer
+    assert 'Source: "..\\dist\\ffprobe.exe"' in installer
+    assert 'Source: "..\\dist\\ffplay.exe"' in installer
+    assert 'Source: "..\\LICENSE"' in installer
+    assert 'Source: "..\\THIRD_PARTY_NOTICES.md"' in installer
+    assert 'Source: "..\\dist\\FFmpeg-LICENSE.txt"' in installer
+    assert 'Source: "..\\dist\\FFmpeg-README.txt"' in installer
+
+
+def test_spec_bundles_ffmpeg_intentionally():
     spec = _read("JellyRip.spec")
 
-    assert "JELLYRIP_FFMPEG_DIR" in spec
     assert "TCL_LIBRARY" in spec
     assert "TK_LIBRARY" in spec
     assert 'StringStruct("ProductVersion", version)' in spec
     assert 'StringStruct("FileVersion", version)' in spec
+    assert "FFMPEG_FILENAMES" in spec
+    assert "FFMPEG_NOTICE_FILENAMES" in spec
+    assert "binaries=FFMPEG_BINARIES" in spec
+    assert "*FFMPEG_NOTICE_DATAS" in spec
+    assert "THIRD_PARTY_NOTICES.md" in spec
+    assert "ffmpeg.exe" in spec.lower()
+    assert "ffprobe.exe" in spec.lower()
+    assert "ffplay.exe" in spec.lower()
     assert "C:/Users/" not in spec
     assert "Desktop/ffmpeg" not in spec
 
