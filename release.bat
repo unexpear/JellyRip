@@ -71,6 +71,11 @@ if errorlevel 1 (
     echo ABORT: pyproject.toml does not contain version %VERSION%
     exit /b 1
 )
+findstr /C:"GPL-3.0-only" pyproject.toml >nul 2>&1
+if errorlevel 1 (
+    echo ABORT: pyproject.toml does not declare the GPLv3 project license.
+    exit /b 1
+)
 
 findstr /C:"#define MyAppVersion \"%VERSION%\"" installer\JellyRip.iss >nul 2>&1
 if errorlevel 1 (
@@ -89,11 +94,21 @@ if errorlevel 1 (
     echo ABORT: release_notes.txt does not mention v%VERSION%
     exit /b 1
 )
+if not exist LICENSE (
+    echo ABORT: LICENSE is missing.
+    exit /b 1
+)
+if not exist THIRD_PARTY_NOTICES.md (
+    echo ABORT: THIRD_PARTY_NOTICES.md is missing.
+    exit /b 1
+)
 echo       All files show v%VERSION%.
 echo.
 
 REM ---- Step 4: Build exe ----
 echo [4/8] Building JellyRip.exe...
+if exist dist rmdir /s /q dist >nul 2>&1
+if exist build rmdir /s /q build >nul 2>&1
 %PYTHON_EXE% -m PyInstaller JellyRip.spec >nul 2>&1
 if errorlevel 1 (
     echo ABORT: PyInstaller build failed.
@@ -102,6 +117,23 @@ if errorlevel 1 (
 if not exist dist\JellyRip.exe (
     echo ABORT: dist\JellyRip.exe not found after build.
     exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\stage_ffmpeg_bundle.ps1 >nul 2>&1
+if errorlevel 1 (
+    echo ABORT: FFmpeg bundle staging failed.
+    exit /b 1
+)
+for %%F in (dist\ffmpeg.exe dist\ffprobe.exe dist\ffplay.exe) do (
+    if not exist %%F (
+        echo ABORT: %%F is missing; JellyRip releases intentionally bundle FFmpeg.
+        exit /b 1
+    )
+)
+for %%F in (dist\FFmpeg-LICENSE.txt dist\FFmpeg-README.txt) do (
+    if not exist %%F (
+        echo ABORT: %%F is missing; FFmpeg notices must ship with bundled FFmpeg.
+        exit /b 1
+    )
 )
 echo       dist\JellyRip.exe built.
 echo.
@@ -153,7 +185,7 @@ echo.
 
 REM ---- Step 8: Create release with assets ----
 echo [8/8] Publishing release v%VERSION% with assets...
-gh release create v%VERSION% dist\JellyRip.exe dist\JellyRipInstaller.exe --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
+gh release create v%VERSION% dist\JellyRip.exe dist\JellyRipInstaller.exe LICENSE THIRD_PARTY_NOTICES.md dist\FFmpeg-LICENSE.txt dist\FFmpeg-README.txt --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
 if errorlevel 1 (
     echo ABORT: gh release create failed.
     exit /b 1
@@ -166,6 +198,10 @@ echo.
 echo  Assets:
 echo    - JellyRip.exe
 echo    - JellyRipInstaller.exe
+echo    - LICENSE
+echo    - THIRD_PARTY_NOTICES.md
+echo    - FFmpeg-LICENSE.txt
+echo    - FFmpeg-README.txt
 echo.
 echo  Verify: https://github.com/unexpear/JellyRip/releases/tag/v%VERSION%
 echo.

@@ -27,8 +27,21 @@ if errorlevel 1 (
     echo Build failed!
     pause
     exit /b 1
-) else (
-    echo.
-    echo Build complete! Output: dist\JellyRip.exe
-    pause
 )
+
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\stage_ffmpeg_bundle.ps1
+if errorlevel 1 (
+    echo FFmpeg bundle staging failed!
+    pause
+    exit /b 1
+)
+
+echo.
+echo Build complete! Output:
+echo   dist\JellyRip.exe
+echo   dist\ffmpeg.exe
+echo   dist\ffprobe.exe
+echo   dist\ffplay.exe
+echo   dist\FFmpeg-LICENSE.txt
+echo   dist\FFmpeg-README.txt
+pause

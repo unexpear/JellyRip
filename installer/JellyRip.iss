@@ -47,6 +47,10 @@ Source: "..\dist\JellyRip.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\FFmpeg-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\FFmpeg-README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\JellyRip"; Filename: "{app}\{#MyAppExeName}"
@@ -100,6 +104,7 @@ var
   InstallDir: String;
 begin
   Result := False;
+  if FileExists(ExpandConstant('{app}\ffprobe.exe')) then begin Result := True; Exit; end;
   { Registry checks — Chocolatey / winget (Gyan.FFmpeg) uninstall entries }
   if RegQueryStringValue(HKLM,
       'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ffmpeg',

@@ -1,9 +1,18 @@
+import threading
+
 from .engine import (
     FFMPEG_SOURCE_MODE_SAFE_COPY,
     TRANSCODE_ABORT_RETURN_CODE,
     TranscodeEngine,
     normalize_ffmpeg_source_mode,
 )
+
+
+_ACTION_LABEL: dict[str, str] = {
+    "strip_hdr": "pix_fmt→yuv420p, HDR params removed",
+    "use_cpu":   "hw_accel→cpu",
+    "lower_crf": "CRF reduced by 3",
+}
 
 
 def _safe_progress_event(progress_cb, payload):
@@ -56,6 +65,8 @@ class TranscodeQueue:
         temp_root: str | None = None,
         abort_event=None,
     ):
+        self.ffprobe_exe = ffprobe_exe or "ffprobe"
+        self.abort_event = abort_event if abort_event is not None else threading.Event()
         self.engine = TranscodeEngine(
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
@@ -63,24 +74,109 @@ class TranscodeQueue:
             handbrake_exe=handbrake_exe,
             ffmpeg_source_mode=ffmpeg_source_mode,
             temp_root=temp_root,
-            abort_event=abort_event,
+            abort_event=self.abort_event,
         )
         self.jobs = []
         self.completed = []
         self.failed = []
         self.aborted = []
+        # Jobs whose encode succeeded but output verification failed and a
+        # fallback retry was queued.  Tuple: (job, log_path, VerificationResult).
+        self.degraded = []
 
     def add_job(self, job):
         self.jobs.append(job)
+
+    def abort(self):
+        self.abort_event.set()
+
+    def cancel_pending(self, log_path=""):
+        count = 0
+        while self.jobs:
+            self.aborted.append((self.jobs.pop(0), log_path))
+            count += 1
+        return count
+
+    def _verify_job(self, job, feedback_cb=None):
+        """Run post-encode verification if the job carries an expected contract.
+
+        Emits per-warning/per-error lines via *feedback_cb* so they appear in
+        the queue progress log (Option B — UI surfacing).  Returns the
+        ``VerificationResult`` or ``None`` when no contract is present.
+        """
+        from transcode.post_encode_verifier import (
+            OutputContract, VerificationOutcome, verify_output,
+        )
+        metadata = getattr(job, "metadata", {}) or {}
+        expected_dict = metadata.get("expected")
+        if not expected_dict or not isinstance(expected_dict, dict):
+            return None
+
+        contract = OutputContract.from_dict(expected_dict)
+        result = verify_output(
+            getattr(job, "output_path", ""),
+            contract,
+            ffprobe_exe=self.ffprobe_exe,
+        )
+
+        if feedback_cb:
+            if result.outcome == VerificationOutcome.DEGRADED:
+                for w in result.warnings:
+                    feedback_cb(f"  [DEGRADED] {w}")
+            elif result.outcome == VerificationOutcome.FAIL:
+                for e in result.errors:
+                    feedback_cb(f"  [FAIL] {e}")
+
+        return result
+
+    def _try_fallback(self, job, verification, feedback_cb=None):
+        """Build and return ``(fallback_job, matched_rule)`` from the job's rules.
+
+        Returns ``(None, None)`` when no applicable rule is found.
+        Returns ``(None, rule)`` when a rule matched but its action has no
+        recovery — the rule is still returned so the caller can classify the
+        failure reason in its feedback message.
+        """
+        from transcode.fallback import apply_fallback, find_applicable_rule
+        from transcode.post_encode_verifier import OutputContract, contract_diff
+        metadata = getattr(job, "metadata", {}) or {}
+        rules = metadata.get("fallback_rules") or []
+        if not rules:
+            return None, None
+        rule = find_applicable_rule(verification, rules)
+        if rule is None:
+            return None, None
+        fallback = apply_fallback(job, rule)
+        if fallback is not None:
+            # Enrich the fallback job's metadata with a before/after diff so
+            # downstream code (GUI, logs) can show exactly what changed.
+            expected_dict = metadata.get("expected")
+            if expected_dict and isinstance(expected_dict, dict) and verification.actual:
+                ctr = OutputContract.from_dict(expected_dict)
+                diff = contract_diff(ctr, verification.actual)
+                if diff:
+                    fallback.metadata["fallback_verification_diff"] = diff
+            if feedback_cb:
+                label = _ACTION_LABEL.get(rule["action"], rule["action"])
+                feedback_cb(
+                    f"  [RETRY] {rule['action']} → "
+                    f"{getattr(fallback, 'output_path', '')} "
+                    f"({label})"
+                )
+        return fallback, rule
 
     def run_next(self, feedback_cb=None, progress_cb=None):
         if not self.jobs:
             return None
         total_jobs = (
-            len(self.jobs) + len(self.completed) + len(self.failed) + len(self.aborted)
+            len(self.jobs) + len(self.completed) + len(self.failed)
+            + len(self.aborted) + len(self.degraded)
         )
         job = self.jobs.pop(0)
-        current_index = len(self.completed) + len(self.failed) + len(self.aborted) + 1
+        current_index = (
+            len(self.completed) + len(self.failed)
+            + len(self.aborted) + len(self.degraded) + 1
+        )
         if feedback_cb:
             feedback_cb(f"Starting job: {getattr(job, 'input_path', job)}")
         last_job_percent = {"value": 0.0}
@@ -106,9 +202,41 @@ class TranscodeQueue:
             progress_cb=_engine_progress,
         )
         if ret == 0:
-            self.completed.append((job, log_path))
-            if feedback_cb:
-                feedback_cb(f"Completed: {getattr(job, 'output_path', job)}")
+            # ── Post-encode verification (Options A + B) ──────────────────
+            verification = self._verify_job(job, feedback_cb)
+
+            from transcode.post_encode_verifier import VerificationOutcome
+            if verification is not None and verification.outcome == VerificationOutcome.FAIL:
+                # Attempt auto-recovery (Option A).
+                fallback, matched_rule = self._try_fallback(job, verification, feedback_cb)
+                if fallback is not None:
+                    self.jobs.insert(0, fallback)
+                    self.degraded.append((job, log_path, verification))
+                    # Don't emit "Completed" — the fallback is still pending.
+                else:
+                    self.failed.append((job, log_path))
+                    if feedback_cb:
+                        # Use the matched trigger as a failure class tag so the
+                        # operator can see exactly why the encode was rejected.
+                        trigger = (
+                            matched_rule["trigger"] if matched_rule else "verification"
+                        )
+                        feedback_cb(
+                            f"FAILED [{trigger}]: "
+                            f"{getattr(job, 'output_path', job)}"
+                        )
+            else:
+                self.completed.append((job, log_path))
+                if feedback_cb:
+                    # Surface outcome inline with the completion message (Option B).
+                    if verification is None:
+                        tag = ""
+                    elif verification.outcome == VerificationOutcome.PASS:
+                        tag = " [PASS]"
+                    else:
+                        tag = " [DEGRADED]"
+                    feedback_cb(f"Completed{tag}: {getattr(job, 'output_path', job)}")
+
         elif ret == TRANSCODE_ABORT_RETURN_CODE:
             self.aborted.append((job, log_path))
             if feedback_cb:
@@ -157,10 +285,23 @@ class TranscodeQueue:
         total = len(self.jobs)
         count = 0
         while self.jobs:
+            if self.abort_event.is_set():
+                self.cancel_pending()
+                break
             count += 1
             if feedback_cb:
                 feedback_cb(f"Processing job {count} of {total}")
             results.append(self.run_next(feedback_cb=feedback_cb, progress_cb=progress_cb))
+            if self.abort_event.is_set():
+                self.cancel_pending()
+                break
         if feedback_cb:
-            feedback_cb(f"Batch complete. Success: {len(self.completed)}, Failed: {len(self.failed)}")
+            parts = [f"Success: {len(self.completed)}"]
+            if self.degraded:
+                parts.append(f"Retried: {len(self.degraded)}")
+            if self.failed:
+                parts.append(f"Failed: {len(self.failed)}")
+            if self.aborted:
+                parts.append(f"Aborted: {len(self.aborted)}")
+            feedback_cb("Batch complete. " + ", ".join(parts))
         return results

@@ -6,45 +6,56 @@ from typing import Any, Dict, Optional
 PROFILE_SCHEMA = {
     # Video stream selection and encoding options
     "video": {
-        "codec": str,  # Target codec (e.g., h264, h265, copy)
-        "mode": str,  # crf, bitrate, copy
+        "codec": str,                       # Target codec: h265, h264, copy
+        "mode": str,                        # crf, bitrate, copy
         "crf": (int, type(None)),
-        "bitrate": (int, type(None)),
-        "preset": (str, type(None)),
-        "hw_accel": str,  # auto_prefer, cpu, nvenc, qsv, etc.
-        # Advanced: add 'stream_index' or 'select' for multi-video support if needed
+        "bitrate": (int, type(None)),       # kbps, used when mode=bitrate
+        "preset": (str, type(None)),        # ultrafast … veryslow
+        "hw_accel": str,                    # cpu, auto_prefer, nvenc, qsv, amf
+        "tune": (str, type(None)),          # film, animation, grain, fastdecode, zerolatency
+        "video_profile": (str, type(None)), # main, main10, high, high10, baseline
+        "pix_fmt": (str, type(None)),       # yuv420p, yuv420p10le, yuv444p10le …
+        "keyint": (int, type(None)),        # keyframe interval in frames (GOP size)
+        "bframes": (int, type(None)),       # max B-frames (0–16)
+        "refs": (int, type(None)),          # reference frames (1–16)
+        "extra_video_params": (str, type(None)),  # x265-params / x264-opts raw string
     },
     # Audio stream selection and encoding options
     "audio": {
-        "mode": str,  # copy, aac, ac3
-        "language": (str, type(None)),  # Preferred language (e.g., 'eng')
-        "tracks": (str, type(None)),  # all, main, language, etc.
-        # Advanced: add 'downmix' (bool/str) for stereo compatibility if needed
+        "mode": str,                        # copy, aac, ac3, eac3, mp3, opus, flac
+        "language": (str, type(None)),      # preferred language tag (e.g. 'eng')
+        "tracks": (str, type(None)),        # all, main, language
+        "bitrate": (int, type(None)),       # kbps, used when mode != copy
+        "channels": (int, type(None)),      # 1=mono, 2=stereo, 6=5.1, 8=7.1
+        "sample_rate": (int, type(None)),   # Hz: 44100, 48000, 96000
+        "downmix": bool,                    # force stereo output (-ac 2)
     },
     # Subtitle stream selection and handling
     "subtitles": {
-        "mode": str,  # all, forced, language, none
-        "burn": bool,  # Burn-in if required for compatibility
-        "language": (str, type(None)),  # Preferred language
-        # Advanced: add 'soft_preferred' (bool) to prefer soft subs
+        "mode": str,                        # all, forced, language, none
+        "burn": bool,                       # burn-in (hard sub)
+        "language": (str, type(None)),      # preferred language tag
     },
     # Output container and naming
     "output": {
-        "container": str,  # mkv, mp4, etc.
-        "naming": str,  # Output naming pattern
-        "overwrite": bool,  # Overwrite existing files
-        "auto_increment": bool,  # Auto-increment to avoid collisions
+        "container": str,                   # mkv, mp4, mov
+        "naming": str,                      # naming pattern
+        "overwrite": bool,
+        "auto_increment": bool,
     },
     # Constraints for skipping unnecessary jobs
     "constraints": {
         "skip_if_below_gb": (int, float, type(None)),
         "skip_if_codec_matches": bool,
     },
-    # Metadata preservation and advanced options
+    # Metadata preservation
     "metadata": {
-        "preserve": (bool, type(None)),  # Preserve all metadata if True
-        # Advanced: add 'chapters' (bool) to preserve chapters
-    }
+        "preserve": (bool, type(None)),
+    },
+    # Raw FFmpeg pass-through arguments
+    "advanced": {
+        "extra_output_args": (str, type(None)),  # appended before output path
+    },
 }
 
 class ProfileValidationError(Exception):
@@ -60,11 +71,22 @@ def _default_profile_data() -> Dict[str, Any]:
             "bitrate": None,
             "preset": "medium",
             "hw_accel": "auto_prefer",
+            "tune": None,
+            "video_profile": None,
+            "pix_fmt": None,
+            "keyint": None,
+            "bframes": None,
+            "refs": None,
+            "extra_video_params": None,
         },
         "audio": {
             "mode": "copy",
             "language": None,
             "tracks": "all",
+            "bitrate": None,
+            "channels": None,
+            "sample_rate": None,
+            "downmix": False,
         },
         "subtitles": {
             "mode": "all",
@@ -84,7 +106,15 @@ def _default_profile_data() -> Dict[str, Any]:
         "metadata": {
             "preserve": True,
         },
+        "advanced": {
+            "extra_output_args": None,
+        },
     }
+
+
+def normalize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Public wrapper around _normalize_profile_data for use by other modules."""
+    return _normalize_profile_data(data)
 
 
 def _normalize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:

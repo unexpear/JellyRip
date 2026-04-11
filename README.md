@@ -53,7 +53,8 @@ paths before the first rip.
 
 - Windows
 - MakeMKV
-- ffprobe (from ffmpeg)
+- FFmpeg (`ffmpeg` and `ffprobe`) for source runs; release builds bundle
+  the GPLv3 Gyan full build
 - optical drive for live ripping
 
 ## Main Workflows
@@ -119,9 +120,10 @@ pip install pyinstaller
 pyinstaller JellyRip.spec
 ```
 
-The spec bundles `ffmpeg.exe`, `ffprobe.exe`, and `ffplay.exe`. Put an
-extracted FFmpeg build under `.\ffmpeg\` or `..\ffmpeg\`, or set
-`JELLYRIP_FFMPEG_DIR` before building.
+The spec bundles the Gyan FFmpeg full build (`ffmpeg.exe`, `ffprobe.exe`,
+and `ffplay.exe`). Put the extracted build under `.\ffmpeg\` or `..\ffmpeg\`,
+or set `JELLYRIP_FFMPEG_DIR` before building. Release builds must also ship
+`FFmpeg-LICENSE.txt` and `FFmpeg-README.txt`.
 
 ### Executable plus installer
 
@@ -129,10 +131,14 @@ extracted FFmpeg build under `.\ffmpeg\` or `..\ffmpeg\`, or set
 build_installer.bat
 ```
 
+Commercial installer builds require an appropriate Inno Setup license.
+
 Expected outputs:
 
 - `dist/JellyRip.exe`
 - `dist/JellyRipInstaller.exe`
+- `dist\ffmpeg.exe`, `dist\ffprobe.exe`, and `dist\ffplay.exe`
+- `dist\FFmpeg-LICENSE.txt` and `dist\FFmpeg-README.txt`
 
 Build output is intentionally git-ignored and should be published
 through GitHub Releases rather than committed to the repository.
@@ -162,4 +168,5 @@ PyInstaller-built Windows executables.
 
 ## License
 
-See [LICENSE](LICENSE).
+JellyRip is licensed under GPLv3. See [LICENSE](LICENSE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

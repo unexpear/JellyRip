@@ -4,7 +4,7 @@ version = "1.0.15"
 description = "Windows-first MakeMKV companion for ripping and organizing discs into a Jellyfin library"
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-only" }
 authors = [
   { name = "unexpear" }
 ]
@@ -13,7 +13,7 @@ classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Environment :: Win32 (MS Windows)",
   "Intended Audience :: End Users/Desktop",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.13",

@@ -731,7 +731,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         win.title(f"MKV Scanner Results — {os.path.basename(folder)}")
         win.configure(bg=BG)
         win.geometry("1100x650")
-        win.grab_set()
         win.lift()
         win.focus_force()
         tk.Label(
@@ -915,7 +914,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         progress_win.title("Analyzing MKV...")
         progress_win.geometry("420x130")
         progress_win.configure(bg="#161b22")
-        progress_win.grab_set()
         tk.Label(
             progress_win,
             text=f"Analyzing:\n{os.path.basename(input_path)}",
@@ -1044,12 +1042,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             temp_root=os.path.normpath(
                 self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
             ),
-            abort_event=self.engine.abort_event,
-        )
-        self.controller.log(
-            f"FFmpeg recommendation queued for {analysis['name']}: "
-            f"{recommendation['label']} (CRF {recommendation['crf']}, preset {recommendation['preset']}, "
-            f"source {_ffmpeg_source_mode_label(ffmpeg_source_mode)})"
         )
         self._run_transcode_queue(
             transcode_queue,
@@ -1064,8 +1056,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         win = tk.Toplevel(self)
         win.title(f"FFmpeg Recommendation - {analysis['name']}")
         win.configure(bg=BG)
-        win.geometry("960x700")
-        win.grab_set()
+        win.geometry("1040x900")
         win.lift()
         win.focus_force()
 
@@ -1133,6 +1124,29 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 justify="left",
             ).pack(fill="x", padx=12, pady=10)
 
+        decision_lines = []
+        decision_lines.extend(recommendation_result.get("decision_factors", []))
+        decision_lines.extend(recommendation_result.get("source_notes", []))
+        if decision_lines:
+            decision_frame = tk.Frame(win, bg="#161b22")
+            decision_frame.pack(fill="x", padx=18, pady=(0, 10))
+            tk.Label(
+                decision_frame,
+                text="Why this recommendation",
+                bg="#161b22",
+                fg="#58a6ff",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", padx=12, pady=(10, 4))
+            tk.Label(
+                decision_frame,
+                text="\n".join(f"- {line}" for line in decision_lines),
+                bg="#161b22",
+                fg="#c9d1d9",
+                font=("Segoe UI", 10),
+                wraplength=960,
+                justify="left",
+            ).pack(fill="x", padx=12, pady=(0, 10))
+
         tk.Label(
             win,
             textvariable=status_var,
@@ -1194,6 +1208,26 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             ).pack(fill="x", padx=34, pady=(2, 2))
             tk.Label(
                 card,
+                text=f"Best for: {recommendation.get('best_for', 'General use')}",
+                bg=card.cget("bg"),
+                fg="#8b949e",
+                font=("Segoe UI", 10),
+                anchor="w",
+                justify="left",
+                wraplength=920,
+            ).pack(fill="x", padx=34, pady=(0, 2))
+            tk.Label(
+                card,
+                text=f"Expected: {recommendation.get('expected_result', recommendation['summary'])}",
+                bg=card.cget("bg"),
+                fg="#8b949e",
+                font=("Segoe UI", 10),
+                anchor="w",
+                justify="left",
+                wraplength=920,
+            ).pack(fill="x", padx=34, pady=(0, 2))
+            tk.Label(
+                card,
                 text=recommendation["why"],
                 bg=card.cget("bg"),
                 fg="#8b949e",
@@ -1202,6 +1236,18 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 justify="left",
                 wraplength=860,
             ).pack(fill="x", padx=34, pady=(0, 10))
+            caution = str(recommendation.get("caution", "") or "").strip()
+            if caution:
+                tk.Label(
+                    card,
+                    text=f"Watch out: {caution}",
+                    bg=card.cget("bg"),
+                    fg="#ffd866",
+                    font=("Segoe UI", 10),
+                    anchor="w",
+                    justify="left",
+                    wraplength=920,
+                ).pack(fill="x", padx=34, pady=(0, 10))
 
         output_root_var = tk.StringVar(
             value=_suggest_transcode_output_root(scan_root, "ffmpeg")
@@ -1267,11 +1313,53 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             ):
                 win.destroy()
 
+        def _make_custom_profile():
+            # Seed the editor from the file-specific recommended preset so all
+            # starting values (CRF, preset) already reflect this MKV's resolution,
+            # bitrate, and HDR status — not generic defaults.
+            seed_rec = (
+                recommendation_map.get(recommended_id)
+                or recommendation_result["recommendations"][0]
+            )
+            initial_data = dict(seed_rec["profile_data"])
+
+            def _on_custom_apply(profile_data, crf, preset):
+                synthetic_rec = {
+                    "id": "custom",
+                    "label": "Custom",
+                    "profile_name": f"Custom - {analysis['name']}",
+                    "profile_data": profile_data,
+                    "crf": crf,
+                    "preset": preset,
+                    "details": f"Custom encode: CRF {crf}, preset {preset}.",
+                    "why": "User-configured custom settings.",
+                    "caution": "",
+                    "expected_result": "Results depend on your chosen settings.",
+                }
+                if self._start_ffmpeg_recommendation_queue(
+                    scan_root,
+                    analysis,
+                    synthetic_rec,
+                    output_root_var.get().strip(),
+                ):
+                    win.destroy()
+
+            self._open_custom_transcode_editor(win, initial_data, _on_custom_apply, analysis=analysis)
+
         tk.Button(
             button_row,
             text="Queue Chosen Recommendation",
             command=_queue_recommendation,
             bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="Make Custom Profile",
+            command=_make_custom_profile,
+            bg="#6e40c9",
             fg="white",
             font=("Segoe UI", 10, "bold"),
             relief="flat",
@@ -1297,6 +1385,605 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             fg="#8b949e",
             font=("Segoe UI", 10),
             relief="flat",
+        ).pack(side="right")
+
+    def _open_custom_transcode_editor(self, parent, initial_data, on_apply, analysis=None):
+        BG       = "#0d1117"
+        CARD     = "#161b22"
+        FG       = "#c9d1d9"
+        ACCENT   = "#58a6ff"
+        MUTED    = "#8b949e"
+        INPUT_BG = "#21262d"
+        WARN     = "#ffd866"
+
+        data        = initial_data or {}
+        video       = data.get("video", {})
+        audio       = data.get("audio", {})
+        subs        = data.get("subtitles", {})
+        output_sec  = data.get("output", {})
+        constraints = data.get("constraints", {})
+        meta        = data.get("metadata", {})
+        advanced    = data.get("advanced", {})
+
+        dlg = tk.Toplevel(parent)
+        dlg.title("Make Custom Profile")
+        dlg.configure(bg=BG)
+        dlg.geometry("860x660")
+        dlg.transient(parent)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+
+        # ── Header ─────────────────────────────────────────────────────────────
+        tk.Label(
+            dlg, text="Make Custom Profile",
+            bg=BG, fg=ACCENT, font=("Segoe UI", 12, "bold"),
+        ).pack(padx=18, pady=(14, 2), anchor="w")
+
+        if analysis:
+            info_parts = []
+            if analysis.get("video_codec"):
+                info_parts.append(analysis["video_codec"].upper())
+            w, h = analysis.get("width", 0), analysis.get("height", 0)
+            if w and h:
+                info_parts.append(f"{w}x{h}")
+            if analysis.get("bitrate_bps", 0) > 0:
+                info_parts.append(f"{analysis['bitrate_bps'] / 1_000_000:.1f} Mbps")
+            if analysis.get("size_bytes", 0) > 0:
+                info_parts.append(f"{analysis['size_bytes'] / (1024 ** 3):.2f} GB")
+            if info_parts:
+                tk.Label(
+                    dlg,
+                    text=f"Source: {analysis.get('name', '')}   ·   {' | '.join(info_parts)}",
+                    bg=BG, fg=MUTED, font=("Segoe UI", 9),
+                ).pack(padx=18, pady=(0, 2), anchor="w")
+
+        tk.Label(
+            dlg,
+            text=(
+                "All values are pre-filled from the file-specific recommendation. "
+                "Adjust any setting, then Apply Once for this file or Save as a reusable profile."
+            ),
+            bg=BG, fg=MUTED, font=("Segoe UI", 10),
+            wraplength=800, justify="left",
+        ).pack(padx=18, pady=(0, 8), anchor="w")
+
+        # ── Notebook ──────────────────────────────────────────────────────────
+        nb_style = ttk.Style()
+        nb_style.configure(
+            "CTP.TNotebook",
+            background=BG, borderwidth=0, tabmargins=[0, 0, 0, 0],
+        )
+        nb_style.configure(
+            "CTP.TNotebook.Tab",
+            background=INPUT_BG, foreground=MUTED,
+            padding=[12, 5], font=("Segoe UI", 10),
+        )
+        nb_style.map(
+            "CTP.TNotebook.Tab",
+            background=[("selected", CARD)],
+            foreground=[("selected", ACCENT)],
+        )
+        nb = ttk.Notebook(dlg, style="CTP.TNotebook")
+        nb.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+
+        # Helper: scrollable tab body
+        def _make_tab(label):
+            outer = tk.Frame(nb, bg=BG)
+            nb.add(outer, text=f"  {label}  ")
+            canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+            vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+            body = tk.Frame(canvas, bg=BG)
+            body.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+            )
+            canvas.create_window((0, 0), window=body, anchor="nw")
+            canvas.configure(yscrollcommand=vsb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+
+            def _on_enter(_e):
+                canvas.bind_all(
+                    "<MouseWheel>",
+                    lambda ev: canvas.yview_scroll(int(-1 * (ev.delta / 120)), "units"),
+                )
+
+            def _on_leave(_e):
+                canvas.unbind_all("<MouseWheel>")
+
+            canvas.bind("<Enter>", _on_enter)
+            canvas.bind("<Leave>", _on_leave)
+            return body
+
+        # Layout helpers
+        def _sec(parent, text):
+            tk.Label(
+                parent, text=text, bg=BG, fg=ACCENT,
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", padx=10, pady=(14, 2))
+            tk.Frame(parent, bg="#30363d", height=1).pack(fill="x", padx=10, pady=(0, 6))
+
+        def _row(parent, label, widget_fn, hint=None):
+            f = tk.Frame(parent, bg=BG)
+            f.pack(fill="x", padx=10, pady=3)
+            tk.Label(
+                f, text=label, bg=BG, fg=FG,
+                font=("Segoe UI", 10), width=28, anchor="w",
+            ).pack(side="left")
+            w = widget_fn(f)
+            w.pack(side="left")
+            if hint:
+                tk.Label(f, text=hint, bg=BG, fg=MUTED,
+                         font=("Segoe UI", 9)).pack(side="left", padx=(6, 0))
+            return w
+
+        def _check_row(parent, label, var, hint=None):
+            f = tk.Frame(parent, bg=BG)
+            f.pack(fill="x", padx=10, pady=2)
+            tk.Checkbutton(
+                f, text=label, variable=var,
+                bg=BG, fg=FG, selectcolor=INPUT_BG,
+                activebackground=BG, activeforeground=FG,
+                font=("Segoe UI", 10), anchor="w",
+            ).pack(side="left", anchor="w")
+            if hint:
+                tk.Label(f, text=hint, bg=BG, fg=MUTED,
+                         font=("Segoe UI", 9)).pack(side="left", padx=(6, 0))
+
+        def _combo(p, values, var, width=16):
+            return ttk.Combobox(
+                p, textvariable=var, values=values, state="readonly", width=width,
+            )
+
+        def _entry(p, var, width=14):
+            return tk.Entry(
+                p, textvariable=var, bg=INPUT_BG, fg=FG,
+                font=("Segoe UI", 10), relief="flat", bd=3, width=width,
+            )
+
+        # ── VIDEO TAB ─────────────────────────────────────────────────────────
+        vt = _make_tab("Video")
+
+        _sec(vt, "Codec & Quality")
+        v_codec   = tk.StringVar(value=str(video.get("codec") or "h265"))
+        v_mode    = tk.StringVar(value=str(video.get("mode")  or "crf"))
+        v_crf     = tk.IntVar(value=int(video.get("crf") or 18))
+        v_bitrate = tk.StringVar(
+            value="" if not video.get("bitrate") else str(video["bitrate"]),
+        )
+        _row(vt, "Codec:", lambda p: _combo(p, ["h265", "h264", "copy"], v_codec))
+        _row(vt, "Mode:", lambda p: _combo(p, ["crf", "bitrate", "copy"], v_mode))
+
+        crf_row = tk.Frame(vt, bg=BG)
+        crf_row.pack(fill="x", padx=10, pady=3)
+        tk.Label(
+            crf_row, text="CRF (0–51, lower = better):", bg=BG, fg=FG,
+            font=("Segoe UI", 10), width=28, anchor="w",
+        ).pack(side="left")
+        crf_spin = tk.Spinbox(
+            crf_row, textvariable=v_crf, from_=0, to=51,
+            bg=INPUT_BG, fg=FG, font=("Segoe UI", 10), relief="flat", bd=1, width=6,
+        )
+        crf_spin.pack(side="left")
+        tk.Label(
+            crf_row,
+            text="h265: 18 = high quality   22 = default   28 = smaller",
+            bg=BG, fg=MUTED, font=("Segoe UI", 9),
+        ).pack(side="left", padx=(8, 0))
+
+        br_row = tk.Frame(vt, bg=BG)
+        br_row.pack(fill="x", padx=10, pady=3)
+        tk.Label(
+            br_row, text="Bitrate (kbps):", bg=BG, fg=FG,
+            font=("Segoe UI", 10), width=28, anchor="w",
+        ).pack(side="left")
+        br_entry = tk.Entry(
+            br_row, textvariable=v_bitrate,
+            bg=INPUT_BG, fg=FG, font=("Segoe UI", 10), relief="flat", bd=3, width=10,
+        )
+        br_entry.pack(side="left")
+        tk.Label(
+            br_row, text="e.g. 4000 for 4 Mbps   (only used when mode = bitrate)",
+            bg=BG, fg=MUTED, font=("Segoe UI", 9),
+        ).pack(side="left", padx=(8, 0))
+
+        def _sync_mode(*_):
+            m = v_mode.get()
+            crf_spin.configure(state="normal" if m == "crf"     else "disabled")
+            br_entry.configure(state="normal" if m == "bitrate" else "disabled")
+
+        v_mode.trace_add("write", _sync_mode)
+        _sync_mode()
+
+        _sec(vt, "Speed & Quality Trade-offs")
+        v_preset = tk.StringVar(value=str(video.get("preset") or "slow"))
+        v_tune   = tk.StringVar(value=str(video.get("tune") or ""))
+        _row(vt, "Preset:", lambda p: _combo(p, [
+            "ultrafast", "superfast", "veryfast", "faster", "fast",
+            "medium", "slow", "slower", "veryslow",
+        ], v_preset, width=12),
+            hint="slow = best quality; faster encodes trade quality for speed")
+        _row(vt, "Tune:", lambda p: _combo(p, [
+            "", "film", "animation", "grain", "stillimage", "fastdecode", "zerolatency",
+        ], v_tune, width=14),
+            hint="film = live action  animation = anime  grain = preserve noise")
+
+        _sec(vt, "Encoder Details")
+        v_vid_profile = tk.StringVar(value=str(video.get("video_profile") or ""))
+        v_pix_fmt     = tk.StringVar(value=str(video.get("pix_fmt") or ""))
+        v_hwaccel     = tk.StringVar(value=str(video.get("hw_accel") or "cpu"))
+        _row(vt, "Encoder profile:", lambda p: _combo(p, [
+            "", "main", "main10", "high", "high10", "baseline",
+        ], v_vid_profile, width=12),
+            hint="main10 for 10-bit; blank = let the encoder decide")
+        _row(vt, "Pixel format:", lambda p: _combo(p, [
+            "", "yuv420p", "yuv420p10le", "yuv422p10le", "yuv444p", "yuv444p10le",
+        ], v_pix_fmt, width=14),
+            hint="yuv420p10le = 10-bit for HDR; blank = keep source format")
+        _row(vt, "Hardware acceleration:", lambda p: _combo(p, [
+            "cpu", "auto_prefer", "nvenc", "qsv", "amf",
+        ], v_hwaccel, width=12),
+            hint="cpu = safest; nvenc / qsv / amf = GPU encoder")
+
+        _sec(vt, "Advanced Encoding Controls")
+        v_keyint  = tk.StringVar(
+            value="" if video.get("keyint")  is None else str(video["keyint"]),
+        )
+        v_bframes = tk.StringVar(
+            value="" if video.get("bframes") is None else str(video["bframes"]),
+        )
+        v_refs    = tk.StringVar(
+            value="" if video.get("refs")    is None else str(video["refs"]),
+        )
+        v_extra   = tk.StringVar(value=str(video.get("extra_video_params") or ""))
+        _row(vt, "Keyframe interval (frames):", lambda p: _entry(p, v_keyint, width=8),
+             hint="blank = auto (typically 250); controls GOP size")
+        _row(vt, "B-frames (0–16):", lambda p: _entry(p, v_bframes, width=8),
+             hint="blank = encoder default; more = better compression, slower")
+        _row(vt, "Reference frames (1–16):", lambda p: _entry(p, v_refs, width=8),
+             hint="blank = encoder default")
+        _row(vt, "Extra encoder params:", lambda p: _entry(p, v_extra, width=38),
+             hint="x265: key=val:key=val   e.g. ctu=32:qcomp=0.7:me=3")
+
+        tk.Frame(vt, bg=BG, height=12).pack()
+
+        # ── AUDIO TAB ─────────────────────────────────────────────────────────
+        at = _make_tab("Audio")
+
+        _sec(at, "Codec")
+        a_mode = tk.StringVar(value=str(audio.get("mode") or "copy"))
+        _row(at, "Mode:", lambda p: _combo(p, [
+            "copy", "aac", "ac3", "eac3", "mp3", "opus", "flac",
+        ], a_mode, width=12),
+            hint="copy = bit-perfect; others re-encode audio")
+
+        a_bitrate_var = tk.StringVar(
+            value="" if audio.get("bitrate") is None else str(audio["bitrate"]),
+        )
+        a_bitrate_widget = [None]
+
+        def _make_a_bitrate(p):
+            w = _entry(p, a_bitrate_var, width=8)
+            a_bitrate_widget[0] = w
+            return w
+
+        _row(at, "Bitrate (kbps):", _make_a_bitrate,
+             hint="e.g. 192 or 320  (ignored when mode = copy)")
+
+        def _sync_audio_mode(*_):
+            state = "disabled" if a_mode.get() == "copy" else "normal"
+            if a_bitrate_widget[0]:
+                a_bitrate_widget[0].configure(state=state)
+
+        a_mode.trace_add("write", _sync_audio_mode)
+        _sync_audio_mode()
+
+        _sec(at, "Channels & Sample Rate")
+        a_channels    = tk.StringVar(
+            value="" if audio.get("channels")    is None else str(audio["channels"]),
+        )
+        a_sample_rate = tk.StringVar(
+            value="" if audio.get("sample_rate") is None else str(audio["sample_rate"]),
+        )
+        _row(at, "Channels:", lambda p: _combo(p, [
+            "", "1 (mono)", "2 (stereo)", "6 (5.1)", "8 (7.1)",
+        ], a_channels, width=14),
+            hint="blank = keep source channel count")
+        _row(at, "Sample rate (Hz):", lambda p: _combo(p, [
+            "", "44100", "48000", "96000",
+        ], a_sample_rate, width=10),
+            hint="blank = keep source sample rate; 48000 is standard for video")
+
+        _sec(at, "Track Selection")
+        a_tracks  = tk.StringVar(value=str(audio.get("tracks") or "all"))
+        a_lang    = tk.StringVar(value=str(audio.get("language") or ""))
+        a_downmix = tk.BooleanVar(value=bool(audio.get("downmix", False)))
+        _row(at, "Tracks:", lambda p: _combo(p, ["all", "main", "language"], a_tracks, width=12))
+        _row(at, "Language filter (e.g. eng):", lambda p: _entry(p, a_lang, width=8),
+             hint="blank = keep all language tracks")
+        _check_row(at, "Downmix to stereo  (-ac 2)", a_downmix,
+                   hint="forces stereo regardless of source")
+
+        tk.Frame(at, bg=BG, height=12).pack()
+
+        # ── SUBTITLES TAB ─────────────────────────────────────────────────────
+        st = _make_tab("Subtitles")
+
+        _sec(st, "Subtitle Handling")
+        s_mode = tk.StringVar(value=str(subs.get("mode") or "all"))
+        s_lang = tk.StringVar(value=str(subs.get("language") or ""))
+        s_burn = tk.BooleanVar(value=bool(subs.get("burn", False)))
+        _row(st, "Mode:", lambda p: _combo(p, [
+            "all", "forced", "language", "none",
+        ], s_mode, width=12))
+        _row(st, "Language filter (e.g. eng):", lambda p: _entry(p, s_lang, width=8))
+        _check_row(st, "Burn subtitles in (hard sub — baked permanently into the picture)", s_burn)
+
+        tk.Frame(st, bg=BG, height=12).pack()
+
+        # ── OUTPUT TAB ────────────────────────────────────────────────────────
+        ot = _make_tab("Output")
+
+        _sec(ot, "File & Naming")
+        o_container = tk.StringVar(value=str(output_sec.get("container") or "mkv"))
+        o_naming    = tk.StringVar(
+            value=str(output_sec.get("naming") or "{title}_{profile}"),
+        )
+        o_overwrite = tk.BooleanVar(value=bool(output_sec.get("overwrite", False)))
+        o_auto_inc  = tk.BooleanVar(value=bool(output_sec.get("auto_increment", True)))
+        _row(ot, "Container:", lambda p: _combo(p, ["mkv", "mp4", "mov"], o_container, width=8))
+        _row(ot, "Naming pattern:", lambda p: _entry(p, o_naming, width=32))
+        _check_row(ot, "Auto-increment filename to avoid overwriting an existing file", o_auto_inc)
+        _check_row(ot, "Overwrite existing output file", o_overwrite)
+
+        _sec(ot, "Constraints & Metadata")
+        _skip_default = constraints.get("skip_if_below_gb")
+        c_skip_gb    = tk.StringVar(
+            value="" if _skip_default is None else str(_skip_default),
+        )
+        c_skip_codec = tk.BooleanVar(
+            value=bool(constraints.get("skip_if_codec_matches", False)),
+        )
+        m_preserve = tk.BooleanVar(value=bool(meta.get("preserve", True)))
+        _row(ot, "Skip if source below (GB):", lambda p: _entry(p, c_skip_gb, width=8),
+             hint="blank = encode regardless of file size")
+        _check_row(
+            ot,
+            "Skip if source is already the target codec (avoids HEVC → HEVC re-encode)",
+            c_skip_codec,
+        )
+        _check_row(ot, "Preserve all metadata (title, chapters, language tags)", m_preserve)
+
+        tk.Frame(ot, bg=BG, height=12).pack()
+
+        # ── ADVANCED TAB ──────────────────────────────────────────────────────
+        advt = _make_tab("Advanced")
+
+        _sec(advt, "Raw FFmpeg Arguments")
+        adv_extra = tk.StringVar(value=str(advanced.get("extra_output_args") or ""))
+
+        f_extra = tk.Frame(advt, bg=BG)
+        f_extra.pack(fill="x", padx=10, pady=3)
+        tk.Label(
+            f_extra, text="Extra output args:", bg=BG, fg=FG,
+            font=("Segoe UI", 10), anchor="w",
+        ).pack(anchor="w")
+        tk.Entry(
+            f_extra, textvariable=adv_extra,
+            bg=INPUT_BG, fg=FG, font=("Segoe UI", 10), relief="flat", bd=3,
+        ).pack(fill="x", pady=(4, 0))
+        tk.Label(
+            f_extra,
+            text=(
+                "Appended to the FFmpeg command before the output file path.\n"
+                "e.g.  -vf yadif   or   -vf scale=1920:-2   or   -movflags +faststart"
+            ),
+            bg=BG, fg=MUTED, font=("Segoe UI", 9), justify="left",
+        ).pack(anchor="w", pady=(6, 0))
+
+        warn_frame = tk.Frame(
+            advt, bg="#2d1f04",
+            highlightthickness=1, highlightbackground="#5a3e00",
+        )
+        warn_frame.pack(fill="x", padx=10, pady=(14, 0))
+        tk.Label(
+            warn_frame,
+            text=(
+                "Invalid or incompatible args will cause the encode to fail. "
+                "Test on a short clip before running the full file."
+            ),
+            bg="#2d1f04", fg=WARN, font=("Segoe UI", 9),
+            wraplength=780, justify="left",
+        ).pack(padx=10, pady=8)
+
+        tk.Frame(advt, bg=BG, height=12).pack()
+
+        # ── Collect all fields into a profile dict ─────────────────────────────
+        def _collect():
+            try:
+                crf_val = max(0, min(51, int(v_crf.get())))
+            except (ValueError, tk.TclError):
+                crf_val = 18
+
+            def _int_or_none(s):
+                t = str(s or "").strip()
+                try:
+                    return int(float(t)) if t else None
+                except ValueError:
+                    return None
+
+            def _float_or_none(s):
+                t = str(s or "").strip()
+                try:
+                    return float(t) if t else None
+                except ValueError:
+                    return None
+
+            def _str_or_none(s):
+                return str(s or "").strip() or None
+
+            mode = v_mode.get()
+
+            # Parse "2 (stereo)" → 2
+            ch_raw = a_channels.get().strip()
+            ch_val = None
+            if ch_raw:
+                try:
+                    ch_val = int(ch_raw.split()[0])
+                except ValueError:
+                    pass
+
+            profile_data = {
+                "video": {
+                    "codec":              v_codec.get(),
+                    "mode":               mode,
+                    "crf":                crf_val if mode == "crf"     else None,
+                    "bitrate":            _int_or_none(v_bitrate.get()) if mode == "bitrate" else None,
+                    "preset":             v_preset.get(),
+                    "hw_accel":           v_hwaccel.get(),
+                    "tune":               _str_or_none(v_tune.get()),
+                    "video_profile":      _str_or_none(v_vid_profile.get()),
+                    "pix_fmt":            _str_or_none(v_pix_fmt.get()),
+                    "keyint":             _int_or_none(v_keyint.get()),
+                    "bframes":            _int_or_none(v_bframes.get()),
+                    "refs":               _int_or_none(v_refs.get()),
+                    "extra_video_params": _str_or_none(v_extra.get()),
+                },
+                "audio": {
+                    "mode":        a_mode.get(),
+                    "language":    _str_or_none(a_lang.get()),
+                    "tracks":      a_tracks.get(),
+                    "bitrate":     _int_or_none(a_bitrate_var.get()),
+                    "channels":    ch_val,
+                    "sample_rate": _int_or_none(a_sample_rate.get()),
+                    "downmix":     a_downmix.get(),
+                },
+                "subtitles": {
+                    "mode":     s_mode.get(),
+                    "burn":     s_burn.get(),
+                    "language": _str_or_none(s_lang.get()),
+                },
+                "output": {
+                    "container":      o_container.get(),
+                    "naming":         o_naming.get().strip() or "{title}_{profile}",
+                    "overwrite":      o_overwrite.get(),
+                    "auto_increment": o_auto_inc.get(),
+                },
+                "constraints": {
+                    "skip_if_below_gb":      _float_or_none(c_skip_gb.get()),
+                    "skip_if_codec_matches": c_skip_codec.get(),
+                },
+                "metadata": {
+                    "preserve": m_preserve.get(),
+                },
+                "advanced": {
+                    "extra_output_args": _str_or_none(adv_extra.get()),
+                },
+            }
+            return profile_data, crf_val, v_preset.get()
+
+        # ── Bottom buttons ─────────────────────────────────────────────────────
+        btn_bar = tk.Frame(
+            dlg, bg=CARD,
+            highlightthickness=1, highlightbackground="#30363d",
+        )
+        btn_bar.pack(fill="x", padx=18, pady=(0, 14))
+        btn_inner = tk.Frame(btn_bar, bg=CARD)
+        btn_inner.pack(fill="x", padx=10, pady=8)
+
+        def _apply_once():
+            profile_data, crf_val, preset_val = _collect()
+            dlg.destroy()
+            on_apply(profile_data, crf_val, preset_val)
+
+        def _save_and_apply():
+            name_dlg = tk.Toplevel(dlg)
+            name_dlg.title("Save as Profile")
+            name_dlg.configure(bg=BG)
+            name_dlg.geometry("440x160")
+            name_dlg.transient(dlg)
+            name_dlg.grab_set()
+            name_dlg.lift()
+            name_dlg.focus_force()
+
+            tk.Label(
+                name_dlg, text="Profile name:",
+                bg=BG, fg=FG, font=("Segoe UI", 10),
+            ).pack(padx=18, pady=(18, 4), anchor="w")
+            name_var = tk.StringVar()
+            name_entry = tk.Entry(
+                name_dlg, textvariable=name_var,
+                bg=CARD, fg=FG, font=("Segoe UI", 10), relief="flat", bd=3, width=46,
+            )
+            name_entry.pack(padx=18, fill="x")
+            name_entry.focus()
+            err_var = tk.StringVar()
+            tk.Label(
+                name_dlg, textvariable=err_var,
+                bg=BG, fg="#f85149", font=("Segoe UI", 9),
+            ).pack(padx=18, anchor="w")
+
+            def _do_save():
+                name = name_var.get().strip()
+                if not name:
+                    err_var.set("Enter a name for the profile.")
+                    return
+                profile_data, crf_val, preset_val = _collect()
+                # Warn if extra_video_params contains source-derived HDR color
+                # metadata. Those tags (colorprim, transfer, colormatrix, hdr-opt)
+                # are file-specific — applying them to an SDR file would incorrectly
+                # tag its output as HDR.
+                _HDR_MARKERS = {"colorprim=", "transfer=", "colormatrix=", "hdr-opt="}
+                _extra = (profile_data.get("video") or {}).get("extra_video_params") or ""
+                if any(m in _extra for m in _HDR_MARKERS):
+                    if not messagebox.askyesno(
+                        "Source-specific HDR settings",
+                        "The 'Extra encoder params' field contains HDR color metadata "
+                        "(e.g. colorprim=bt2020, transfer=smpte2084) that was seeded "
+                        "from this specific file.\n\n"
+                        "Saving it as a reusable profile will embed those HDR tags "
+                        "into every file encoded with it — including SDR content.\n\n"
+                        "Use \u2018Apply Once\u2019 to keep it file-specific, or clear "
+                        "'Extra encoder params' before saving a general profile.\n\n"
+                        "Save with HDR metadata anyway?",
+                        icon="warning",
+                        parent=name_dlg,
+                    ):
+                        return
+                try:
+                    loader = self._get_transcode_profile_loader()
+                    loader.add_profile(name, profile_data)
+                except Exception as exc:
+                    err_var.set(f"Could not save: {exc}")
+                    return
+                name_dlg.destroy()
+                dlg.destroy()
+                on_apply(profile_data, crf_val, preset_val)
+
+            save_row = tk.Frame(name_dlg, bg=BG)
+            save_row.pack(fill="x", padx=18, pady=(8, 0))
+            tk.Button(
+                save_row, text="Save & Apply", command=_do_save,
+                bg="#238636", fg="white", font=("Segoe UI", 10, "bold"), relief="flat",
+            ).pack(side="left", padx=(0, 8))
+            tk.Button(
+                save_row, text="Cancel", command=name_dlg.destroy,
+                bg=INPUT_BG, fg=FG, font=("Segoe UI", 10), relief="flat",
+            ).pack(side="left")
+            name_entry.bind("<Return>", lambda e: _do_save())
+
+        tk.Button(
+            btn_inner, text="Apply Once", command=_apply_once,
+            bg="#238636", fg="white", font=("Segoe UI", 10, "bold"), relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_inner, text="Save as Profile & Apply", command=_save_and_apply,
+            bg="#1f6feb", fg="white", font=("Segoe UI", 10, "bold"), relief="flat",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_inner, text="Cancel", command=dlg.destroy,
+            bg=INPUT_BG, fg=MUTED, font=("Segoe UI", 10), relief="flat",
         ).pack(side="right")
 
     def _resolve_transcode_backend_path(self, backend):
@@ -1411,7 +2098,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         win.title("Transcode Queue Builder")
         win.configure(bg="#0d1117")
         win.geometry("980x620")
-        win.grab_set()
         win.lift()
         win.focus_force()
 
@@ -1771,13 +2457,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 temp_root=os.path.normpath(
                     self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
                 ),
-                abort_event=self.engine.abort_event,
             )
 
-            self.controller.log(
-                f"{backend_label} queue created with {len(jobs)} job(s). "
-                f"Output root: {os.path.normpath(output_root)}. {build_result.queue_detail}"
-            )
             win.destroy()
             self._run_transcode_queue(
                 transcode_queue,
@@ -1828,8 +2509,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 "No jobs were available to run.",
             )
             return
-        self.engine.abort_event.clear()
-        self.disable_buttons()
 
         BG = "#0d1117"
         win = tk.Toplevel(self)
@@ -1913,11 +2592,23 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
         _append_log_line(f"Output root: {output_root}")
         _append_log_line(f"Log folder: {transcode_queue.engine.log_dir}")
+        _append_log_line(f"{backend_label} queue created with {total_jobs} job(s).")
         if queue_detail:
             _append_log_line(queue_detail)
 
         button_row = tk.Frame(win, bg=BG)
         button_row.pack(fill="x", padx=18, pady=(0, 18))
+        queue_abort_event = transcode_queue.abort_event
+
+        def _abort_queue():
+            if queue_abort_event.is_set():
+                return
+            transcode_queue.abort()
+            abort_queue_btn.config(state="disabled")
+            message = f"{backend_label} queue abort requested."
+            status_var.set(message)
+            _append_log_line(message)
+
         tk.Button(
             button_row,
             text="Open Output Folder",
@@ -1936,15 +2627,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10),
             relief="flat",
         ).pack(side="left")
-        tk.Button(
+        abort_queue_btn = tk.Button(
             button_row,
             text="Abort Queue",
-            command=self.request_abort,
+            command=_abort_queue,
             bg="#da3633",
             fg="white",
             font=("Segoe UI", 10, "bold"),
             relief="flat",
-        ).pack(side="left", padx=(8, 0))
+        )
+        abort_queue_btn.pack(side="left", padx=(8, 0))
         tk.Button(
             button_row,
             text="Close",
@@ -1956,8 +2648,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         ).pack(side="right")
 
         def _feedback(message):
-            self.controller.log(f"[{backend_label}] {message}")
-
             def _update_ui():
                 try:
                     if not win.winfo_exists():
@@ -1991,6 +2681,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             self.after(0, _update_ui)
 
+        def _show_queue_result(title, message, kind):
+            try:
+                parent = win if win.winfo_exists() else self
+            except tk.TclError:
+                parent = self
+
+            if kind == "error":
+                messagebox.showerror(title, message, parent=parent)
+            elif kind == "aborted":
+                messagebox.showwarning(title, message, parent=parent)
+            else:
+                messagebox.showinfo(title, message, parent=parent)
+
         def _mark_progress():
             aborted = len(getattr(transcode_queue, "aborted", []))
             finished = len(transcode_queue.completed) + len(transcode_queue.failed) + aborted
@@ -2009,53 +2712,70 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             except tk.TclError:
                 return
 
-        def _finish(message, complete=True):
+        def _finish(message, complete=True, result_kind="complete"):
             try:
-                if not win.winfo_exists():
-                    return
-                if complete:
-                    progress_var.set(100)
-                status_var.set(message)
-                _append_log_line(message)
+                if win.winfo_exists():
+                    if complete:
+                        progress_var.set(100)
+                    status_var.set(message)
+                    _append_log_line(message)
             except tk.TclError:
-                return
-            finally:
-                self.enable_buttons()
+                pass
+            _show_queue_result(f"{backend_label} Queue Result", message, result_kind)
 
         def _worker():
             try:
                 while transcode_queue.jobs:
-                    if self.engine.abort_event.is_set():
+                    if queue_abort_event.is_set():
                         break
                     transcode_queue.run_next(
                         feedback_cb=_feedback,
                         progress_cb=_progress,
                     )
                     self.after(0, _mark_progress)
-                    if self.engine.abort_event.is_set():
+                    if queue_abort_event.is_set():
                         break
             except Exception as exc:
                 error_message = f"{backend_label} queue stopped with an unexpected error: {exc}"
-                self.controller.log(error_message)
-                self.after(0, lambda: _finish(error_message))
+                self.after(
+                    0,
+                    lambda: _finish(
+                        error_message,
+                        complete=False,
+                        result_kind="error",
+                    ),
+                )
                 return
 
             aborted = len(getattr(transcode_queue, "aborted", []))
-            if self.engine.abort_event.is_set() or aborted:
+            canceled_pending = 0
+            if queue_abort_event.is_set():
+                canceled_pending = transcode_queue.cancel_pending()
+                aborted = len(getattr(transcode_queue, "aborted", []))
+
+            if queue_abort_event.is_set() or aborted:
                 summary = (
                     f"{backend_label} queue aborted. Success: {len(transcode_queue.completed)}, "
                     f"Failed: {len(transcode_queue.failed)}, Aborted: {aborted}, "
-                    f"Not run: {len(transcode_queue.jobs)}"
+                    f"Canceled pending: {canceled_pending}"
                 )
                 complete = False
+                result_kind = "aborted"
             else:
                 summary = (
                     f"{backend_label} queue complete. Success: {len(transcode_queue.completed)}, "
                     f"Failed: {len(transcode_queue.failed)}"
                 )
                 complete = True
-            self.controller.log(summary)
-            self.after(0, lambda: _finish(summary, complete=complete))
+                result_kind = "complete"
+            self.after(
+                0,
+                lambda: _finish(
+                    summary,
+                    complete=complete,
+                    result_kind=result_kind,
+                ),
+            )
 
         threading.Thread(target=_worker, daemon=True).start()
 

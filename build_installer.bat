@@ -7,10 +7,19 @@ set ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe
 if not exist "%ISCC_EXE%" set ISCC_EXE=C:\Program Files\Inno Setup 6\ISCC.exe
 if not exist "%ISCC_EXE%" set ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe
 
+if exist dist rmdir /s /q dist >nul 2>&1
+if exist build rmdir /s /q build >nul 2>&1
+
 echo Building JellyRip.exe...
 %PYTHON_EXE% -m PyInstaller JellyRip.spec
 if errorlevel 1 (
     echo EXE build failed.
+    exit /b 1
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\stage_ffmpeg_bundle.ps1
+if errorlevel 1 (
+    echo FFmpeg bundle staging failed.
     exit /b 1
 )
 
@@ -31,3 +40,8 @@ echo.
 echo Build complete:
 echo   dist\JellyRip.exe
 echo   dist\JellyRipInstaller.exe
+echo   dist\ffmpeg.exe
+echo   dist\ffprobe.exe
+echo   dist\ffplay.exe
+echo   dist\FFmpeg-LICENSE.txt
+echo   dist\FFmpeg-README.txt
