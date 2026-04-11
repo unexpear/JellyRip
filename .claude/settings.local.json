@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -path ./.venv -prune -o -name \"*.py\" -exec grep -l \"transcode_profiles\\\\|TranscodeProfile\" {} \\\\;)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast, sys; ast.parse\\(open\\('gui/main_window.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('gui/main_window.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_transcode_recommendations.py tests/test_transcode_queue_builder.py -q)",
+      "Bash(python -m pytest tests/test_ffmpeg_command_validator.py tests/test_encoder_probe.py tests/test_post_encode_verifier.py -v)",
+      "Bash(python -m pytest tests/test_ffmpeg_command_validator.py tests/test_encoder_probe.py tests/test_post_encode_verifier.py -v --tb=no -q)",
+      "Bash(python -m pytest tests/test_ffmpeg_command_validator.py tests/test_encoder_probe.py tests/test_post_encode_verifier.py -v --tb=short -q)",
+      "Bash(python -m pytest tests/test_fallback.py tests/test_encoder_probe.py tests/test_post_encode_verifier.py tests/test_ffmpeg_command_validator.py -v --tb=short -q)",
+      "Bash(python -m pytest tests/test_imports.py -v)",
+      "Bash(python -m pytest tests/test_fallback.py -v)",
+      "Bash(python -m pytest tests/test_post_encode_verifier.py -v)",
+      "Bash(python -m pytest tests/test_transcode_queue_builder.py -v)",
+      "Bash(python -m pytest tests/test_ffmpeg_command_validator.py -v)",
+      "Bash(python -c ':*)",
+      "Bash(python -m pytest tests/test_fallback.py tests/test_post_encode_verifier.py tests/test_encoder_probe.py tests/test_ffmpeg_command_validator.py tests/test_transcode_queue_builder.py -v --tb=short)",
+      "Bash(python -m pytest tests/ -x)",
+      "Bash(python -m pytest tests/ --collect-only)",
+      "Bash(python -m py_compile transcode/fallback.py transcode/encoder_probe.py transcode/post_encode_verifier.py transcode/command_validator.py transcode/queue.py transcode/queue_builder.py core/pipeline.py main.py gui/main_window.py config.py)",
+      "Bash(python -m pytest tests/ -v --tb=line)",
+      "Bash(python -m pytest tests/ -x -q)"
+    ]
+  }
+}
