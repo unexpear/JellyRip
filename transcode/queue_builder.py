@@ -158,6 +158,7 @@ def build_transcode_queue(
     handbrake_exe: str,
     ffmpeg_source_mode: str,
     temp_root: str | None = None,
+    abort_event=None,
 ) -> TranscodeQueue:
     transcode_queue = TranscodeQueue(
         log_dir=log_dir,
@@ -166,6 +167,7 @@ def build_transcode_queue(
         handbrake_exe=handbrake_exe,
         ffmpeg_source_mode=ffmpeg_source_mode,
         temp_root=temp_root,
+        abort_event=abort_event,
     )
     for job in jobs:
         transcode_queue.add_job(job)

@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 from .ffmpeg_builder import FFmpegBuilder
@@ -11,8 +12,14 @@ from .handbrake_builder import HandBrakeBuilder
 
 FFMPEG_SOURCE_MODE_SAFE_COPY = "safe_copy"
 FFMPEG_SOURCE_MODE_FAST_DIRECT = "fast_direct"
+TRANSCODE_ABORT_RETURN_CODE = -2
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _FFMPEG_COPY_CHUNK_SIZE = 8 * 1024 * 1024
+_FFMPEG_COPY_LOG_PERCENT_STEP = 1
+
+
+class TranscodeAbortRequested(Exception):
+    """Raised when the shared app abort flag stops a transcode job."""
 
 
 def normalize_ffmpeg_source_mode(value: str | None) -> str:
@@ -95,6 +102,7 @@ class TranscodeEngine:
         handbrake_exe: str = "HandBrakeCLI",
         ffmpeg_source_mode: str = FFMPEG_SOURCE_MODE_SAFE_COPY,
         temp_root: str | None = None,
+        abort_event=None,
     ):
         self.log_dir = log_dir
         self.ffmpeg_exe = ffmpeg_exe or "ffmpeg"
@@ -102,7 +110,51 @@ class TranscodeEngine:
         self.handbrake_exe = handbrake_exe or "HandBrakeCLI"
         self.ffmpeg_source_mode = normalize_ffmpeg_source_mode(ffmpeg_source_mode)
         self.temp_root = os.path.normpath(str(temp_root)) if str(temp_root or "").strip() else ""
+        self.abort_event = abort_event
+        self._active_staging_dir = ""
         os.makedirs(self.log_dir, exist_ok=True)
+
+    def _abort_requested(self) -> bool:
+        return bool(self.abort_event is not None and self.abort_event.is_set())
+
+    def _raise_if_aborted(self) -> None:
+        if self._abort_requested():
+            raise TranscodeAbortRequested("Transcode job was aborted.")
+
+    @staticmethod
+    def _process_is_running(proc) -> bool:
+        try:
+            return proc.poll() is None
+        except AttributeError:
+            return False
+
+    def _terminate_process(self, proc) -> None:
+        try:
+            if not self._process_is_running(proc):
+                return
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _watch_abort_for_process(self, proc) -> None:
+        abort_event = self.abort_event
+        if abort_event is None:
+            return
+
+        def _watch() -> None:
+            while self._process_is_running(proc):
+                if abort_event.wait(timeout=0.25):
+                    self._terminate_process(proc)
+                    return
+
+        threading.Thread(target=_watch, daemon=True).start()
 
     def _build_command(self, job, *, input_path: str | None = None):
         effective_input_path = input_path or job.input_path
@@ -187,6 +239,7 @@ class TranscodeEngine:
         return duration if duration > 0 else None
 
     def _stage_ffmpeg_input_copy(self, job, logf, feedback_cb=None, progress_cb=None):
+        self._raise_if_aborted()
         source_path = os.path.normpath(str(getattr(job, "input_path", "") or ""))
         if not source_path:
             raise ValueError("FFmpeg transcode jobs require an input path.")
@@ -195,6 +248,7 @@ class TranscodeEngine:
 
         staging_root = self._resolve_temp_root()
         staging_dir = tempfile.mkdtemp(prefix="JellyRipFFmpeg_", dir=staging_root)
+        self._active_staging_dir = staging_dir
         staged_input_path = os.path.join(staging_dir, os.path.basename(source_path))
         total_bytes = os.path.getsize(source_path)
         source_name = os.path.basename(source_path)
@@ -224,26 +278,25 @@ class TranscodeEngine:
 
         copied_bytes = 0
         last_percent_bucket = -1
-        last_emit_at = 0.0
         with open(source_path, "rb") as src, open(staged_input_path, "wb") as dst:
             while True:
+                self._raise_if_aborted()
                 chunk = src.read(_FFMPEG_COPY_CHUNK_SIZE)
                 if not chunk:
                     break
+                self._raise_if_aborted()
                 dst.write(chunk)
                 copied_bytes += len(chunk)
                 if total_bytes <= 0:
                     continue
                 percent = min(100.0, (copied_bytes / total_bytes) * 100.0)
-                percent_bucket = int(percent // 5)
-                now = time.monotonic()
+                percent_bucket = int(percent // _FFMPEG_COPY_LOG_PERCENT_STEP)
                 if (
                     copied_bytes >= total_bytes
                     or percent_bucket > last_percent_bucket
-                    or now - last_emit_at >= 1.0
                 ):
                     progress_message = (
-                        f"Copying source to temp: {percent:.0f}% "
+                        f"Copying source to temp: {percent_bucket}% "
                         f"({_format_bytes(copied_bytes)} / {_format_bytes(total_bytes)})"
                     )
                     logf.write(f"{progress_message}\n")
@@ -259,7 +312,7 @@ class TranscodeEngine:
                         staging_dir=staging_dir,
                     )
                     last_percent_bucket = percent_bucket
-                    last_emit_at = now
+        self._raise_if_aborted()
         shutil.copystat(source_path, staged_input_path)
 
         ready_message = "Safe working copy is ready. Starting FFmpeg."
@@ -333,6 +386,7 @@ class TranscodeEngine:
                         )
                 else:
                     logf.write(f"INPUT: {job.input_path}\n")
+                self._raise_if_aborted()
                 cmd = self._build_command(job, input_path=working_input_path)
                 logf.write(f"BACKEND: {backend}\n")
                 logf.write("COMMAND: " + " ".join(cmd) + "\n")
@@ -355,11 +409,15 @@ class TranscodeEngine:
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
+                self._watch_abort_for_process(proc)
                 duration_seconds = self._resolve_source_duration_seconds(job)
                 last_encode_bucket = -1
                 last_runtime_bucket = -1
                 if proc.stdout is not None:
                     for line in proc.stdout:
+                        if self._abort_requested():
+                            self._terminate_process(proc)
+                            break
                         logf.write(line)
                         logf.flush()
                         if backend != "ffmpeg":
@@ -400,13 +458,35 @@ class TranscodeEngine:
                                 _emit_feedback(feedback_cb, runtime_message)
                                 last_runtime_bucket = runtime_bucket
                 proc.wait()
+                if self._abort_requested():
+                    logf.write("\nABORTED: Transcode job was aborted.\n")
+                    logf.flush()
+                    _emit_feedback(feedback_cb, "Transcode job aborted.")
+                    _emit_progress(
+                        progress_cb,
+                        phase="aborted",
+                        message="Transcode job aborted.",
+                    )
+                    return TRANSCODE_ABORT_RETURN_CODE, log_path
                 logf.write(f"\nExit code: {proc.returncode}\n")
                 logf.flush()
                 return proc.returncode, log_path
+        except TranscodeAbortRequested as exc:
+            with open(log_path, "a", encoding="utf-8") as logf:
+                logf.write(f"\nABORTED: {exc}\n")
+            _emit_feedback(feedback_cb, "Transcode job aborted.")
+            _emit_progress(
+                progress_cb,
+                phase="aborted",
+                message="Transcode job aborted.",
+            )
+            return TRANSCODE_ABORT_RETURN_CODE, log_path
         except Exception as exc:
             with open(log_path, "a", encoding="utf-8") as logf:
                 logf.write(f"\nERROR: {repr(exc)}\n")
             return -1, log_path
         finally:
-            if staging_dir:
-                shutil.rmtree(staging_dir, ignore_errors=True)
+            cleanup_dir = staging_dir or self._active_staging_dir
+            if cleanup_dir:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            self._active_staging_dir = ""
