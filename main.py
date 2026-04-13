@@ -83,16 +83,6 @@ def _set_windows_app_user_model_id() -> None:
         logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
 
 
-def _shutdown_after_interrupt(app: JellyRipperGUI) -> None:
-    """Best-effort cleanup after a console interrupt in source/dev runs."""
-    try:
-        app.engine.abort()
-    except Exception:
-        pass
-    try:
-        app.destroy()
-    except Exception:
-        pass
 
 
 def main() -> None:

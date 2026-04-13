@@ -2,9 +2,14 @@
 .env
 
 # PyInstaller build artifacts
+
+# Allow release binaries in dist/
 build/
-dist/
-/JellyRip.exe
+dist/ffmpeg.exe
+dist/ffplay.exe
+dist/ffprobe.exe
+!dist/JellyRip.exe
+!dist/JellyRipInstaller.exe
 
 # Python
 __pycache__/
