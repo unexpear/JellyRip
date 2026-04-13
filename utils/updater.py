@@ -40,9 +40,17 @@ def is_newer_version(current_version, latest_version):
     return _normalize_version(latest_version) > _normalize_version(current_version)
 
 
-def fetch_latest_release(repo="unexpear/JellyRip", timeout=8):
-    """Fetch latest GitHub release metadata for the given repo."""
-    api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+def fetch_latest_release(
+    repo="unexpear/JellyRip",
+    timeout=8,
+    *,
+    include_prereleases=False,
+):
+    """Fetch GitHub release metadata for the given repo."""
+    if include_prereleases:
+        api_url = f"https://api.github.com/repos/{repo}/releases?per_page=10"
+    else:
+        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
     req = urllib.request.Request(
         api_url,
         headers={
@@ -53,7 +61,24 @@ def fetch_latest_release(repo="unexpear/JellyRip", timeout=8):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
-    assets = payload.get("assets") or []
+    if isinstance(payload, list):
+        release = next(
+            (
+                item
+                for item in payload
+                if isinstance(item, dict)
+                and not item.get("draft")
+                and (
+                    include_prereleases
+                    or not item.get("prerelease")
+                )
+            ),
+            {},
+        )
+    else:
+        release = payload if isinstance(payload, dict) else {}
+
+    assets = release.get("assets") or []
     preferred = ["JellyRipInstaller.exe", "JellyRip.exe"]
     chosen_asset = None
     for name in preferred:
@@ -63,15 +88,16 @@ def fetch_latest_release(repo="unexpear/JellyRip", timeout=8):
     if chosen_asset is None and assets:
         chosen_asset = assets[0]
 
-    tag = str(payload.get("tag_name") or "").strip()
+    tag = str(release.get("tag_name") or "").strip()
     normalized = tag[1:] if tag.lower().startswith("v") else tag
 
     return {
         "tag": tag,
         "version": normalized,
-        "html_url": payload.get("html_url") or "",
+        "html_url": release.get("html_url") or "",
         "asset_name": (chosen_asset or {}).get("name") or "",
         "asset_url": (chosen_asset or {}).get("browser_download_url") or "",
+        "prerelease": bool(release.get("prerelease")),
     }
 
 

@@ -1,19 +1,24 @@
-## JellyRip v1.0.15 Release Notes (UNSTABLE)
+## JellyRip v1.0.16 Release Notes (UNSTABLE)
 
 Release channel: unstable pre-release.
 
 ### Download
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.15/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.15/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.15
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.16
 - All releases: https://github.com/unexpear/JellyRip/releases
 
-### What's New in 1.0.15
+### What's New in 1.0.16
 
-Hotfix
-- Restored a visible top-level ABORT SESSION button so abort is available during running tasks even when no inline prompt is open.
-- Fixed log auto-follow behavior so the log continues to scroll when the user was already at the bottom.
+FFmpeg and transcode reliability
+- Improved FFmpeg abort handling so queued work shuts down more cleanly.
+- Expanded copy-progress logging and transcode validation around FFmpeg workflows.
 
-Testability
-- The full test suite still covers 250 checks.
-- A live Tk smoke check verified the Abort button is outside the hidden prompt bar and toggles state correctly.
+Release bundling and packaging
+- Bundled FFmpeg runtime assets and notices more intentionally for packaged releases.
+- Restored the richer PyInstaller spec so release builds carry version metadata and bundled runtime dependencies consistently.
+
+Release hygiene
+- Release metadata now aligns on the 1.0.16 line across the app, installer, docs, and release notes.
+- Build output remains a GitHub Releases artifact instead of a tracked repository binary.
+- In-app update checks now follow the newest published release, including unstable prereleases.

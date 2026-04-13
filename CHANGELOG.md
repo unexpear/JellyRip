@@ -2,6 +2,19 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.16] - 2026-04-13
+
+### Changed
+
+- Improved FFmpeg abort handling, copy-progress logging, and transcode validation for more reliable encode and packaging flows.
+- Restored the richer `JellyRip.spec` release configuration so packaged builds consistently carry version metadata, bundled FFmpeg assets, and runtime dependencies.
+- Aligned release metadata on the `1.0.16` line across the app runtime, installer, docs, tester worksheet, and release notes.
+
+### Fixed
+
+- Build output policy is back in sync with the docs: release executables stay in GitHub Releases instead of being tracked in the repository.
+- In-app update checks now follow the newest published release, including unstable prereleases, so the updater no longer falls back to the older stable line.
+
 ## [1.0.15] - 2026-04-11
 
 ### Fixed

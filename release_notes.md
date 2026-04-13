@@ -1,4 +1,4 @@
-# JellyRip v1.0.15 Release Notes
+# JellyRip v1.0.16 Release Notes
 
 ## Release Channel
 
@@ -6,19 +6,25 @@ Unstable pre-release.
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.15/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.15/JellyRipInstaller.exe)
-- Release page: [v1.0.15 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.15)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRipInstaller.exe)
+- Release page: [v1.0.16 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.16)
 - All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
-## What's New in 1.0.15
+## What's New in 1.0.16
 
-### Hotfix
+### FFmpeg and transcode reliability
 
-- Restored a visible top-level `ABORT SESSION` button so abort is available during running tasks even when no inline prompt is open.
-- Fixed log auto-follow behavior so the log continues to scroll when the user was already at the bottom.
+- Improved FFmpeg abort handling so queued work shuts down more cleanly.
+- Expanded copy-progress logging and transcode validation around FFmpeg workflows.
 
-### Testability
+### Release bundling and packaging
 
-- The full test suite still covers 250 checks.
-- A live Tk smoke check verified the Abort button is outside the hidden prompt bar and toggles state correctly.
+- Bundled FFmpeg runtime assets and notices more intentionally for packaged releases.
+- Restored the richer PyInstaller spec so release builds carry version metadata and bundled runtime dependencies consistently.
+
+### Release hygiene
+
+- Release metadata now aligns on the `1.0.16` line across the app, installer, docs, and release notes.
+- Build output remains a GitHub Releases artifact instead of a tracked repository binary.
+- In-app update checks now follow the newest published release, including unstable prereleases.

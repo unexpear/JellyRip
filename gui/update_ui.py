@@ -114,7 +114,10 @@ def check_for_updates(gui):
 
     def worker():
         try:
-            release = fetch_latest_release("unexpear/JellyRip")
+            release = fetch_latest_release(
+                "unexpear/JellyRip",
+                include_prereleases=True,
+            )
         except urllib.error.URLError as e:
             gui.controller.log(f"Update check failed: {e}")
             gui.after(

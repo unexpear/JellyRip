@@ -3,13 +3,13 @@
 
 # PyInstaller build artifacts
 
-# Allow release binaries in dist/
+# Keep bundled runtime files explicit and ignore generated app binaries
 build/
 dist/ffmpeg.exe
 dist/ffplay.exe
 dist/ffprobe.exe
-!dist/JellyRip.exe
-!dist/JellyRipInstaller.exe
+dist/JellyRip.exe
+dist/JellyRipInstaller.exe
 
 # Python
 __pycache__/
