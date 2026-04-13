@@ -10,7 +10,7 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.15` (next unstable pre-release)
+- Current unstable line: `v1.0.16` (latest unstable pre-release)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -29,12 +29,12 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.15` unstable pre-release)
+(recommended, currently `v1.0.16` unstable pre-release)
 
 1. Go to the [latest release page](https://github.com/unexpear/JellyRip/releases/latest).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
-   first (common PyInstaller false positive).
+  first (common PyInstaller false positive).
 4. Run and open **Settings** to confirm MakeMKV and ffprobe paths before first rip.
 
 ### From source (git clone)
