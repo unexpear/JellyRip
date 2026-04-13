@@ -5,9 +5,14 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime
 
 from .ffmpeg_builder import FFmpegBuilder
 from .handbrake_builder import HandBrakeBuilder
+
+from shared.ai_diagnostics import (
+    ProcessCapture, diag_exception, diag_process, diag_record,
+)
 
 
 FFMPEG_SOURCE_MODE_SAFE_COPY = "safe_copy"
@@ -153,6 +158,31 @@ class TranscodeEngine:
                 if abort_event.wait(timeout=0.25):
                     self._terminate_process(proc)
                     return
+
+        threading.Thread(target=_watch, daemon=True).start()
+
+    def _watch_stall(self, proc, stall_state, stall_timeout, feedback_cb=None) -> None:
+        """Background thread that checks for output stalls during transcode."""
+        def _watch() -> None:
+            try:
+                while self._process_is_running(proc):
+                    time.sleep(5.0)
+                    if not self._process_is_running(proc):
+                        break
+                    elapsed = time.time() - stall_state["last_output_time"]
+                    if elapsed > stall_timeout and not stall_state["warned"]:
+                        stall_state["warned"] = True
+                        msg = (
+                            f"No output for {int(elapsed)}s — "
+                            "process may be stalled or processing a complex segment."
+                        )
+                        _emit_feedback(feedback_cb, msg)
+                        diag_record(
+                            "warning", "stall_timeout", msg,
+                            details={"elapsed_seconds": elapsed, "timeout": stall_timeout},
+                        )
+            except Exception:
+                pass  # Never crash the watchdog thread
 
         threading.Thread(target=_watch, daemon=True).start()
 
@@ -403,6 +433,14 @@ class TranscodeEngine:
                     phase="launch",
                     message=launch_message,
                 )
+                _diag_capture = ProcessCapture(
+                    command=list(cmd),
+                    start_time=datetime.now().isoformat(),
+                    working_directory=os.getcwd(),
+                )
+                _diag_raw_lines: list[str] = []
+                _transcode_start = time.time()
+
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -413,13 +451,20 @@ class TranscodeEngine:
                 duration_seconds = self._resolve_source_duration_seconds(job)
                 last_encode_bucket = -1
                 last_runtime_bucket = -1
+                _STALL_TIMEOUT = 120  # seconds with no output
+                stall_state = {"last_output_time": time.time(), "warned": False}
+                self._watch_stall(proc, stall_state, _STALL_TIMEOUT, feedback_cb)
                 if proc.stdout is not None:
                     for line in proc.stdout:
+                        stall_state["last_output_time"] = time.time()
+                        stall_state["warned"] = False
                         if self._abort_requested():
                             self._terminate_process(proc)
                             break
                         logf.write(line)
                         logf.flush()
+                        if len(_diag_raw_lines) < 5000:
+                            _diag_raw_lines.append(line.rstrip())
                         if backend != "ffmpeg":
                             continue
                         encoded_seconds = _parse_ffmpeg_time_seconds(line)
@@ -458,6 +503,14 @@ class TranscodeEngine:
                                 _emit_feedback(feedback_cb, runtime_message)
                                 last_runtime_bucket = runtime_bucket
                 proc.wait()
+
+                # Finalize diagnostic capture
+                _diag_capture.exit_code = proc.returncode
+                _diag_capture.end_time = datetime.now().isoformat()
+                _diag_capture.duration_seconds = time.time() - _transcode_start
+                _diag_capture.stdout = "\n".join(_diag_raw_lines[-200:])
+                _diag_capture.stall_detected = stall_state["warned"]
+
                 if self._abort_requested():
                     logf.write("\nABORTED: Transcode job was aborted.\n")
                     logf.flush()
@@ -470,6 +523,18 @@ class TranscodeEngine:
                     return TRANSCODE_ABORT_RETURN_CODE, log_path
                 logf.write(f"\nExit code: {proc.returncode}\n")
                 logf.flush()
+
+                # AI diagnostics: report failures
+                if proc.returncode != 0:
+                    diag_process(_diag_capture, success=False,
+                                 category="subprocess_nonzero_exit")
+                elif stall_state["warned"]:
+                    diag_record(
+                        "warning", "stall_timeout",
+                        f"{backend} completed but had output stalls (exit {proc.returncode})",
+                        details=_diag_capture.to_dict(),
+                    )
+
                 return proc.returncode, log_path
         except TranscodeAbortRequested as exc:
             with open(log_path, "a", encoding="utf-8") as logf:
@@ -484,6 +549,7 @@ class TranscodeEngine:
         except Exception as exc:
             with open(log_path, "a", encoding="utf-8") as logf:
                 logf.write(f"\nERROR: {repr(exc)}\n")
+            diag_exception(exc, context="TranscodeEngine.run_job")
             return -1, log_path
         finally:
             cleanup_dir = staging_dir or self._active_staging_dir

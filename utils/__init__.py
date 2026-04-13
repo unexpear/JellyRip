@@ -16,6 +16,12 @@ from .parsing import (
     safe_int,
 )
 from .scoring import choose_best_title, format_audio_summary, score_title
+from .classifier import (
+    ClassifiedTitle,
+    classify_and_pick_main,
+    classify_titles,
+    format_classification_log,
+)
 from .media import select_largest_file
 from .fallback import handle_fallback
 from .session_result import normalize_session_result
@@ -44,6 +50,10 @@ __all__ = [
     "choose_best_title",
     "format_audio_summary",
     "score_title",
+    "ClassifiedTitle",
+    "classify_and_pick_main",
+    "classify_titles",
+    "format_classification_log",
     "select_largest_file",
     "handle_fallback",
     "normalize_session_result",

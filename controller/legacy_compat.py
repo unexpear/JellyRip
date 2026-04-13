@@ -1,4 +1,4 @@
-﻿"""Compatibility helpers restored from the pre-refactor controller."""
+"""Compatibility helpers restored from the pre-refactor controller."""
 
 import glob
 import json
@@ -153,6 +153,57 @@ class LegacyControllerMixin:
 
     def scan_with_retry(self) -> DiscTitles | None:
         return self.session_helpers.scan_with_retry()
+
+    def _log_drive_compatibility(self) -> bool:
+        """Log and display LibreDrive / UHD / disc-type compatibility.
+
+        Returns False if the user chose to abort after a UHD warning,
+        True in all other cases (including when there is nothing to report).
+        """
+        from engine.scan_ops import format_drive_compatibility
+        info = getattr(self.engine, "last_drive_info", None)
+        if not info:
+            return True
+        lines = format_drive_compatibility(info)
+        if not lines:
+            return True
+
+        # --- Log block (always) ---
+        self.log("--- Drive / Disc Compatibility ---")
+        for line in lines:
+            self.log(f"  {line}")
+        self.log("----------------------------------")
+
+        # Debug: raw MakeMKV LibreDrive line for troubleshooting
+        raw = info.get("libre_drive_raw", "")
+        if raw:
+            self.log(f"[AI][DEBUG] LibreDrive raw: \"{raw}\"")
+
+        # --- UI dialog: show drive status in scan results panel ---
+        disc_type = info.get("disc_type")
+        ld = info.get("libre_drive")
+        dialog_lines = ["Drive Status:"] + [f"  {ln}" for ln in lines]
+
+        # UHD + LibreDrive not enabled -> warn before rip
+        if disc_type == "UHD" and ld != "enabled":
+            dialog_lines.append("")
+            if ld == "possible":
+                dialog_lines.append(
+                    "Your drive may support LibreDrive but it is not active.\n"
+                    "A firmware patch may enable full UHD support."
+                )
+            else:
+                dialog_lines.append(
+                    "Without LibreDrive, UHD rips often fail or produce\n"
+                    "degraded output. Consider using a LibreDrive-capable drive."
+                )
+            dialog_lines.append("")
+            dialog_lines.append("Continue anyway?")
+            return self.gui.ask_yesno("\n".join(dialog_lines))
+
+        # Non-critical: show as info (not blocking)
+        self.gui.show_info("Drive Status", "\n".join(dialog_lines))
+        return True
 
     def check_resume(self, temp_root: str, media_type: str | None = None) -> Any:
         return self.session_helpers.check_resume(temp_root, media_type)
@@ -356,6 +407,117 @@ class LegacyControllerMixin:
                 self.log(
                     f"Ripped file: {os.path.basename(f)} — size unavailable ({e})"
                 )
+
+    @staticmethod
+    def _format_size_label(size_bytes: int) -> str:
+        if size_bytes >= 1024**3:
+            return f"{size_bytes / (1024**3):.2f} GB"
+        return f"{size_bytes / (1024**2):.0f} MB"
+
+    def _build_output_title_groups(
+        self, mkv_files: Sequence[str]
+    ) -> list[tuple[str, list[str]]]:
+        lookup = {
+            os.path.normcase(os.path.abspath(path)): str(path)
+            for path in mkv_files
+        }
+        assigned: set[str] = set()
+        grouped: dict[int, list[str]] = {}
+
+        tracked_obj = getattr(self.engine, "last_title_file_map", {}) or {}
+        tracked_map: dict[int, list[str]] = {}
+        for raw_tid, raw_files in tracked_obj.items():
+            try:
+                tid = int(raw_tid)
+            except Exception:
+                continue
+            if not isinstance(raw_files, Sequence) or isinstance(
+                raw_files, (str, bytes)
+            ):
+                continue
+            matched: list[str] = []
+            for path in raw_files:
+                resolved = lookup.get(
+                    os.path.normcase(os.path.abspath(str(path)))
+                )
+                if resolved:
+                    matched.append(resolved)
+            if matched:
+                tracked_map[tid] = sorted(
+                    matched,
+                    key=lambda p: (
+                        os.path.basename(p).lower(),
+                        os.path.normpath(p).lower(),
+                    ),
+                )
+                assigned.update(tracked_map[tid])
+
+        grouped.update(tracked_map)
+
+        for path in mkv_files:
+            if path in assigned:
+                continue
+            tid = self._title_id_from_filename(path)
+            if tid is None:
+                continue
+            grouped.setdefault(tid, []).append(path)
+            assigned.add(path)
+
+        result: list[tuple[str, list[str]]] = []
+        for tid in sorted(grouped):
+            files = sorted(
+                grouped[tid],
+                key=lambda p: (
+                    os.path.basename(p).lower(),
+                    os.path.normpath(p).lower(),
+                ),
+            )
+            result.append((f"Title {tid + 1}", files))
+
+        leftovers = [
+            path for path in sorted(
+                mkv_files,
+                key=lambda p: (
+                    os.path.basename(p).lower(),
+                    os.path.normpath(p).lower(),
+                ),
+            )
+            if path not in assigned
+        ]
+        for path in leftovers:
+            result.append((os.path.basename(path), [path]))
+        return result
+
+    def _log_dump_output_summary(self, mkv_files: Sequence[str]) -> int:
+        groups = self._build_output_title_groups(mkv_files)
+        if not groups:
+            return 0
+        self.log(
+            f"Dump output summary: {len(mkv_files)} file(s) across "
+            f"{len(groups)} title group(s)."
+        )
+        for label, files in groups:
+            total_bytes = 0
+            file_sizes: list[tuple[str, int]] = []
+            for path in files:
+                try:
+                    size_bytes = os.path.getsize(path)
+                except Exception:
+                    size_bytes = 0
+                total_bytes += size_bytes
+                file_sizes.append((path, size_bytes))
+            file_word = "file" if len(files) == 1 else "files"
+            self.log(
+                f"  {label}: {len(files)} {file_word}, "
+                f"{self._format_size_label(total_bytes)} total"
+            )
+            if len(files) > 1:
+                for path, size_bytes in file_sizes:
+                    self.log(
+                        f"    - {os.path.basename(path)} "
+                        f"({self._format_size_label(size_bytes)})"
+                    )
+        return len(groups)
 
     def _title_id_from_filename(self, path: str) -> int | None:
         name = os.path.basename(path)

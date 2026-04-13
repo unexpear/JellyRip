@@ -5,7 +5,7 @@ from datetime import datetime
 from controller.session_recovery import select_resumable_session
 from utils.state_machine import SessionState
 
-
+from shared.ai_diagnostics import diag_record
 from shared.runtime import GuiCallbacks
 
 class SessionHelpers:
@@ -34,16 +34,38 @@ class SessionHelpers:
         if callable(set_status):
             set_status(msg)
 
+    _logging = False
+
     def log(self, msg):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        full = f"[{timestamp}] {msg}"
-        if self.controller:
-            self.controller.session_log.append(full)
-            cap  = int(self.controller.engine.cfg.get("opt_log_cap_lines", 300000))
-            trim = int(self.controller.engine.cfg.get("opt_log_trim_lines", 200000))
-            if len(self.controller.session_log) > cap:
-                self.controller.session_log = self.controller.session_log[-trim:]
-        self._send_log(full)
+        if getattr(self, '_logging', False):
+            return
+        self._logging = True
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            full = f"[{timestamp}] {msg}"
+            if self.controller:
+                self.controller.session_log.append(full)
+                cap  = int(self.controller.engine.cfg.get("opt_log_cap_lines", 300000))
+                trim = int(self.controller.engine.cfg.get("opt_log_trim_lines", 200000))
+                if len(self.controller.session_log) > cap:
+                    self.controller.session_log = self.controller.session_log[-trim:]
+            self._send_log(full)
+
+            # Feed into diagnostic ring buffer so AI has full session context.
+            # diag_record is guaranteed never to raise, but wrap anyway to
+            # ensure a diagnostics bug can never break the log pipeline.
+            try:
+                msg_upper = str(msg).upper()
+                if "ERROR" in msg_upper:
+                    diag_record("error", "session_log", msg)
+                elif "WARNING" in msg_upper or "WARN" in msg_upper:
+                    diag_record("warning", "session_log", msg)
+                else:
+                    diag_record("info", "session_log", msg)
+            except Exception:
+                pass
+        finally:
+            self._logging = False
 
     def report(self, msg):
         if self.controller:

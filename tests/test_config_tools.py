@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config  # type: ignore[import-not-found]
+from engine.ripper_engine import RipperEngine
 
 
 def _touch(path):
@@ -141,3 +142,34 @@ def test_should_not_keep_current_when_existing_path_is_not_working():
     )
 
     assert keep_current is False
+
+
+def test_ripper_engine_validate_tools_accepts_resolved_binaries(tmp_path, monkeypatch):
+    makemkvcon = tmp_path / "makemkvcon.exe"
+    ffprobe = tmp_path / "ffprobe.exe"
+    _touch(makemkvcon)
+    _touch(ffprobe)
+
+    engine = RipperEngine(
+        {
+            "makemkvcon_path": "configured-makemkvcon",
+            "ffprobe_path": "configured-ffprobe",
+        }
+    )
+
+    monkeypatch.setattr(
+        "engine.ripper_engine.resolve_makemkvcon",
+        lambda _path: str(makemkvcon),
+    )
+    monkeypatch.setattr(
+        "engine.ripper_engine.resolve_ffprobe",
+        lambda _path: (str(ffprobe), "configured"),
+    )
+
+    ok, reason = engine.validate_tools()
+
+    assert ok is True
+    assert reason == ""
+    assert engine._resolved_makemkvcon == os.path.normpath(str(makemkvcon))
+    assert engine._resolved_makemkvcon_src == os.path.normpath("configured-makemkvcon")
+    assert engine._ffprobe_source == "configured"

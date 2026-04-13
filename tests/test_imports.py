@@ -113,3 +113,38 @@ def test_on_close_destroys_window_without_force_exit(monkeypatch):
     gui.engine.abort.assert_called_once_with()
     gui.destroy.assert_called_once_with()
     main_window.os._exit.assert_not_called()
+
+
+def test_disable_buttons_keeps_transcode_prep_available():
+    with unittest.mock.patch("tkinter.Tk", new=_FakeTkBase):
+        from gui.main_window import JellyRipperGUI
+
+    class _FakeButton:
+        def __init__(self):
+            self.state = None
+
+        def config(self, **kwargs):
+            self.state = kwargs.get("state")
+
+    gui = object.__new__(JellyRipperGUI)
+    gui.mode_buttons = {
+        "t": _FakeButton(),
+        "m": _FakeButton(),
+        "d": _FakeButton(),
+        "i": _FakeButton(),
+        "scan": _FakeButton(),
+    }
+    gui.settings_btn = _FakeButton()
+    gui.update_btn = _FakeButton()
+    gui.abort_btn = _FakeButton()
+
+    gui.disable_buttons()
+
+    assert gui.mode_buttons["t"].state == "disabled"
+    assert gui.mode_buttons["m"].state == "disabled"
+    assert gui.mode_buttons["d"].state == "disabled"
+    assert gui.mode_buttons["i"].state == "disabled"
+    assert gui.mode_buttons["scan"].state == "normal"
+    assert gui.settings_btn.state == "disabled"
+    assert gui.update_btn.state == "disabled"
+    assert gui.abort_btn.state == "normal"

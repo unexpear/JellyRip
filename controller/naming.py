@@ -14,6 +14,16 @@ MakeTempTitleFn: TypeAlias = Callable[[], str]
 CleanNameFn: TypeAlias = Callable[[object], str]
 ChooseBestTitleFn: TypeAlias = Callable[[Sequence[TitleLike], bool], tuple[TitleLike | None, float]]
 
+_METADATA_PROVIDER_ALIASES = {
+    "tmdb": "tmdb",
+    "themoviedb": "tmdb",
+    "opendb": "opendb",
+    "open_db": "opendb",
+    "open-db": "opendb",
+    "imdb": "imdb",
+    "tvdb": "tvdb",
+}
+
 
 def normalize_naming_mode(mode_value: object) -> NamingMode:
     """Normalize configured naming mode including backward-compatible aliases."""
@@ -25,36 +35,66 @@ def normalize_naming_mode(mode_value: object) -> NamingMode:
     return "timestamp"
 
 
-def parse_metadata_id(raw: str | None) -> str:
-    """Parse a user-entered metadata provider ID into a Jellyfin tag."""
+def normalize_metadata_provider(raw: str | None, default: str = "tmdb") -> str:
+    """Normalize a metadata provider label into its canonical key."""
+    token = str(raw or "").strip().lower()
+    if not token:
+        return default
+    return _METADATA_PROVIDER_ALIASES.get(token, default)
+
+
+def normalize_metadata_id(raw: str | None, provider: str | None = None) -> str:
+    """Normalize user-entered metadata into a canonical ``provider:value`` form."""
     if not raw:
         return ""
     token = raw.strip().strip("[]")
     if not token:
         return ""
 
-    match = re.match(r"^(tmdbid|imdbid|tvdbid)-(\S+)$", token, re.IGNORECASE)
+    match = re.match(r"^(tmdbid|opendbid|imdbid|tvdbid)-(\S+)$", token, re.IGNORECASE)
     if match:
-        return f"[{match.group(1).lower()}-{match.group(2)}]"
+        normalized_provider = normalize_metadata_provider(
+            match.group(1).lower().removesuffix("id")
+        )
+        return f"{normalized_provider}:{match.group(2)}"
 
-    match = re.match(r"^(tmdb|imdb|tvdb)[:\-](\S+)$", token, re.IGNORECASE)
+    match = re.match(r"^(tmdb|opendb|imdb|tvdb)[:\-](\S+)$", token, re.IGNORECASE)
     if match:
-        return f"[{match.group(1).lower()}id-{match.group(2)}]"
+        normalized_provider = normalize_metadata_provider(match.group(1))
+        return f"{normalized_provider}:{match.group(2)}"
 
     match = re.match(r"^(tt\d+)$", token, re.IGNORECASE)
     if match:
-        return f"[imdbid-{match.group(1)}]"
+        return f"imdb:{match.group(1)}"
 
     match = re.match(r"^(\d+)$", token)
     if match:
-        return f"[tmdbid-{match.group(1)}]"
+        normalized_provider = normalize_metadata_provider(provider)
+        return f"{normalized_provider}:{match.group(1)}"
 
     return ""
 
 
-def build_movie_folder_name(title_clean: str, year: str | int, metadata_id: str = "") -> str:
-    tag = parse_metadata_id(metadata_id)
+def parse_metadata_id(raw: str | None, provider: str | None = None) -> str:
+    """Parse a user-entered metadata provider ID into a Jellyfin tag."""
+    canonical = normalize_metadata_id(raw, provider)
+    if not canonical or ":" not in canonical:
+        return ""
+
+    normalized_provider, value = canonical.split(":", 1)
+    return f"[{normalized_provider}id-{value}]"
+
+
+def build_movie_folder_name(
+    title_clean: str,
+    year: str | int,
+    metadata_id: str = "",
+    edition: str = "",
+) -> str:
+    tag  = parse_metadata_id(metadata_id)
     base = f"{title_clean} ({year})"
+    if edition:
+        base = f"{base} - {edition}"
     return f"{base} {tag}" if tag else base
 
 
@@ -106,7 +146,8 @@ def build_fallback_title(
     raw_name = str(best.get("name", "")).strip()
     raw = clean_name_fn(raw_name)
     if not raw or raw.lower().startswith("title "):
-        raw = f"Disc_Title_{int(best.get('id', 0)) + 1}"
+        _id = best.get('id', 0)
+        raw = f"Disc_Title_{(int(_id) if isinstance(_id, (int, float)) else 0) + 1}"
 
     if mode == "disc-title+timestamp":
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

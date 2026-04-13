@@ -1,4 +1,4 @@
-﻿"""Engine layer implementation."""
+"""Engine layer implementation."""
 
 import glob
 import json
@@ -17,6 +17,9 @@ from typing import Any, Generator, List
 _POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 from shared.runtime import RIP_ATTEMPT_FLAGS
+from shared.ai_diagnostics import (
+    ProcessCapture, diag_exception, diag_process, diag_record, get_diagnostics,
+)
 
 from config import resolve_ffprobe, resolve_makemkvcon
 from utils.helpers import clean_name
@@ -27,6 +30,7 @@ from utils.parsing import (
     safe_int,
 )
 from utils.scoring import score_title
+from utils.classifier import classify_titles, format_classification_log
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,21 @@ class Progress:
 
 
 class RipperEngine:
+    def find_old_temp_folders(self, temp_root: str) -> list[str]:
+        """Return a list of old temp folders in the given temp_root directory."""
+        if not temp_root or not os.path.isdir(temp_root):
+            return []
+        try:
+            # Consider a temp folder 'old' if it is a directory and not empty
+            folders = []
+            for entry in os.listdir(temp_root):
+                full_path = os.path.join(temp_root, entry)
+                if os.path.isdir(full_path):
+                    # Optionally, filter by age or naming pattern here
+                    folders.append(full_path)
+            return folders
+        except Exception:
+            return []
     def run_job_streaming(self, job: Job) -> Generator[EngineEvent, None, None]:
         result = self.run_job(job)
         for line in result.outputs:
@@ -101,6 +120,32 @@ class RipperEngine:
     def reset_abort(self) -> None:
         with self._abort_lock:
             self.abort_event.clear()
+
+    def validate_tools(self) -> tuple[bool, str]:
+        """Validate configured MakeMKV and ffprobe paths before starting work."""
+        makemkvcon = resolve_makemkvcon(
+            os.path.normpath(self.cfg.get("makemkvcon_path", ""))
+        )
+        ffprobe, ffprobe_source = resolve_ffprobe(
+            os.path.normpath(self.cfg.get("ffprobe_path", ""))
+        )
+        if not os.path.isfile(makemkvcon):
+            return False, (
+                f"MakeMKV not found at:\n{makemkvcon}"
+                f"\n\nPlease check Settings."
+            )
+        if not os.path.isfile(ffprobe):
+            return False, (
+                "ffprobe not found."
+                "\n\nDownload ffmpeg from https://ffmpeg.org and point"
+                "\nSettings -> Paths -> ffprobe folder to its bin directory."
+            )
+        self._resolved_makemkvcon = makemkvcon
+        self._resolved_makemkvcon_src = os.path.normpath(
+            self.cfg.get("makemkvcon_path", "")
+        )
+        self._ffprobe_source = ffprobe_source
+        return True, ""
 
     def _get_makemkvcon(self) -> str:
         cached = getattr(self, "_resolved_makemkvcon", None)
@@ -178,6 +223,7 @@ class RipperEngine:
         self.last_move_error = ""
         self.last_title_file_map = {}
         self.last_degraded_titles: list = []
+        self.last_drive_info: dict = {}
         self._ffprobe_cache = {}  # LRU cache with 1000-entry limit
         self._ffprobe_cache_lock = threading.Lock()
         self._ffprobe_cache_max_size = 1000
@@ -185,6 +231,7 @@ class RipperEngine:
         self._last_scan_timestamp = 0.0
         self._last_scan_target = None
         self.last_disc_info = {}
+        self.last_classification: list = []
 
     @staticmethod
     def _io_path(path):
@@ -597,6 +644,12 @@ class RipperEngine:
                         "possible ambiguity."
                     )
 
+        # Classify titles into MAIN / DUPLICATE / EXTRA / UNKNOWN
+        self.last_classification = classify_titles(result)
+        if self.last_classification:
+            for log_line in format_classification_log(self.last_classification):
+                on_log(log_line)
+
         self._last_scan_total_bytes = sum(
             max(0, int(t.get("size_bytes", 0) or 0)) for t in result
         )
@@ -926,6 +979,13 @@ class RipperEngine:
 
         Returns True on rc==0, False otherwise.
         """
+        _diag_capture = ProcessCapture(
+            command=list(cmd),
+            start_time=datetime.now().isoformat(),
+            working_directory=os.getcwd(),
+        )
+        _diag_raw_lines: list[str] = []
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -987,6 +1047,9 @@ class RipperEngine:
             line = line.strip()
             if not line:
                 continue
+
+            if len(_diag_raw_lines) < 5000:
+                _diag_raw_lines.append(line)
 
             if line.startswith("PRGV:"):
                 parts = line[5:].split(",")
@@ -1085,6 +1148,20 @@ class RipperEngine:
                 "Files may be incomplete or missing; validation will follow."
             )
 
+        # AI diagnostics: finalize capture
+        _diag_capture.exit_code = rc
+        _diag_capture.end_time = datetime.now().isoformat()
+        _diag_capture.duration_seconds = time.time() - rip_start
+        _diag_capture.stdout = "\n".join(_diag_raw_lines[-200:])
+        _diag_capture.stall_detected = stall_warned
+        if rc != 0:
+            diag_process(_diag_capture, success=False,
+                         category="subprocess_nonzero_exit")
+        elif stall_warned:
+            diag_record(
+                "warning", "stall_timeout",
+                "MakeMKV completed but had I/O stalls (exit %d)" % rc,
+                details=_diag_capture.to_dict())
         return rc == 0
 
     def _run_preview_process(self, cmd, preview_seconds, on_log):
@@ -1592,7 +1669,9 @@ class RipperEngine:
                 except Exception:
                     pass
             on_log(f"ERROR moving file: {e}")
-            self.last_move_error = f"Move failed â€” {e}"
+            self.last_move_error = f"Move failed \u2014 {e}"
+            diag_exception(e, context="move_file_atomic",
+                           category="move_verify_failure")
             return False
 
     def move_files(self, titles_list, main_indices, episode_numbers,

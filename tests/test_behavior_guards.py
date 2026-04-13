@@ -4,6 +4,7 @@ import os
 import queue
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -16,6 +17,8 @@ from utils.media import select_largest_file
 from utils.session_result import normalize_session_result
 from utils.state_machine import SessionState, SessionStateMachine
 from utils.scoring import choose_best_title
+from utils.classifier import ClassifiedTitle
+from gui.session_setup_dialog import MovieSessionSetup, TVSessionSetup
 
 
 class DummyGUI:
@@ -36,6 +39,64 @@ class DummyGUI:
 
     def stop_indeterminate(self):
         pass
+
+    def ask_input(self, _label, _prompt, default_value=""):
+        return default_value
+
+    def show_info(self, _title, _msg):
+        pass
+
+    def show_error(self, _title, _msg):
+        pass
+
+    def ask_yesno(self, _prompt):
+        return True
+
+    def ask_space_override(self, _required, _free):
+        return True
+
+    def show_file_list(self, _title, _prompt, options):
+        return [options[0]] if options else []
+
+    def show_extras_picker(self, _title, _prompt, _options):
+        return []
+
+    def show_disc_tree(self, *_args, **_kwargs):
+        return []
+
+    def show_scan_results_step(self, _classified, _drive_info=None):
+        return "movie"
+
+    def show_content_mapping_step(self, classified):
+        from gui.setup_wizard import ContentSelection
+        main_ids = [ct.title_id for ct in classified if ct.label == "MAIN"]
+        extra_ids = [ct.title_id for ct in classified if ct.label == "EXTRA"]
+        skip_ids = [ct.title_id for ct in classified if ct.label not in ("MAIN", "EXTRA")]
+        return ContentSelection(main_title_ids=main_ids, extra_title_ids=extra_ids, skip_title_ids=skip_ids)
+
+    def show_extras_classification_step(self, _extra_titles):
+        from gui.setup_wizard import ExtrasAssignment
+        return ExtrasAssignment()
+
+    def show_output_plan_step(self, _base_folder, _main_label, _extras_map):
+        return True
+
+    def ask_movie_setup(self, **_kwargs):
+        from gui.session_setup_dialog import MovieSessionSetup
+        return MovieSessionSetup(
+            title="Untitled", year="2024", edition="",
+            metadata_provider="TMDB", metadata_id="",
+            replace_existing=False, keep_raw=False, extras_mode="ask",
+        )
+
+    def ask_tv_setup(self, **_kwargs):
+        from gui.session_setup_dialog import TVSessionSetup
+        return TVSessionSetup(
+            title="Untitled", year="", season=1, starting_disc=1,
+            episode_mapping="auto", metadata_provider="TMDB", metadata_id="",
+            multi_episode="auto", specials="ask",
+            replace_existing=False, keep_raw=False,
+        )
 
 
 class ScriptedSetupGUI(DummyGUI):
@@ -427,6 +488,29 @@ def test_rip_all_titles_nonzero_exit_with_output_is_failure(tmp_path, monkeypatc
     )
 
 
+def test_rip_all_titles_records_multi_file_title_groups_for_dump_all(
+    tmp_path, monkeypatch
+):
+    engine = RipperEngine(_engine_cfg(opt_auto_retry=False, opt_retry_attempts=1))
+
+    def fake_run(_cmd, _on_progress, _on_log):
+        Path(tmp_path, "title_t00_part1.mkv").write_text("part1")
+        Path(tmp_path, "title_t00_part2.mkv").write_text("part2")
+        Path(tmp_path, "title_t01.mkv").write_text("main")
+        return True
+
+    monkeypatch.setattr(engine, "_run_rip_process", fake_run)
+
+    result = engine.rip_all_titles(
+        str(tmp_path), on_progress=lambda _p: None, on_log=lambda _m: None
+    )
+
+    assert result is True
+    assert sorted(engine.last_title_file_map) == [0, 1]
+    assert len(engine.last_title_file_map[0]) == 2
+    assert len(engine.last_title_file_map[1]) == 1
+
+
 def test_abort_stops_rip(tmp_path):
     engine = RipperEngine(_engine_cfg())
     engine.abort()
@@ -521,7 +605,7 @@ class TestComputeFileMinSize:
         assert self._min(0) == self._1_GB
 
     def test_garbage_small_expected_falls_back_to_floor(self):
-        # 5 MB "expected" is a bad parse — must not be trusted.
+        # 5 MB "expected" is a bad parse â€" must not be trusted.
         assert self._min(5 * 1024 * 1024) == self._1_GB
 
     def test_exactly_100mb_boundary_uses_floor(self):
@@ -563,6 +647,106 @@ def test_map_title_ids_prefers_engine_tracked_file_map(tmp_path):
     ]
     mapped = controller._map_title_ids_to_analyzed_indices(titles_list, [2])
     assert mapped == [1]
+
+
+def test_dump_output_summary_logs_multi_file_group_counts(tmp_path):
+    controller, engine = _controller_with_engine()
+
+    part1 = tmp_path / "title_t00_part1.mkv"
+    part2 = tmp_path / "title_t00_part2.mkv"
+    single = tmp_path / "title_t01.mkv"
+    part1.write_bytes(b"a" * 10)
+    part2.write_bytes(b"b" * 20)
+    single.write_bytes(b"c" * 30)
+
+    engine.last_title_file_map = {
+        0: [str(part1), str(part2)],
+        1: [str(single)],
+    }
+
+    group_count = controller._log_dump_output_summary(
+        [str(part1), str(part2), str(single)]
+    )
+
+    assert group_count == 2
+    assert any(
+        "3 file(s) across 2 title group(s)" in line
+        for line in controller.gui.messages
+    )
+    assert any("Title 1: 2 files" in line for line in controller.gui.messages)
+    assert any("title_t00_part1.mkv" in line for line in controller.gui.messages)
+    assert any("title_t00_part2.mkv" in line for line in controller.gui.messages)
+    assert any("Title 2: 1 file" in line for line in controller.gui.messages)
+
+
+def test_run_dump_all_reports_file_and_title_group_counts(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    part1 = tmp_path / "title_t00_part1.mkv"
+    part2 = tmp_path / "title_t00_part2.mkv"
+    single = tmp_path / "title_t01.mkv"
+    part1.write_bytes(b"a" * 10)
+    part2.write_bytes(b"b" * 20)
+    single.write_bytes(b"c" * 30)
+
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_scan_disc_size"] = False
+
+    confirms = iter([False, False])
+    infos = []
+
+    controller.gui.ask_yesno = lambda _prompt: next(confirms)
+    controller.gui.ask_input = (
+        lambda _label, _prompt, default_value="": "My Dump Disc"
+    )
+    controller.gui.show_info = (
+        lambda title, message: infos.append((title, message))
+    )
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        engine,
+        "run_job",
+        lambda _job: (
+            setattr(
+                engine,
+                "last_title_file_map",
+                {0: [str(part1), str(part2)], 1: [str(single)]},
+            )
+            or SimpleNamespace(success=True, errors=[])
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_normalize_rip_result",
+        lambda *_a, **_k: (True, [str(part1), str(part2), str(single)]),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_stabilize_ripped_files",
+        lambda *_a, **_k: (True, False),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_verify_container_integrity",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(controller, "write_session_summary", lambda: None)
+    monkeypatch.setattr(controller, "flush_log", lambda: None)
+
+    controller.run_dump_all()
+
+    assert any(
+        "3 file(s) across 2 title group(s)" in line
+        for line in controller.gui.messages
+    )
+    assert infos
+    assert "3 file(s) across 2 title group(s)" in infos[-1][1]
 
 
 def test_build_disc_fingerprint_uses_titles_beyond_top12(monkeypatch):
@@ -1000,58 +1184,41 @@ def test_safe_glob_timeout_returns_empty_and_logs_warning(monkeypatch):
     assert any("test glob timed out" in m.lower() for m in controller.gui.messages)
 
 
-def test_movie_run_ignores_resume_metadata_and_starts_fresh(tmp_path, monkeypatch):
+def test_movie_run_does_not_consult_resume_state(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine()
 
     temp_root = tmp_path / "temp"
     movies_root = tmp_path / "movies"
-    resume_path = temp_root / "old_resume"
     temp_root.mkdir(parents=True, exist_ok=True)
     movies_root.mkdir(parents=True, exist_ok=True)
-    resume_path.mkdir(parents=True, exist_ok=True)
 
     engine.cfg["opt_show_temp_manager"] = False
     engine.cfg["temp_folder"] = str(temp_root)
     engine.cfg["movies_folder"] = str(movies_root)
 
-    resume_meta = {
-        "disc_number": 1,
-        "title": "Resume Movie",
-        "year": "2001",
-        "media_type": "movie",
-    }
-
-    check_resume_called = {"value": False}
-
-    def _fake_check_resume(*_args, **_kwargs):
-        check_resume_called["value"] = True
-        return {
-            "path": str(resume_path),
-            "meta": dict(resume_meta),
-        }
-
-    monkeypatch.setattr(controller, "check_resume", _fake_check_resume)
-
     controller.gui.ask_yesno = lambda _prompt: False
     controller.gui.show_info = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(
+        controller,
+        "check_resume",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("check_resume should not be called")
+        ),
+    )
 
-    prompts = iter([
-        "Resume Movie",  # Title
-        "2001",          # Year
-        "",              # Metadata ID
-    ])
+    # Track what ask_input receives as default_value — the movie disc flow
+    # should NOT pre-fill defaults from resume state.
+    input_defaults = []
+    original_ask_input = controller.gui.ask_input
 
-    def ask_input(label, _prompt, default_value=""):
-        _ = default_value
-        value = next(prompts)
-        if label == "Metadata ID":
-            engine.abort()
-        return value
+    def tracking_ask_input(_label, _prompt, default_value=""):
+        input_defaults.append(default_value)
+        return default_value
 
-    controller.gui.ask_input = ask_input
+    controller.gui.ask_input = tracking_ask_input
+    controller.gui.show_error = lambda *_args, **_kwargs: None
 
     writes = []
-    updates = []
 
     monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -1061,29 +1228,469 @@ def test_movie_run_ignores_resume_metadata_and_starts_fresh(tmp_path, monkeypatc
             (path, title, disc_number, kwargs)
         ),
     )
-    monkeypatch.setattr(
-        engine,
-        "update_temp_metadata",
-        lambda path, **kwargs: updates.append((path, kwargs)),
-    )
 
-    monkeypatch.setattr(
-        controller,
-        "scan_with_retry",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("scan_with_retry should not run after abort")
-        ),
-    )
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: None)
 
     controller.run_movie_disc()
 
-    assert check_resume_called["value"] is False
-    assert updates == []
+    # Title and year prompts should have fresh defaults (no resume data).
+    # Title default is "" (no active_resume), year default is "0000"
+    # (the initialized placeholder, not a previously saved year).
+    assert input_defaults[0] == ""    # title default_value
+    assert input_defaults[1] == "0000"  # year default_value (initial, not from resume)
+    assert writes
+    new_rip_path = os.path.normpath(writes[0][0])
+    assert new_rip_path.startswith(os.path.normpath(str(temp_root)))
+
+
+def test_tv_run_does_not_consult_resume_state(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    tv_root = tmp_path / "tv"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    tv_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["tv_folder"] = str(tv_root)
+
+    monkeypatch.setattr(
+        controller,
+        "check_resume",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("check_resume should not be called")
+        ),
+    )
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.ask_yesno = lambda _prompt: False
+
+    # Track what ask_input receives as default_value — the TV disc flow
+    # should NOT pre-fill defaults from resume state.
+    input_defaults = []
+    call_count = [0]
+
+    def tracking_ask_input(_label, _prompt, default_value=""):
+        input_defaults.append((_label, default_value))
+        call_count[0] += 1
+        # Abort after collecting the season input to prevent scan_with_retry
+        if call_count[0] >= 3:  # title, metadata, season
+            engine.abort()
+        return default_value
+
+    controller.gui.ask_input = tracking_ask_input
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: None)
+
+    controller.run_tv_disc()
+
+    # The title prompt should have an empty default (no resume data).
+    title_calls = [d for label, d in input_defaults if label == "Title"]
+    assert title_calls and title_calls[0] == ""
+
+
+def test_movie_run_custom_folder_overrides_continue_past_path_selection(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    default_temp = tmp_path / "default-temp"
+    default_movies = tmp_path / "default-movies"
+    custom_temp = tmp_path / "custom-temp"
+    custom_movies = tmp_path / "custom-movies"
+    for path in (default_temp, default_movies, custom_temp, custom_movies):
+        path.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = True
+    engine.cfg["temp_folder"] = str(default_temp)
+    engine.cfg["movies_folder"] = str(default_movies)
+
+    chosen_dirs = iter([str(custom_movies), str(custom_temp)])
+
+    controller.gui.ask_yesno = lambda _prompt: True
+    controller.gui.ask_directory = (
+        lambda _title, _prompt, initialdir="": next(chosen_dirs)
+    )
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.show_error = lambda *_args, **_kwargs: None
+
+    controller.gui.ask_movie_setup = lambda **_kw: MovieSessionSetup(
+        title="Chosen Movie",
+        year="2024",
+        edition="",
+        metadata_provider="TMDB",
+        metadata_id="",
+        replace_existing=False,
+        keep_raw=False,
+        extras_mode="ask",
+    )
+
+    writes = []
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    engine.find_old_temp_folders = lambda *_a, **_k: []
+    monkeypatch.setattr(
+        engine,
+        "write_temp_metadata",
+        lambda path, title, disc_number, **kwargs: writes.append(
+            (path, title, disc_number, kwargs)
+        ),
+    )
+
+    def scan_and_abort():
+        engine.abort()
+        return None
+
+    monkeypatch.setattr(controller, "scan_with_retry", scan_and_abort)
+
+    controller.run_movie_disc()
 
     assert writes
     new_rip_path = os.path.normpath(writes[0][0])
-    assert new_rip_path != os.path.normpath(str(resume_path))
-    assert new_rip_path.startswith(os.path.normpath(str(temp_root)))
+    assert new_rip_path.startswith(os.path.normpath(str(custom_temp)))
+    assert any("Custom folders set, continuing..." in m for m in controller.gui.messages)
+    assert any("Flow: session initialized" in m for m in controller.gui.messages)
+
+
+def test_movie_run_manual_selection_preserves_main_movie_picker(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    movies_root = tmp_path / "movies"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_smart_rip_mode"] = False
+    engine.cfg["opt_confirm_before_rip"] = False
+    engine.cfg["opt_scan_disc_size"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+
+    controller.gui.ask_movie_setup = lambda **_kw: MovieSessionSetup(
+        title="Chosen Movie",
+        year="2024",
+        edition="",
+        metadata_provider="TMDB",
+        metadata_id="",
+        replace_existing=False,
+        keep_raw=False,
+        extras_mode="ask",
+    )
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    disc_tree_args = {}
+
+    def show_disc_tree(_disc_titles, _is_tv, _preview):
+        disc_tree_args["preview"] = _preview
+        return ["0", "1"]
+
+    controller.gui.show_disc_tree = show_disc_tree
+
+    disc_titles = [
+        {"id": 0, "size_bytes": 4_000_000_000},
+        {"id": 1, "size_bytes": 600_000_000},
+    ]
+    analyzed = [
+        (str(temp_root / "manual_main.mkv"), 7200.0, 4000.0),
+        (str(temp_root / "manual_extra.mkv"), 600.0, 600.0),
+    ]
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+    monkeypatch.setattr(
+        engine,
+        "run_job",
+        lambda _job: SimpleNamespace(success=True, errors=[]),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_normalize_rip_result",
+        lambda *_a, **_k: (True, [item[0] for item in analyzed]),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_stabilize_ripped_files",
+        lambda *_a, **_k: (True, False),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_verify_expected_sizes",
+        lambda *_a, **_k: ("pass", "ok"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_verify_container_integrity",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(engine, "analyze_files", lambda *_a, **_k: analyzed)
+
+    captured = {}
+
+    def fake_select_and_move(
+        _titles_list,
+        _is_tv,
+        _title,
+        _dest_folder,
+        _extras_folder,
+        _season,
+        _year,
+        expected_size_by_title=None,
+        session_rip_path=None,
+        session_meta=None,
+        selected_title_ids=None,
+        **kwargs,
+    ):
+        captured["selected_title_ids"] = selected_title_ids
+        captured["expected_size_by_title"] = expected_size_by_title
+        captured["session_rip_path"] = session_rip_path
+        captured["session_meta"] = session_meta
+        return True
+
+    monkeypatch.setattr(controller, "_select_and_move", fake_select_and_move)
+
+    controller.run_movie_disc()
+
+    assert captured["selected_title_ids"] is None
+    assert captured["expected_size_by_title"] == {
+        0: 4_000_000_000,
+        1: 600_000_000,
+    }
+    assert captured["session_rip_path"] is not None
+    assert disc_tree_args["preview"] is None
+
+
+def test_run_smart_rip_wizard_flow_completes_movie(tmp_path, monkeypatch):
+    """Smart rip 5-step wizard: scan -> classify -> identity -> map -> preview -> rip."""
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    movies_root = tmp_path / "movies"
+    tv_root = tmp_path / "tv"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+    tv_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_scan_disc_size"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+    engine.cfg["tv_folder"] = str(tv_root)
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.ask_yesno = lambda _prompt: True
+
+    # Step 1: scan results -> "movie"
+    controller.gui.show_scan_results_step = lambda _cl, _di=None: "movie"
+
+    # Step 2: library identity -> MovieSessionSetup
+    controller.gui.ask_movie_setup = lambda **_kw: MovieSessionSetup(
+        title="Chosen Movie", year="2024", edition="",
+        metadata_provider="TMDB", metadata_id="",
+        replace_existing=False, keep_raw=False, extras_mode="ask",
+    )
+
+    # Step 3: content mapping -> select main only
+    from gui.setup_wizard import ContentSelection
+    controller.gui.show_content_mapping_step = lambda _cl: ContentSelection(
+        main_title_ids=[0], extra_title_ids=[], skip_title_ids=[1],
+    )
+
+    # Step 4: extras classification (skipped — no extras)
+    # Step 5: output plan -> confirm
+    controller.gui.show_output_plan_step = lambda *_a, **_k: True
+
+    disc_titles = [
+        {
+            "id": 0, "name": "Main Feature",
+            "duration": "120:00", "size": "4.0 GB",
+            "duration_seconds": 7200, "size_bytes": 4_000_000_000,
+        },
+        {
+            "id": 1, "name": "Bonus",
+            "duration": "10:00", "size": "0.6 GB",
+            "duration_seconds": 600, "size_bytes": 600_000_000,
+        },
+    ]
+    analyzed = [
+        (str(temp_root / "main.mkv"), 7200.0, 4000.0),
+    ]
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+
+    _main_ct = ClassifiedTitle(
+        title=disc_titles[0], score=0.80, label="MAIN",
+        confidence=0.95, reasons=["longest duration", "largest size"],
+    )
+    _extra_ct = ClassifiedTitle(
+        title=disc_titles[1], score=0.20, label="EXTRA",
+        confidence=0.95, reasons=["short duration (<20 min)"],
+    )
+    monkeypatch.setattr(
+        "controller.controller.classify_and_pick_main",
+        lambda *_a, **_k: (_main_ct, [_main_ct, _extra_ct]),
+    )
+    monkeypatch.setattr(
+        "controller.controller.format_classification_log",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(
+        engine, "run_job",
+        lambda _job: SimpleNamespace(success=True, errors=[]),
+    )
+    monkeypatch.setattr(
+        controller, "_normalize_rip_result",
+        lambda *_a, **_k: (True, [item[0] for item in analyzed]),
+    )
+    monkeypatch.setattr(
+        controller, "_stabilize_ripped_files",
+        lambda *_a, **_k: (True, False),
+    )
+    monkeypatch.setattr(
+        controller, "_verify_expected_sizes",
+        lambda *_a, **_k: ("pass", "ok"),
+    )
+    monkeypatch.setattr(
+        controller, "_verify_container_integrity",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(engine, "analyze_files", lambda *_a, **_k: analyzed)
+    engine.last_title_file_map = {}
+
+    move_calls = {}
+
+    def fake_move_files(
+        titles_list, main_indices, episode_numbers, real_names,
+        extra_indices, is_tv, title, dest_folder, extras_folder,
+        season, year, extra_counter, on_progress, on_log,
+        bonus_indices=None, bonus_folder=None,
+    ):
+        move_calls["title"] = title
+        move_calls["main_indices"] = main_indices
+        move_calls["dest_folder"] = dest_folder
+        return True, extra_counter, [str(tmp_path / "library" / "main.mkv")]
+
+    monkeypatch.setattr(engine, "move_files", fake_move_files)
+
+    controller.run_smart_rip()
+
+    assert move_calls.get("title") == "Chosen Movie"
+    assert "Chosen Movie (2024)" in move_calls.get("dest_folder", "")
+    assert any("movie" in m.lower() for m in controller.gui.messages
+               if "media type" in m.lower())
+
+
+def test_run_smart_rip_cancel_at_scan_results_stops(tmp_path, monkeypatch):
+    """Cancelling at Step 1 (scan results) should abort without ripping."""
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(tmp_path / "movies")
+    engine.cfg["tv_folder"] = str(tmp_path / "tv")
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    # Step 1: cancel
+    controller.gui.show_scan_results_step = lambda _cl, _di=None: None
+
+    disc_titles = [
+        {"id": 0, "name": "Main", "duration": "120:00", "size": "4.0 GB",
+         "duration_seconds": 7200, "size_bytes": 4_000_000_000},
+    ]
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+
+    _ct = ClassifiedTitle(
+        title=disc_titles[0], score=0.80, label="MAIN",
+        confidence=0.95, reasons=["longest duration"],
+    )
+    monkeypatch.setattr(
+        "controller.controller.classify_and_pick_main",
+        lambda *_a, **_k: (_ct, [_ct]),
+    )
+    monkeypatch.setattr(
+        "controller.controller.format_classification_log",
+        lambda *_a, **_k: [],
+    )
+
+    rip_called = {"value": False}
+    monkeypatch.setattr(engine, "run_job", lambda _j: (
+        rip_called.update({"value": True}),
+        SimpleNamespace(success=False, errors=[]),
+    )[-1])
+
+    controller.run_smart_rip()
+
+    assert rip_called["value"] is False
+    assert any("cancelled" in m.lower() for m in controller.gui.messages)
+
+
+def test_run_smart_rip_cancel_at_output_plan_stops(tmp_path, monkeypatch):
+    """Cancelling at Step 5 (output plan) should abort without ripping."""
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_scan_disc_size"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(tmp_path / "movies")
+    engine.cfg["tv_folder"] = str(tmp_path / "tv")
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.ask_yesno = lambda _prompt: True
+    controller.gui.show_scan_results_step = lambda _cl, _di=None: "movie"
+    controller.gui.ask_movie_setup = lambda **_kw: MovieSessionSetup(
+        title="Test Movie", year="2024", edition="",
+        metadata_provider="TMDB", metadata_id="",
+        replace_existing=False, keep_raw=False, extras_mode="ask",
+    )
+
+    from gui.setup_wizard import ContentSelection
+    controller.gui.show_content_mapping_step = lambda _cl: ContentSelection(
+        main_title_ids=[0], extra_title_ids=[], skip_title_ids=[],
+    )
+    # Step 5: cancel
+    controller.gui.show_output_plan_step = lambda *_a, **_k: False
+
+    disc_titles = [
+        {"id": 0, "name": "Main", "duration": "120:00", "size": "4.0 GB",
+         "duration_seconds": 7200, "size_bytes": 4_000_000_000},
+    ]
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+
+    _ct = ClassifiedTitle(
+        title=disc_titles[0], score=0.80, label="MAIN",
+        confidence=0.95, reasons=["longest duration"],
+    )
+    monkeypatch.setattr(
+        "controller.controller.classify_and_pick_main",
+        lambda *_a, **_k: (_ct, [_ct]),
+    )
+    monkeypatch.setattr(
+        "controller.controller.format_classification_log",
+        lambda *_a, **_k: [],
+    )
+
+    rip_called = {"value": False}
+    monkeypatch.setattr(engine, "run_job", lambda _j: (
+        rip_called.update({"value": True}),
+        SimpleNamespace(success=False, errors=[]),
+    )[-1])
+
+    controller.run_smart_rip()
+
+    assert rip_called["value"] is False
+    assert any("cancelled" in m.lower() for m in controller.gui.messages)
 
 
 def test_ensure_session_paths_raises_before_init():
@@ -1122,7 +1729,7 @@ def test_verify_container_integrity_uses_preanalyzed_data(monkeypatch, tmp_path)
 
     monkeypatch.setattr(engine, "analyze_files", fake_analyze)
 
-    # Pass pre-analyzed data — analyze_files must NOT be called.
+    # Pass pre-analyzed data â€" analyze_files must NOT be called.
     preanalyzed = [(str(f), 5400.0, 4200)]
     result = controller._verify_container_integrity([str(f)], analyzed=preanalyzed)
 
@@ -1187,7 +1794,7 @@ def test_verify_container_integrity_fails_on_count_mismatch(tmp_path):
 
 
 def test_size_advisory_log_uses_arrow_format(tmp_path, monkeypatch):
-    """Post-stabilization advisory must use 'expected X GB → threshold Y GB' format."""
+    """Post-stabilization advisory must use 'expected X GB â†' threshold Y GB' format."""
     import time as time_module
 
     controller, engine = _controller_with_engine({
@@ -1211,7 +1818,7 @@ def test_size_advisory_log_uses_arrow_format(tmp_path, monkeypatch):
         lambda _f, _timeout, _polls: (True, False)
     )
 
-    # 500 MB expected → floor = 250 MB; actual is 1 MB so advisory fires.
+    # 500 MB expected â†' floor = 250 MB; actual is 1 MB so advisory fires.
     expected_size_by_title = {2: 500 * 1024 * 1024}
     controller._stabilize_ripped_files(
         [str(tiny)], expected_size_by_title=expected_size_by_title
@@ -1227,7 +1834,7 @@ def test_size_advisory_log_uses_arrow_format(tmp_path, monkeypatch):
     assert "threshold" in advisory_lines[0]
 
 
-# ── Degraded rip classification ──────────────────────────────────────────────
+# â"€â"€ Degraded rip classification â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def test_nonzero_exit_no_files_is_real_failure(tmp_path, monkeypatch):
     """rip_selected_titles: non-zero exit + no files = real failure."""
@@ -1269,7 +1876,7 @@ def test_degraded_rip_added_to_session_report(tmp_path, monkeypatch):
 
 
 def test_session_summary_shows_warnings_on_degraded_rip(tmp_path, monkeypatch):
-    """write_session_summary: COMPLETED state + session_report → 'Completed with warnings'."""
+    """write_session_summary: COMPLETED state + session_report â†' 'Completed with warnings'."""
     controller, engine = _controller_with_engine()
 
     controller._reset_state_machine()
@@ -1297,7 +1904,7 @@ def test_session_summary_shows_warnings_on_degraded_rip(tmp_path, monkeypatch):
 
 
 def test_session_summary_clean_when_no_warnings():
-    """write_session_summary: COMPLETED state + empty session_report → clean success message."""
+    """write_session_summary: COMPLETED state + empty session_report â†' clean success message."""
     controller, _engine = _controller_with_engine()
 
     controller._reset_state_machine()
@@ -1318,7 +1925,7 @@ def test_session_summary_clean_when_no_warnings():
     )
 
 
-# ── Fallback logging ──────────────────────────────────────────────────────────
+# â"€â"€ Fallback logging â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def test_fallback_title_from_mode_logs_but_does_not_report(monkeypatch):
     """Auto-title fallback is informational and must not pollute session summary."""
@@ -1336,48 +1943,45 @@ def test_fallback_title_from_mode_logs_but_does_not_report(monkeypatch):
     assert controller.session_report == []
 
 
-def test_run_smart_rip_abort_after_title_prompt_stops_before_fallback_logs(monkeypatch):
+def test_run_smart_rip_abort_during_scan_stops_before_wizard(monkeypatch):
+    """Aborting during disc scan should stop before any wizard steps."""
     controller, engine = _controller_with_engine()
     engine.cfg["opt_show_temp_manager"] = False
     engine.cfg["movies_folder"] = r"C:\Movies"
+    engine.cfg["tv_folder"] = r"C:\TV"
     engine.cfg["temp_folder"] = r"C:\Temp"
 
-    controller.gui.ask_yesno = lambda _prompt: False
     controller.gui.show_info = lambda *_args, **_kwargs: None
 
-    def ask_input(label, _prompt, default_value=""):
-        _ = default_value
-        if label == "Title":
-            engine.abort()
-            return ""
-        raise AssertionError(f"Unexpected prompt after abort: {label}")
+    def fake_scan():
+        engine.abort()
+        return None
 
-    controller.gui.ask_input = ask_input
+    controller.scan_with_retry = fake_scan
 
-    scan_called = {"value": False}
+    wizard_called = {"value": False}
+    original_scan_results = controller.gui.show_scan_results_step
 
-    def fail_scan(*_args, **_kwargs):
-        scan_called["value"] = True
-        raise AssertionError("scan_with_retry should not run after abort")
+    def fail_scan_results(*_args, **_kwargs):
+        wizard_called["value"] = True
+        raise AssertionError("show_scan_results_step should not run after abort")
 
-    controller.scan_with_retry = fail_scan
+    controller.gui.show_scan_results_step = fail_scan_results
 
     controller.run_smart_rip()
 
-    assert scan_called["value"] is False
-    assert not any("No title entered" in line for line in controller.gui.messages)
-    assert not any("No year — using 0000" in line for line in controller.gui.messages)
+    assert wizard_called["value"] is False
 
 
-# ── Duration sanity check (tiered + aggregation + clamping) ──────────────────
+# â"€â"€ Duration sanity check (tiered + aggregation + clamping) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def test_integrity_severe_duration_warns_only_no_size(tmp_path):
-    """< 50% duration alone → severe warning but still returns True."""
+    """< 50% duration alone â†' severe warning but still returns True."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s actual, 3600 s expected → 16.7% — severe tier (long title).
+    # 600 s actual, 3600 s expected â†' 16.7% â€" severe tier (long title).
     preanalyzed = [(str(f), 600.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1390,12 +1994,12 @@ def test_integrity_severe_duration_warns_only_no_size(tmp_path):
 
 
 def test_integrity_severe_duration_and_size_logs_error(tmp_path):
-    """< 50% duration AND < 50% size (above 200MB floor) → TRUNCATION ERROR."""
+    """< 50% duration AND < 50% size (above 200MB floor) â†' TRUNCATION ERROR."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s (16.7%), 400 MB actual vs 4000 MB expected (10%) — both severe.
+    # 600 s (16.7%), 400 MB actual vs 4000 MB expected (10%) â€" both severe.
     preanalyzed = [(str(f), 600.0, 400)]  # size_mb = 400 (above 200MB floor)
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1409,19 +2013,19 @@ def test_integrity_severe_duration_and_size_logs_error(tmp_path):
 
 
 def test_integrity_small_expected_size_disables_escalation(tmp_path):
-    """expected_size < 200 MB floor → size signal ignored, no escalation."""
+    """expected_size < 200 MB floor â†' size signal ignored, no escalation."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 600 s (16.7%) duration — would be severe. But expected_size only 50 MB
-    # — below 200 MB floor so size signal must be ignored.
+    # 600 s (16.7%) duration â€" would be severe. But expected_size only 50 MB
+    # â€" below 200 MB floor so size signal must be ignored.
     preanalyzed = [(str(f), 600.0, 10)]  # actual 10 MB
     result = controller._verify_container_integrity(
         [str(f)],
         analyzed=preanalyzed,
         expected_durations={str(f): 3600.0},
-        expected_sizes={str(f): 50 * 1024 * 1024},  # 50 MB — below floor
+        expected_sizes={str(f): 50 * 1024 * 1024},  # 50 MB â€" below floor
     )
 
     assert result is True
@@ -1430,13 +2034,13 @@ def test_integrity_small_expected_size_disables_escalation(tmp_path):
 
 
 def test_integrity_strict_mode_fails_on_likely_truncation(tmp_path):
-    """Strict mode: likely truncation (50-75% duration) → returns False."""
+    """Strict mode: likely truncation (50-75% duration) â†' returns False."""
     controller, engine = _controller_with_engine()
     engine.cfg["opt_strict_mode"] = True
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 2000 s actual, 3600 s expected → 55.6% — likely truncation tier.
+    # 2000 s actual, 3600 s expected â†' 55.6% â€" likely truncation tier.
     preanalyzed = [(str(f), 2000.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1449,12 +2053,12 @@ def test_integrity_strict_mode_fails_on_likely_truncation(tmp_path):
 
 
 def test_integrity_minor_mismatch_warns_but_passes(tmp_path):
-    """75–90% duration → minor warning, still returns True."""
+    """75â€"90% duration â†' minor warning, still returns True."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 2880 s actual, 3600 s expected → 80% — minor tier.
+    # 2880 s actual, 3600 s expected â†' 80% â€" minor tier.
     preanalyzed = [(str(f), 2880.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1467,12 +2071,12 @@ def test_integrity_minor_mismatch_warns_but_passes(tmp_path):
 
 
 def test_integrity_normal_variance_no_warning(tmp_path):
-    """>= 90% duration → no warning at all."""
+    """>= 90% duration â†' no warning at all."""
     controller, _engine = _controller_with_engine()
     f = tmp_path / "title_t00.mkv"
     f.write_text("fake")
 
-    # 3300 s actual, 3600 s expected → 91.7% — normal variance.
+    # 3300 s actual, 3600 s expected â†' 91.7% â€" normal variance.
     preanalyzed = [(str(f), 3300.0, 100)]
     result = controller._verify_container_integrity(
         [str(f)],
@@ -1485,7 +2089,7 @@ def test_integrity_normal_variance_no_warning(tmp_path):
 
 
 def test_integrity_multi_file_title_aggregates_before_comparing(tmp_path):
-    """Two files from one title: aggregate duration before comparing — no false warning."""
+    """Two files from one title: aggregate duration before comparing â€" no false warning."""
     controller, _engine = _controller_with_engine()
     f1 = tmp_path / "part1.mkv"
     f2 = tmp_path / "part2.mkv"
@@ -1493,8 +2097,8 @@ def test_integrity_multi_file_title_aggregates_before_comparing(tmp_path):
     f2.write_text("p2")
 
     # Each file is 1800 s (30 min). Expected total 3600 s.
-    # Per-file: 1800/3600 = 50% → would trigger "likely" warning.
-    # Aggregated: 3600/3600 = 100% → no warning.
+    # Per-file: 1800/3600 = 50% â†' would trigger "likely" warning.
+    # Aggregated: 3600/3600 = 100% â†' no warning.
     preanalyzed = [(str(f1), 1800.0, 200), (str(f2), 1800.0, 200)]
     result = controller._verify_container_integrity(
         [str(f1), str(f2)],
@@ -1508,14 +2112,14 @@ def test_integrity_multi_file_title_aggregates_before_comparing(tmp_path):
 
 
 def test_integrity_multi_file_dedup_only_one_warning(tmp_path):
-    """Two files from one title both below threshold → only ONE warning emitted."""
+    """Two files from one title both below threshold â†' only ONE warning emitted."""
     controller, _engine = _controller_with_engine()
     f1 = tmp_path / "part1.mkv"
     f2 = tmp_path / "part2.mkv"
     f1.write_text("p1")
     f2.write_text("p2")
 
-    # Total 600 s, expected 3600 s → 16.7% — severe, one warning for the group.
+    # Total 600 s, expected 3600 s â†' 16.7% â€" severe, one warning for the group.
     preanalyzed = [(str(f1), 300.0, 100), (str(f2), 300.0, 100)]
     result = controller._verify_container_integrity(
         [str(f1), str(f2)],
@@ -1532,31 +2136,31 @@ def test_integrity_multi_file_dedup_only_one_warning(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Library-scanning helpers — append / gap-fill / existing show support
+# Library-scanning helpers â€" append / gap-fill / existing show support
 # ---------------------------------------------------------------------------
 
 # --- get_next_episode gap-fill logic ---
 
 def test_get_next_episode_empty_set_returns_1():
-    """No existing episodes → first episode is 1."""
+    """No existing episodes â†' first episode is 1."""
     c, _ = _controller_with_engine()
     assert c.get_next_episode(set()) == 1
 
 
 def test_get_next_episode_appends_after_max():
-    """Contiguous set → suggest next after the last."""
+    """Contiguous set â†' suggest next after the last."""
     c, _ = _controller_with_engine()
     assert c.get_next_episode({1, 2, 3}) == 4
 
 
 def test_get_next_episode_fills_gap():
-    """Missing episode 3 → suggest 3, not 6."""
+    """Missing episode 3 â†' suggest 3, not 6."""
     c, _ = _controller_with_engine()
     assert c.get_next_episode({1, 2, 4, 5}) == 3
 
 
 def test_get_next_episode_fills_earliest_gap():
-    """Multiple gaps → always return the lowest missing."""
+    """Multiple gaps â†' always return the lowest missing."""
     c, _ = _controller_with_engine()
     # 2 and 4 are both missing; 2 is earlier
     assert c.get_next_episode({1, 3, 5}) == 2
@@ -1565,14 +2169,14 @@ def test_get_next_episode_fills_earliest_gap():
 # --- _scan_episode_files (replaces _scan_highest_episode internally) ---
 
 def test_scan_highest_episode_returns_zero_for_empty_folder(tmp_path):
-    """No episode files → returns 0 (first disc starts at episode 1)."""
+    """No episode files â†' returns 0 (first disc starts at episode 1)."""
     controller, _ = _controller_with_engine()
     result = controller._scan_highest_episode(str(tmp_path), 1)
     assert result == 0
 
 
 def test_scan_highest_episode_detects_existing_episodes(tmp_path):
-    """Three S01Exx files present → returns highest episode number."""
+    """Three S01Exx files present â†' returns highest episode number."""
     controller, _ = _controller_with_engine()
     (tmp_path / "Show - S01E01 - Pilot.mkv").write_text("")
     (tmp_path / "Show - S01E02 - Second.mkv").write_text("")

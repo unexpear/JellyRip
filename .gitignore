@@ -1,4 +1,7 @@
-﻿# PyInstaller build artifacts
+﻿# Secrets
+.env
+
+# PyInstaller build artifacts
 build/
 dist/
 /JellyRip.exe

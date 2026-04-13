@@ -109,6 +109,7 @@ from config import (
     auto_locate_ffmpeg,
     auto_locate_handbrake,
     auto_locate_tools,
+    handbrake_gui_installed,
     load_config,
     resolve_ffprobe,
     save_config,
@@ -144,6 +145,7 @@ from transcode.planner import (
     suggest_transcode_output_root,
     transcode_backend_label,
 )
+from transcode.encoder_probe import get_ffmpeg_version_info
 from transcode.profiles import ProfileLoader
 from transcode.queue_builder import (
     build_queue_jobs,
@@ -162,6 +164,7 @@ from utils.helpers import (
     make_rip_folder_name,
 )
 from utils.scoring import choose_best_title, format_audio_summary
+from utils.classifier import classify_titles, ClassifiedTitle
 
 from gui.update_ui import check_for_updates, launch_downloaded_update
 
@@ -174,6 +177,7 @@ HANDBRAKE_PRESETS = [
     "Super HQ 1080p30 Surround",
 ]
 TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
+CONCURRENT_MODE_KEYS = frozenset({"scan"})
 
 
 def _ffmpeg_source_mode_label(value: str) -> str:
@@ -428,6 +432,42 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         )
         self.settings_btn.pack(side="right", padx=4)
 
+        # --- AI Mode Control (left side of util bar) ---
+        ai_frame = tk.Frame(util_frame, bg=BG)
+        ai_frame.pack(side="left", padx=(0, 12))
+        tk.Label(
+            ai_frame, text="AI:",
+            bg=BG, fg="#8b949e",
+            font=("Segoe UI", 10)
+        ).pack(side="left", padx=(0, 4))
+
+        self._ai_mode_var = tk.StringVar(value=str(self.cfg.get("opt_ai_mode", "cloud")))
+        self._ai_mode_buttons: dict[str, tk.Button] = {}
+        for mode_value, mode_label in [("off", "OFF"), ("cloud", "CLOUD"), ("local", "LOCAL")]:
+            btn = tk.Button(
+                ai_frame, text=mode_label,
+                command=lambda m=mode_value: self._set_ai_mode(m),
+                bg="#21262d", fg="#8b949e",
+                font=("Segoe UI", 9), relief="flat",
+                width=6, padx=0,
+            )
+            btn.pack(side="left", padx=1)
+            self._ai_mode_buttons[mode_value] = btn
+        self._ai_status_label = tk.Label(
+            ai_frame, text="",
+            bg=BG, fg="#3fb950",
+            font=("Segoe UI", 9)
+        )
+        self._ai_status_label.pack(side="left", padx=(6, 0))
+        tk.Button(
+            ai_frame, text="\u2699",
+            bg="#21262d", fg="#8b949e",
+            font=("Segoe UI", 9), relief="flat",
+            width=3, padx=0,
+            command=self._open_ai_providers,
+        ).pack(side="left", padx=(4, 0))
+        self._update_ai_mode_ui()
+
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
             self, variable=self.progress_var,
@@ -524,6 +564,80 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if not folder:
             return
         self._open_path_in_explorer(folder)
+
+    # --- AI Mode Control ---
+
+    def _set_ai_mode(self, mode: str) -> None:
+        """Handle AI mode toggle click."""
+        self._ai_mode_var.set(mode)
+        self.cfg["opt_ai_mode"] = mode
+        try:
+            from shared.ai_diagnostics import get_diagnostics
+            mgr = get_diagnostics()
+            if mgr:
+                mgr.set_mode(mode)
+        except Exception:
+            pass
+        self._update_ai_mode_ui()
+        try:
+            from config import save_config
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _update_ai_mode_ui(self) -> None:
+        """Update AI toggle button highlights and status indicator."""
+        BG = "#0d1117"
+        current = self._ai_mode_var.get()
+        for mode_value, btn in self._ai_mode_buttons.items():
+            if mode_value == current:
+                btn.configure(bg="#30363d", fg="#e6edf3", relief="sunken")
+            else:
+                btn.configure(bg="#21262d", fg="#8b949e", relief="flat")
+
+        # Status indicator
+        try:
+            from shared.ai_diagnostics import get_diagnostics
+            mgr = get_diagnostics()
+            if mgr:
+                status = mgr.get_status()
+                state = status["state"]
+                state_colors = {
+                    "active": "#3fb950",
+                    "degraded": "#d29922",
+                    "disabled": "#f85149",
+                    "off": "#484f58",
+                }
+                color = state_colors.get(state, "#484f58")
+                calls = f"{status['calls_made']}/{status['calls_max']}"
+                self._ai_status_label.configure(
+                    text=f"\u25cf {state.title()} ({calls})",
+                    fg=color,
+                )
+            else:
+                self._ai_status_label.configure(text="\u25cf Init", fg="#484f58")
+        except Exception:
+            self._ai_status_label.configure(text="", fg="#484f58")
+
+    def _test_ai_backends(self) -> None:
+        """Run quick health check of AI backends (for future Test AI button)."""
+        try:
+            from shared.ai_diagnostics import get_diagnostics
+            mgr = get_diagnostics()
+            if not mgr:
+                self.show_info("AI Test", "Diagnostics not initialized.")
+                return
+            results = mgr.test_backends()
+            msg = f"Cloud: {results.get('cloud', 'N/A')}\nLocal: {results.get('local', 'N/A')}"
+            self.show_info("AI Backend Test", msg)
+            self._update_ai_mode_ui()
+        except Exception as e:
+            self.show_info("AI Test", f"Test failed: {e}")
+
+    def _open_ai_providers(self) -> None:
+        """Open the AI provider connection dialog."""
+        from gui.ai_provider_dialog import open_ai_provider_dialog
+        open_ai_provider_dialog(self, on_change=self._update_ai_mode_ui)
 
     def _open_folder_scanner(self):
         from tools.folder_scanner import scan_folder
@@ -993,6 +1107,9 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 "FFmpeg Recommendation",
                 f"{ffmpeg_status}\n\nSet the FFmpeg executable in Settings > Paths.",
             )
+            return False
+
+        if not self._ffmpeg_version_ok(ffmpeg_exe):
             return False
 
         if not output_root:
@@ -2441,6 +2558,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 chosen_executable if current_backend == "ffmpeg"
                 else self._resolve_transcode_backend_path("ffmpeg")[0]
             )
+            if current_backend == "ffmpeg" and not self._ffmpeg_version_ok(ffmpeg_path):
+                return
             handbrake_path = (
                 chosen_executable if current_backend == "handbrake"
                 else self._resolve_transcode_backend_path("handbrake")[0]
@@ -3018,6 +3137,148 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 return False
         return result[0] if result[0] is not None else False
 
+    # ------------------------------------------------------------------
+    # Session setup dialogs (worker-thread-safe)
+    # ------------------------------------------------------------------
+
+    def ask_movie_setup(
+        self,
+        default_title: str = "",
+        default_year: str = "",
+        default_metadata_provider: str = "TMDB",
+        default_metadata_id: str = "",
+    ):
+        """Show the movie rip setup dialog and return a MovieSessionSetup or None.
+
+        Safe to call from a worker thread — dispatches the Toplevel to the
+        main thread and blocks the caller until the user confirms or cancels.
+        """
+        from gui.session_setup_dialog import build_movie_setup_dialog
+
+        result = [None]
+        done   = threading.Event()
+
+        def _show():
+            result[0] = build_movie_setup_dialog(
+                self,
+                default_title=default_title,
+                default_year=default_year,
+                default_metadata_provider=default_metadata_provider,
+                default_metadata_id=default_metadata_id,
+            )
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    def ask_tv_setup(
+        self,
+        default_title: str = "",
+        default_season: str = "1",
+        default_metadata_provider: str = "TMDB",
+        default_metadata_id: str = "",
+    ):
+        """Show the TV rip setup dialog and return a TVSessionSetup or None.
+
+        Safe to call from a worker thread — dispatches the Toplevel to the
+        main thread and blocks the caller until the user confirms or cancels.
+        """
+        from gui.session_setup_dialog import build_tv_setup_dialog
+
+        result = [None]
+        done   = threading.Event()
+
+        def _show():
+            result[0] = build_tv_setup_dialog(
+                self,
+                default_title=default_title,
+                default_season=default_season,
+                default_metadata_provider=default_metadata_provider,
+                default_metadata_id=default_metadata_id,
+            )
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    # ------------------------------------------------------------------
+    # Setup wizard step dialogs (worker-thread-safe)
+    # ------------------------------------------------------------------
+
+    def show_scan_results_step(self, classified, drive_info=None):
+        """Step 1: Show scan results + classification. Returns 'movie'/'tv' or None."""
+        from gui.setup_wizard import show_scan_results
+
+        result = [None]
+        done = threading.Event()
+
+        def _show():
+            result[0] = show_scan_results(self, classified, drive_info)
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    def show_content_mapping_step(self, classified):
+        """Step 3: Content mapping — select titles to rip. Returns ContentSelection or None."""
+        from gui.setup_wizard import show_content_mapping
+
+        result = [None]
+        done = threading.Event()
+
+        def _show():
+            result[0] = show_content_mapping(self, classified)
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    def show_extras_classification_step(self, extra_titles):
+        """Step 4: Extras classification — assign Jellyfin categories. Returns ExtrasAssignment or None."""
+        from gui.setup_wizard import show_extras_classification
+
+        result = [None]
+        done = threading.Event()
+
+        def _show():
+            result[0] = show_extras_classification(self, extra_titles)
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    def show_output_plan_step(self, base_folder, main_label, extras_map):
+        """Step 5: Output plan preview. Returns True to confirm, False to cancel."""
+        from gui.setup_wizard import show_output_plan
+
+        result = [False]
+        done = threading.Event()
+
+        def _show():
+            result[0] = show_output_plan(self, base_folder, main_label, extras_map)
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return False
+        return result[0]
+
     def ask_directory(self, title, prompt, initialdir=""):
         """Open a native folder picker and return selected path or None."""
         def _pick():
@@ -3347,6 +3608,38 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             lambda: messagebox.showerror(title, msg, parent=self)
         )
 
+    def _ffmpeg_version_ok(self, ffmpeg_exe: str) -> bool:
+        """Return True if *ffmpeg_exe* meets the minimum version requirement.
+
+        When the binary is detected as too old the user is shown a blocking
+        warning with guidance on how to update.  They can still choose to
+        proceed (returns True) or abort (returns False).
+
+        When the version cannot be determined (probe error, missing binary)
+        this method returns True so a missing-binary error surfaces normally
+        later in the pipeline rather than being silenced here.
+        """
+        if not ffmpeg_exe or not os.path.isfile(ffmpeg_exe):
+            return True  # let the normal "not found" error handle this
+        info = get_ffmpeg_version_info(ffmpeg_exe)
+        if not info["too_old"]:
+            return True
+        label  = info["label"]
+        year   = info.get("build_year")
+        year_s = f" (built {year})" if year else ""
+        msg = (
+            f"The configured FFmpeg is too old to run JellyRip transcodes.\n\n"
+            f"Detected version: {label}{year_s}\n"
+            f"Required: FFmpeg 4.0+ (released April 2018)\n\n"
+            f"The '-disposition:s:0' flag and modern GPU-encoder options used\n"
+            f"by JellyRip are not available in this build.\n\n"
+            f"Download a current FFmpeg from:\n"
+            f"  https://ffmpeg.org/download.html\n\n"
+            f"Then update Settings \u2192 Paths \u2192 FFmpeg path.\n\n"
+            f"Continue anyway (encode will likely fail)?"
+        )
+        return messagebox.askyesno("FFmpeg Too Old", msg, parent=self)
+
     def _open_path_in_explorer(self, path):
         normalized = os.path.normpath(str(path))
         if not os.path.exists(normalized):
@@ -3626,6 +3919,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             check_vars  = {}
             base_labels = {}
 
+            # Classify titles for labels + confidence display.
+            classified = classify_titles(disc_titles)
+            cls_by_id = {ct.title_id: ct for ct in classified}
+
             # Compute best candidate directly from score.
             best_title, _best_score = choose_best_title(disc_titles)
             best_id = best_title["id"] if best_title else None
@@ -3638,12 +3935,24 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 iid          = f"title_{t['id']}"
                 pre_selected = (t["id"] == best_id)
                 check_vars[iid]  = pre_selected
-                base_labels[iid] = f"Title {t['id']+1}: {t['name']}"
+
+                # Build label with classification tag
+                ct = cls_by_id.get(t["id"])
+                if ct:
+                    pct = int(ct.confidence * 100)
+                    cls_tag = f" [{ct.label} {pct}%]"
+                else:
+                    cls_tag = ""
+                base_labels[iid] = f"Title {t['id']+1}: {t['name']}{cls_tag}"
                 check_char       = "☑" if pre_selected else "☐"
 
                 tags = ["title"]
                 if t["id"] == best_id:
                     tags.append("main")
+                if ct and ct.label == "DUPLICATE":
+                    tags.append("duplicate")
+                if ct and ct.label == "EXTRA":
+                    tags.append("extra")
 
                 tree.insert(
                     "", "end", iid=iid,
@@ -3668,9 +3977,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                         tags=("track",)
                     )
 
-            tree.tag_configure("title", foreground="#c9d1d9")
-            tree.tag_configure("main",  foreground="#58a6ff")
-            tree.tag_configure("track", foreground="#6e7681")
+            tree.tag_configure("title",     foreground="#c9d1d9")
+            tree.tag_configure("main",      foreground="#58a6ff")
+            tree.tag_configure("duplicate",  foreground="#d29922")
+            tree.tag_configure("extra",      foreground="#8b949e")
+            tree.tag_configure("track",     foreground="#6e7681")
 
             def toggle(event):
                 item = tree.identify_row(event.y)
@@ -4476,6 +4787,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 ffmpeg = auto_locate_ffmpeg()
                 handbrake = auto_locate_handbrake()
                 results = []
+                notes = []
                 if mkv:
                     vars_map["makemkvcon_path"][1].set(mkv)
                     results.append("MakeMKV")
@@ -4488,11 +4800,20 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 if handbrake:
                     vars_map["handbrake_path"][1].set(handbrake)
                     results.append("HandBrakeCLI")
+                elif handbrake_gui_installed():
+                    notes.append(
+                        "HandBrake GUI found but HandBrakeCLI is not installed "
+                        "(optional — download the CLI from handbrake.fr if needed)."
+                    )
+                status_parts = []
                 if results:
-                    _auto_status_var.set(f"  Found: {', '.join(results)}")
-                else:
-                    _auto_status_var.set("  Neither tool found automatically.")
-                win.after(5000, lambda: _auto_status_var.set(""))
+                    status_parts.append(f"Found: {', '.join(results)}")
+                if notes:
+                    status_parts.extend(notes)
+                if not status_parts:
+                    status_parts.append("No tools found automatically.")
+                _auto_status_var.set("  " + "  ".join(status_parts))
+                win.after(8000, lambda: _auto_status_var.set(""))
 
             auto_btn_row = tk.Frame(paths_tab, bg="#0d1117")
             auto_btn_row.pack(fill="x", padx=16, pady=(0, 6))
@@ -4715,6 +5036,33 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 logs_tab,
                 "opt_log_trim_lines", "Trim log down to this many lines:", 200000
             )
+            section(logs_tab, "AI Providers")
+            ai_provider_row = tk.Frame(logs_tab, bg="#0d1117")
+            ai_provider_row.pack(fill="x", padx=16, pady=4)
+            tk.Label(
+                ai_provider_row,
+                text="Configure AI backend connections (API keys, models, local setup):",
+                bg="#0d1117", fg="#c9d1d9",
+                font=("Segoe UI", 10), anchor="w",
+            ).pack(side="left")
+            tk.Button(
+                ai_provider_row, text="Open AI Providers...",
+                bg="#21262d", fg="#58a6ff",
+                font=("Segoe UI", 10), relief="flat",
+                cursor="hand2",
+                command=self._open_ai_providers,
+            ).pack(side="left", padx=(8, 0))
+            toggle_row(logs_tab, "opt_ai_diagnostics_enabled",
+                       "Enable AI diagnostics")
+            toggle_row(logs_tab, "opt_ai_log_to_gui",
+                       "Show AI suggestions in live log")
+            toggle_row(logs_tab, "opt_ai_log_to_file",
+                       "Write AI diagnostics to session log files")
+            number_row(logs_tab, "opt_ai_max_calls_per_session",
+                       "Max AI calls per session:", 20)
+            number_row(logs_tab, "opt_ai_disable_after_failures",
+                       "Disable AI after consecutive failures:", 3)
+
             section(logs_tab, "Debugging")
             toggle_row(logs_tab, "opt_debug_safe_int",
                        "Debug: log bad integer values")
@@ -4976,8 +5324,9 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self.after(100, self.process_queue)
 
     def disable_buttons(self):
-        for btn in self.mode_buttons.values():
-            btn.config(state="disabled")
+        for mode, btn in self.mode_buttons.items():
+            state = "normal" if mode in CONCURRENT_MODE_KEYS else "disabled"
+            btn.config(state=state)
         if hasattr(self, "settings_btn"):
             self.settings_btn.config(state="disabled")
         if hasattr(self, "update_btn"):
@@ -5134,6 +5483,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 _success = True
             except Exception as e:
                 self.controller.log(f"Unhandled error: {e}")
+                # AI diagnostics: record crash and dump ring buffer
+                try:
+                    from shared.ai_diagnostics import diag_exception, get_diagnostics
+                    diag_exception(e, context="GUI task_wrapper top-level crash")
+                    mgr = get_diagnostics()
+                    if mgr:
+                        path = mgr.dump_ring_buffer()
+                        self.controller.log(f"[AI] Crash buffer dumped to: {path}")
+                except Exception:
+                    pass
                 self.after(0, lambda msg=str(e): self._notify_complete(
                     "JellyRip — Error", f"Rip failed: {msg}"
                 ))

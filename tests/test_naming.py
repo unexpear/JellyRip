@@ -2,12 +2,13 @@
 
 import pytest
 from controller.naming import (
-    parse_metadata_id,
     build_movie_folder_name,
     build_tv_folder_name,
     build_fallback_title,
     build_naming_preview_text,
+    normalize_metadata_id,
     normalize_naming_mode,
+    parse_metadata_id,
 )
 
 
@@ -19,14 +20,17 @@ class TestParseMetadataId:
     @pytest.mark.parametrize("raw, expected", [
         # Jellyfin format passthrough
         ("tmdbid-12345", "[tmdbid-12345]"),
+        ("opendbid-12345", "[opendbid-12345]"),
         ("imdbid-tt1234567", "[imdbid-tt1234567]"),
         ("tvdbid-79168", "[tvdbid-79168]"),
         # Shorthand with colon
         ("tmdb:12345", "[tmdbid-12345]"),
+        ("opendb:12345", "[opendbid-12345]"),
         ("imdb:tt1234567", "[imdbid-tt1234567]"),
         ("tvdb:79168", "[tvdbid-79168]"),
         # Shorthand with dash
         ("tmdb-12345", "[tmdbid-12345]"),
+        ("opendb-12345", "[opendbid-12345]"),
         ("imdb-tt1234567", "[imdbid-tt1234567]"),
         ("tvdb-79168", "[tvdbid-79168]"),
         # Bare IMDb ID
@@ -49,6 +53,23 @@ class TestParseMetadataId:
     ])
     def test_parse_metadata_id(self, raw, expected):
         assert parse_metadata_id(raw) == expected
+
+    def test_parse_metadata_id_uses_selected_provider_for_bare_integer(self):
+        assert parse_metadata_id("12345", provider="opendb") == "[opendbid-12345]"
+
+
+class TestNormalizeMetadataId:
+
+    @pytest.mark.parametrize(("raw", "provider", "expected"), [
+        ("12345", None, "tmdb:12345"),
+        ("12345", "opendb", "opendb:12345"),
+        ("TMDB:603", "opendb", "tmdb:603"),
+        ("opendbid-88", None, "opendb:88"),
+        ("tt0133093", "tmdb", "imdb:tt0133093"),
+        ("", "tmdb", ""),
+    ])
+    def test_normalize_metadata_id(self, raw, provider, expected):
+        assert normalize_metadata_id(raw, provider) == expected
 
 
 # ── build_movie_folder_name ──────────────────────────────────────────

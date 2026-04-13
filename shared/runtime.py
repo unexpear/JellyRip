@@ -92,6 +92,7 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_expected_size_ratio_pct": 70,
     "opt_hard_fail_ratio_pct": 40,
     "opt_smart_low_confidence_threshold": 0.45,
+    "opt_smart_auto_pick_threshold": 0.70,
     "opt_move_verify_retries": 5,
     "opt_auto_retry": True,
     "opt_retry_attempts": 3,
@@ -125,6 +126,25 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_makemkv_rip_args": "",
     "opt_update_require_signature": True,
     "opt_update_signer_thumbprint": "",
+    # AI diagnostics
+    "opt_ai_diagnostics_enabled": True,
+    "opt_ai_diagnostics_mode": "suggest",
+    "opt_ai_log_to_gui": True,
+    "opt_ai_log_to_file": True,
+    "opt_ai_capture_raw_process_output": True,
+    "opt_ai_emit_state_json": True,
+    # AI backend routing
+    "opt_ai_mode": "cloud",  # "off" | "cloud" | "local"
+    "opt_ai_cloud_enabled": True,
+    "opt_ai_local_enabled": True,
+    "opt_ai_local_provider": "ollama",
+    "opt_ai_local_model": "qwen2.5:14b-instruct",
+    "opt_ai_cloud_timeout_seconds": 30,
+    "opt_ai_local_timeout_seconds": 20,
+    "opt_ai_max_calls_per_session": 20,
+    "opt_ai_disable_after_failures": 3,
+    # AI provider connection (managed via gui/ai_provider_dialog.py)
+    "opt_ai_active_cloud_provider": "",  # "claude" | "openai" | "gemini" | ""
 }
 
 RIP_ATTEMPT_FLAGS: list[list[str]] = [

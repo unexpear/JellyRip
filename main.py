@@ -4,6 +4,26 @@ import os
 import sys
 from pathlib import Path
 
+
+def _load_env_file() -> None:
+    """Load .env file from app directory if present (for API keys etc.)."""
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.is_file():
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_env_file()
+
 from config import load_config
 
 
@@ -81,22 +101,7 @@ def main() -> None:
     config = load_config()
     # No autofill or mutation allowed
     app = JellyRipperGUI(config)
-    try:
-        app.mainloop()
-    except KeyboardInterrupt:
-        _shutdown_after_interrupt(app)
-        print(
-            "JellyRip received a console interrupt (Ctrl+C/terminal stop) "
-            "and shut down.",
-            file=sys.stderr,
-        )
-        raise SystemExit(130)
-    except Exception as e:
-        import traceback
-
-        print(f"[ERROR] JellyRip GUI crashed: {e}", file=sys.stderr)
-        traceback.print_exc()
-        raise SystemExit(1)
+    app.mainloop()
 
 
 if __name__ == "__main__":

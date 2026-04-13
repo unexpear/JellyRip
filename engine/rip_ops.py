@@ -1,7 +1,8 @@
-﻿"""
+"""
 Rip subprocess lifecycle logic for RipperEngine.
 """
 import os
+import re
 from utils.parsing import parse_cli_args
 from shared.runtime import RIP_ATTEMPT_FLAGS
 
@@ -47,6 +48,28 @@ def rip_all_titles(self, rip_path, on_progress, on_log):
     self._purge_rip_target_files(rip_path, on_log)
     attempts = self._get_rip_attempts()
     before   = self._snapshot_mkv_files(rip_path)
+    self.last_title_file_map = {}
+    self.last_degraded_titles = []
+
+    def _title_id_from_path(path):
+        match = re.search(
+            r"title_t(\d+)", os.path.basename(path), re.IGNORECASE
+        )
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _record_title_file_map(paths):
+        grouped = {}
+        for path in sorted(paths):
+            tid = _title_id_from_path(path)
+            if tid is None:
+                continue
+            grouped.setdefault(tid, []).append(path)
+        self.last_title_file_map = grouped
 
     for attempt_num, flags in enumerate(attempts, start=1):
         if self.abort_event.is_set():
@@ -72,6 +95,7 @@ def rip_all_titles(self, rip_path, on_progress, on_log):
             after = self._snapshot_mkv_files(rip_path)
             new_files = after - before
             if new_files:
+                _record_title_file_map(new_files)
                 return True
             else:
                 on_log(
@@ -79,6 +103,7 @@ def rip_all_titles(self, rip_path, on_progress, on_log):
                     "but no MKV files were produced. "
                     "This may indicate a disc read/write error."
                 )
+                self._log_rip_dir_contents(rip_path, before, on_log)
                 success = False
         self._log_forced_failure_with_outputs(
             rip_path, before, on_log
@@ -167,6 +192,7 @@ def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
                         f"for title {tid+1}, but no MKV file was produced. "
                         f"This may indicate a disc read/write error."
                     )
+                    self._log_rip_dir_contents(rip_path, before, on_log)
                     success = False
             if new_files:
                 on_log(

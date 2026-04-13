@@ -152,6 +152,23 @@ def auto_locate_handbrake() -> str:
     return shutil.which("HandBrakeCLI") or ""
 
 
+def handbrake_gui_installed() -> bool:
+    """Return True when the HandBrake *GUI* is installed but HandBrakeCLI is absent.
+
+    HandBrakeCLI.exe is a separate download from the HandBrake GUI installer
+    (handbrake.fr → Downloads → CLI).  This helper lets callers show a helpful
+    hint rather than a generic "not found" message.
+    """
+    gui_dirs = [
+        r"C:\Program Files\HandBrake",
+        r"C:\Program Files (x86)\HandBrake",
+    ]
+    for d in gui_dirs:
+        if os.path.isfile(os.path.join(d, "HandBrake.exe")):
+            return True
+    return False
+
+
 def _ffmpeg_libavcodec_major(version_output: str) -> int | None:
     match = re.search(r"libavcodec\s+(\d+)\.", version_output)
     if not match:
