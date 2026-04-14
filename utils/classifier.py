@@ -1,22 +1,31 @@
 """Title classification layer built on top of scoring.
 
-Wraps the existing score_title / choose_best_title logic to produce
-human-readable labels, confidence percentages, and reason strings.
-Does NOT rewrite or replace scoring — only interprets its output.
+Wraps the existing score_title logic to produce one shared ranked result
+object for Smart Rip, manual selection, logs, and the setup wizard.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .scoring import Title, score_title, _numeric_field, _sequence_length
 from .parsing import safe_int
+from .scoring import Title, _numeric_field, _sequence_length, score_title
 
 
 class ClassifiedTitle:
-    """A disc title with its score translated into a decision."""
+    """A disc title with its score translated into a shared decision model."""
 
-    __slots__ = ("title", "score", "label", "confidence", "reasons")
+    __slots__ = (
+        "title",
+        "score",
+        "label",
+        "confidence",
+        "reasons",
+        "valid",
+        "rejection_reason",
+        "rank",
+        "recommended",
+    )
 
     def __init__(
         self,
@@ -24,13 +33,21 @@ class ClassifiedTitle:
         score: float,
         label: str,
         confidence: float,
-        reasons: list[str],
+        reasons: list[str] | None = None,
+        valid: bool = True,
+        rejection_reason: str = "",
+        rank: int = 0,
+        recommended: bool = False,
     ) -> None:
         self.title = title
         self.score = score
         self.label = label
         self.confidence = confidence
-        self.reasons = reasons
+        self.reasons = list(reasons or [])
+        self.valid = valid
+        self.rejection_reason = rejection_reason
+        self.rank = rank
+        self.recommended = recommended
 
     @property
     def title_id(self) -> int:
@@ -40,18 +57,38 @@ class ClassifiedTitle:
     def display_name(self) -> str:
         return str(self.title.get("name", f"Title {self.title_id + 1}"))
 
+    @property
+    def status_text(self) -> str:
+        if self.recommended:
+            return "Recommended"
+        if not self.valid:
+            return f"Rejected: {self.rejection_reason or 'invalid title'}"
+        if self.label == "DUPLICATE":
+            return "Rejected: duplicate pattern"
+        if self.label == "EXTRA":
+            return "Valid extra"
+        return "Secondary candidate"
+
+    @property
+    def why_text(self) -> str:
+        if not self.valid and self.rejection_reason:
+            return self.rejection_reason
+        if self.reasons:
+            return " + ".join(self.reasons)
+        return "no strong signals"
+
     def summary(self) -> str:
-        """One-line summary: 'Title 008 — MAIN (92%)'."""
+        """One-line summary: 'Title 008 - MAIN (92%)'."""
         pct = int(self.confidence * 100)
-        return f"{self.display_name} — {self.label} ({pct}%)"
+        return f"{self.display_name} - {self.label} ({pct}%)"
 
     def detail(self) -> str:
         """Multi-line detail for logs."""
         pct = int(self.confidence * 100)
-        reason_str = " + ".join(self.reasons) if self.reasons else "no strong signals"
         return (
-            f"{self.display_name} — {self.label} ({pct}%)\n"
-            f"  Reason: {reason_str}"
+            f"{self.display_name} - {self.label} ({pct}%)\n"
+            f"  Status: {self.status_text}\n"
+            f"  Why: {self.why_text}"
         )
 
     def __repr__(self) -> str:
@@ -114,41 +151,31 @@ def _build_reasons(
 
 
 def _compute_confidence(best_score: float, second_score: float, label: str) -> float:
-    """Derive confidence from the gap between top candidates.
-
-    Confidence reflects how decisive the classification is, not the
-    raw quality score. A large gap means clear winner = high confidence.
-    """
+    """Derive confidence from the gap between top candidates."""
     if label == "EXTRA":
-        # Extras are classified by duration, not gap — high confidence
-        # when clearly short, lower when borderline.
         return 0.95
 
     if label == "DUPLICATE":
-        # Duplicates are identified by matching duration+size, not score gap.
         return 0.89
 
-    # For MAIN and UNKNOWN, confidence comes from separation.
     gap = best_score - second_score
 
     if gap > 0.3:
         return 0.95
-    elif gap > 0.15:
+    if gap > 0.15:
         return 0.85
-    elif gap > 0.05:
+    if gap > 0.05:
         return 0.70
-    else:
-        return 0.60
+    return 0.60
 
 
 def _is_duplicate(
-    title: Title, best_title: Title, duration_tolerance: float = 60.0, size_ratio: float = 0.05
+    title: Title,
+    best_title: Title,
+    duration_tolerance: float = 60.0,
+    size_ratio: float = 0.05,
 ) -> bool:
-    """Check if a title is a likely duplicate of the best title.
-
-    Duplicates have nearly identical duration AND size — this catches
-    playlist obfuscation where studios create multiple identical titles.
-    """
+    """Check if a title is a likely duplicate of the best title."""
     dur_a = _numeric_field(title, "duration_seconds")
     dur_b = _numeric_field(best_title, "duration_seconds")
     size_a = _numeric_field(title, "size_bytes")
@@ -163,82 +190,122 @@ def _is_duplicate(
     return duration_close and size_close
 
 
-def classify_titles(disc_titles: Sequence[Title]) -> list[ClassifiedTitle]:
-    """Classify all titles on a disc into MAIN / DUPLICATE / EXTRA / UNKNOWN.
+def _validate_title(title: Title) -> tuple[bool, str]:
+    duration = _numeric_field(title, "duration_seconds")
+    size = _numeric_field(title, "size_bytes")
 
-    Wraps the existing score_title() without modifying it. Returns a list
-    of ClassifiedTitle objects sorted by score (best first).
+    missing: list[str] = []
+    if duration <= 0:
+        missing.append("duration")
+    if size <= 0:
+        missing.append("size")
+
+    if not missing:
+        return True, ""
+    if len(missing) == 2:
+        return False, "missing duration and size"
+    return False, f"missing {missing[0]}"
+
+
+def _title_key(title: Title) -> tuple[int, int, int]:
+    return (
+        safe_int(title.get("id", -1)),
+        int(_numeric_field(title, "duration_seconds")),
+        int(_numeric_field(title, "size_bytes")),
+    )
+
+
+def classify_titles(disc_titles: Sequence[Title]) -> list[ClassifiedTitle]:
+    """Classify all titles into MAIN / DUPLICATE / EXTRA / UNKNOWN.
+
+    The returned list is sorted by score. The `recommended` flag marks the
+    highest-ranked valid title, while `rank` always reflects score order.
     """
     if not disc_titles:
         return []
 
-    # Score everything using existing logic.
-    scored = [(t, score_title(t, disc_titles)) for t in disc_titles]
-    scored.sort(key=lambda x: x[1], reverse=True)
+    scored = [(title, score_title(title, disc_titles)) for title in disc_titles]
+    scored.sort(key=lambda item: item[1], reverse=True)
 
-    best_title, best_score = scored[0]
-    second_score = scored[1][1] if len(scored) > 1 else 0.0
+    valid_scored = [item for item in scored if _validate_title(item[0])[0]]
+    reference_title, best_score = valid_scored[0] if valid_scored else scored[0]
+    second_score = (
+        valid_scored[1][1]
+        if len(valid_scored) > 1
+        else (scored[1][1] if len(scored) > 1 else 0.0)
+    )
 
     results: list[ClassifiedTitle] = []
+    for rank, (title, score) in enumerate(scored, start=1):
+        valid, rejection_reason = _validate_title(title)
 
-    for title, score in scored:
-        # Assign label.
-        if title is best_title:
+        if title is reference_title:
             label = "MAIN"
-        elif _is_duplicate(title, best_title):
+        elif _is_duplicate(title, reference_title):
             label = "DUPLICATE"
         elif _numeric_field(title, "duration_seconds") < 1200:
             label = "EXTRA"
         else:
             label = "UNKNOWN"
 
-        confidence = _compute_confidence(best_score, second_score, label)
-        reasons = _build_reasons(title, disc_titles, label, best_title)
-
-        results.append(ClassifiedTitle(
-            title=title,
-            score=score,
-            label=label,
-            confidence=confidence,
-            reasons=reasons,
-        ))
+        results.append(
+            ClassifiedTitle(
+                title=title,
+                score=score,
+                label=label,
+                confidence=_compute_confidence(best_score, second_score, label),
+                reasons=_build_reasons(title, disc_titles, label, reference_title),
+                valid=valid,
+                rejection_reason=rejection_reason,
+                rank=rank,
+                recommended=valid and title is reference_title,
+            )
+        )
 
     return results
+
+
+def get_recommended_title(
+    classified: Sequence[ClassifiedTitle],
+) -> ClassifiedTitle | None:
+    for ct in classified:
+        if ct.recommended:
+            return ct
+    return None
 
 
 def classify_and_pick_main(
     disc_titles: Sequence[Title],
 ) -> tuple[ClassifiedTitle | None, list[ClassifiedTitle]]:
-    """Convenience: classify titles and return (main, all_classified).
-
-    Returns (None, []) if no titles. The main title is also included
-    in the full list.
-    """
+    """Convenience wrapper returning (recommended, all_classified)."""
     classified = classify_titles(disc_titles)
     if not classified:
         return None, []
+    return get_recommended_title(classified), classified
 
-    main = classified[0]  # Already sorted best-first
-    return main, classified
+
+def classification_matches_titles(
+    classified: Sequence[ClassifiedTitle],
+    disc_titles: Sequence[Title],
+) -> bool:
+    if len(classified) != len(disc_titles):
+        return False
+    classified_keys = sorted(_title_key(ct.title) for ct in classified)
+    title_keys = sorted(_title_key(title) for title in disc_titles)
+    return classified_keys == title_keys
 
 
 def format_classification_log(classified: list[ClassifiedTitle]) -> list[str]:
-    """Format classification results for the session log.
-
-    Each title gets one line combining label, confidence, reason, and stats:
-      [SCAN] MAIN: Title 8 (92%) — longest duration + largest size [7200s 30.0GB ch24]
-    """
+    """Format classification results for the session log."""
     lines: list[str] = []
     for ct in classified:
         pct = int(ct.confidence * 100)
         dur = int(_numeric_field(ct.title, "duration_seconds"))
         size_gb = _numeric_field(ct.title, "size_bytes") / (1024 ** 3)
         chapters = safe_int(ct.title.get("chapters"))
-        reason_str = " + ".join(ct.reasons) if ct.reasons else "no strong signals"
-
         lines.append(
-            f"[SCAN] {ct.label}: {ct.display_name} ({pct}%) "
-            f"— {reason_str} "
+            f"[SCAN] #{ct.rank} {ct.label}: {ct.display_name} ({pct}%) "
+            f"| {ct.status_text} | {ct.why_text} "
             f"[{dur}s {size_gb:.1f}GB ch{chapters}]"
         )
     return lines
@@ -246,7 +313,9 @@ def format_classification_log(classified: list[ClassifiedTitle]) -> list[str]:
 
 __all__ = [
     "ClassifiedTitle",
+    "classification_matches_titles",
     "classify_and_pick_main",
     "classify_titles",
     "format_classification_log",
+    "get_recommended_title",
 ]

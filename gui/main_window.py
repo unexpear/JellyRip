@@ -12,8 +12,10 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from urllib.parse import quote_plus
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -147,6 +149,7 @@ from transcode.planner import (
 )
 from transcode.encoder_probe import get_ffmpeg_version_info
 from transcode.profiles import ProfileLoader
+from transcode.profiles import describe_profile
 from transcode.queue_builder import (
     build_queue_jobs,
     build_recommendation_job,
@@ -163,8 +166,13 @@ from utils.helpers import (
     is_network_path,
     make_rip_folder_name,
 )
-from utils.scoring import choose_best_title, format_audio_summary
-from utils.classifier import classify_titles, ClassifiedTitle
+from utils.scoring import format_audio_summary
+from utils.classifier import (
+    ClassifiedTitle,
+    classification_matches_titles,
+    classify_titles,
+    get_recommended_title,
+)
 
 from gui.update_ui import check_for_updates, launch_downloaded_update
 
@@ -178,6 +186,16 @@ HANDBRAKE_PRESETS = [
 ]
 TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
 CONCURRENT_MODE_KEYS = frozenset({"scan"})
+_AI_ASSISTANT_SYSTEM_PROMPT = (
+    "You are JellyRip Assistant, a side-panel helper inside the JellyRip desktop app. "
+    "You can answer general questions, explain what is happening in the app, and suggest next steps. "
+    "Every request includes a UI snapshot with the current status, progress, selected drive, "
+    "and recent live log lines so you can reason from what the user sees. "
+    "You do not have direct screen vision beyond that snapshot. "
+    "If the request is about JellyRip, use the UI snapshot first. "
+    "If it is a general question such as when a movie came out, answer it directly. "
+    "Be concise, practical, and honest about uncertainty."
+)
 
 
 def _ffmpeg_source_mode_label(value: str) -> str:
@@ -288,6 +306,17 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self._input_active = False
         self._input_lock   = threading.Lock()
         self._log_widget_lock = threading.Lock()
+        self._text_context_menu: tk.Menu | None = None
+        self._text_context_widget: tk.Misc | None = None
+        self._ai_sidebar_visible = bool(self.cfg.get("opt_ai_sidebar_open", False))
+        self._ai_chat_busy = False
+        self._ai_chat_history: list[dict[str, str]] = []
+        self._ai_sidebar_min_width = 300
+        self._log_panel_min_width = 520
+        self._ai_sidebar_width = max(
+            self._ai_sidebar_min_width,
+            int(self.cfg.get("opt_ai_sidebar_width", 360)),
+        )
 
         configure_safe_int_debug(
             cfg.get("opt_debug_safe_int", False),
@@ -299,6 +328,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         )
 
         self.build_interface()
+        self._install_text_context_menu_bindings()
         self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
         self._taskbar_progress = None
@@ -326,6 +356,840 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             if at_bottom:
                 self.log_text.see("end")
             self.log_text.config(state="disabled")
+
+    def _install_text_context_menu_bindings(self) -> None:
+        for class_name in ("Entry", "TEntry", "TCombobox", "Text"):
+            self.bind_class(class_name, "<Button-3>", self._show_text_context_menu, add="+")
+
+    def _capture_widget_selection_context(self, widget: tk.Misc) -> dict[str, object] | None:
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                if not widget.selection_present():
+                    return None
+                return {
+                    "kind": "entry",
+                    "start": int(widget.index("sel.first")),
+                    "end": int(widget.index("sel.last")),
+                }
+            if isinstance(widget, tk.Text):
+                return {
+                    "kind": "text",
+                    "start": str(widget.index("sel.first")),
+                    "end": str(widget.index("sel.last")),
+                }
+        except Exception:
+            return None
+        return None
+
+    def _is_text_widget_editable(self, widget: tk.Misc) -> bool:
+        try:
+            if isinstance(widget, ttk.Combobox):
+                return not (widget.instate(("readonly",)) or widget.instate(("disabled",)))
+            state = str(widget.cget("state"))
+        except Exception:
+            return True
+        return state not in {"disabled", "readonly"}
+
+    def _get_text_widget_selection(self, widget: tk.Misc) -> str:
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                if widget.selection_present():
+                    return str(widget.selection_get())
+                return ""
+            if isinstance(widget, tk.Text):
+                return str(widget.get("sel.first", "sel.last"))
+        except Exception:
+            return ""
+        return ""
+
+    def _text_widget_has_content(self, widget: tk.Misc) -> bool:
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                return bool(str(widget.get()))
+            if isinstance(widget, tk.Text):
+                return bool(str(widget.get("1.0", "end-1c")).strip())
+        except Exception:
+            return False
+        return False
+
+    def _copy_from_widget(self, widget: tk.Misc) -> None:
+        selected = self._get_text_widget_selection(widget)
+        if not selected:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(selected)
+
+    def _cut_from_widget(self, widget: tk.Misc) -> None:
+        if not self._is_text_widget_editable(widget):
+            return
+        self._copy_from_widget(widget)
+        self._delete_widget_selection(widget)
+
+    def _paste_into_widget(self, widget: tk.Misc) -> None:
+        if not self._is_text_widget_editable(widget):
+            return
+        try:
+            text = str(self.clipboard_get())
+        except Exception:
+            return
+        self._delete_widget_selection(widget)
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                widget.insert("insert", text)
+            elif isinstance(widget, tk.Text):
+                widget.insert("insert", text)
+        except Exception:
+            pass
+
+    def _delete_widget_selection(self, widget: tk.Misc) -> None:
+        if not self._is_text_widget_editable(widget):
+            return
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                if widget.selection_present():
+                    first = int(widget.index("sel.first"))
+                    last = int(widget.index("sel.last"))
+                    widget.delete(first, last)
+            elif isinstance(widget, tk.Text):
+                widget.delete("sel.first", "sel.last")
+        except Exception:
+            pass
+
+    def _select_all_in_widget(self, widget: tk.Misc) -> None:
+        try:
+            widget.focus_set()
+            if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+                widget.selection_range(0, "end")
+                widget.icursor("end")
+            elif isinstance(widget, tk.Text):
+                widget.tag_add("sel", "1.0", "end-1c")
+                widget.mark_set("insert", "end-1c")
+                widget.see("insert")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _trim_context_label(text: str, limit: int = 40) -> str:
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3].rstrip() + "..."
+
+    def _persist_config(self) -> None:
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _update_ai_sidebar_toggle_ui(self) -> None:
+        if not hasattr(self, "ai_chat_toggle_btn"):
+            return
+        if self._ai_sidebar_visible:
+            self.ai_chat_toggle_btn.configure(
+                bg="#30363d",
+                fg="#e6edf3",
+                relief="sunken",
+            )
+        else:
+            self.ai_chat_toggle_btn.configure(
+                bg="#21262d",
+                fg="#8b949e",
+                relief="flat",
+            )
+
+    def _remember_ai_sidebar_width(self, width: int | None = None) -> None:
+        raw_width = width
+        if raw_width is None and hasattr(self, "ai_sidebar_frame"):
+            try:
+                raw_width = int(self.ai_sidebar_frame.winfo_width())
+            except Exception:
+                raw_width = None
+        if raw_width is None:
+            return
+        new_width = max(self._ai_sidebar_min_width, int(raw_width))
+        self._ai_sidebar_width = new_width
+        self.cfg["opt_ai_sidebar_width"] = new_width
+
+    def _on_ai_sidebar_configure(self, event) -> None:
+        if not self._ai_sidebar_visible:
+            return
+        if int(getattr(event, "width", 0)) <= 1:
+            return
+        self._remember_ai_sidebar_width(int(event.width))
+
+    def _apply_ai_sidebar_width(self) -> None:
+        if not hasattr(self, "content_pane") or not hasattr(self, "ai_sidebar_frame"):
+            return
+        if str(self.ai_sidebar_frame) not in self.content_pane.panes():
+            return
+        pane_width = int(self.content_pane.winfo_width())
+        if pane_width <= 1:
+            self.after(50, self._apply_ai_sidebar_width)
+            return
+        max_sidebar = max(
+            self._ai_sidebar_min_width,
+            pane_width - self._log_panel_min_width,
+        )
+        sidebar_width = min(self._ai_sidebar_width, max_sidebar)
+        sidebar_width = max(self._ai_sidebar_min_width, sidebar_width)
+        sash_x = max(self._log_panel_min_width, pane_width - sidebar_width)
+        try:
+            self.content_pane.sash_place(0, sash_x, 0)
+        except Exception:
+            pass
+
+    def _on_content_pane_configure(self, _event) -> None:
+        if not self._ai_sidebar_visible:
+            return
+        self.after_idle(self._apply_ai_sidebar_width)
+
+    def _show_ai_sidebar(self) -> None:
+        if not hasattr(self, "ai_sidebar_frame") or not hasattr(self, "content_pane"):
+            return
+        if str(self.ai_sidebar_frame) not in self.content_pane.panes():
+            self.content_pane.add(
+                self.ai_sidebar_frame,
+                minsize=self._ai_sidebar_min_width,
+            )
+        self._ai_sidebar_visible = True
+        self.cfg["opt_ai_sidebar_open"] = True
+        self.after_idle(self._apply_ai_sidebar_width)
+        self._persist_config()
+        self._update_ai_sidebar_toggle_ui()
+        if hasattr(self, "ai_chat_input"):
+            self.after(0, self.ai_chat_input.focus_set)
+
+    def _hide_ai_sidebar(self) -> None:
+        self._remember_ai_sidebar_width()
+        if hasattr(self, "content_pane") and hasattr(self, "ai_sidebar_frame"):
+            if str(self.ai_sidebar_frame) in self.content_pane.panes():
+                try:
+                    self.content_pane.forget(self.ai_sidebar_frame)
+                except Exception:
+                    pass
+        self._ai_sidebar_visible = False
+        self.cfg["opt_ai_sidebar_open"] = False
+        self._persist_config()
+        self._update_ai_sidebar_toggle_ui()
+
+    def _toggle_ai_sidebar(self) -> None:
+        if self._ai_sidebar_visible:
+            self._hide_ai_sidebar()
+        else:
+            self._show_ai_sidebar()
+
+    def _collect_live_log_tail(
+        self,
+        max_lines: int = 60,
+        max_chars: int = 6000,
+    ) -> str:
+        if not hasattr(self, "log_text"):
+            return ""
+        try:
+            content = self.log_text.get("1.0", "end-1c")
+        except Exception:
+            return ""
+        if not content:
+            return ""
+        lines = content.splitlines()
+        tail = "\n".join(lines[-max_lines:])
+        if len(tail) > max_chars:
+            tail = tail[-max_chars:]
+        return tail
+
+    def _build_ai_sidebar_payload(self, prompt: str) -> str:
+        status = self.status_var.get() if hasattr(self, "status_var") else ""
+        progress = float(self.progress_var.get()) if hasattr(self, "progress_var") else 0.0
+        drive = self.drive_var.get() if hasattr(self, "drive_var") else ""
+        ai_mode = self._ai_mode_var.get() if hasattr(self, "_ai_mode_var") else "off"
+        abort_state = (
+            str(self.abort_btn.cget("state")) if hasattr(self, "abort_btn") else "disabled"
+        )
+        payload = {
+            "request": str(prompt or "").strip(),
+            "conversation_history": self._ai_chat_history[-8:],
+            "ui_snapshot": {
+                "window_title": self.title(),
+                "status": status,
+                "progress_percent": round(progress, 1),
+                "selected_drive": drive,
+                "ai_mode": ai_mode,
+                "abort_button_state": abort_state,
+                "assistant_panel_open": bool(self._ai_sidebar_visible),
+                "live_log_tail": self._collect_live_log_tail(),
+            },
+        }
+        return json.dumps(payload, indent=2)
+
+    def _set_ai_chat_busy(self, busy: bool, status_text: str | None = None) -> None:
+        self._ai_chat_busy = busy
+        if hasattr(self, "ai_chat_send_btn"):
+            self.ai_chat_send_btn.configure(state=("disabled" if busy else "normal"))
+        if hasattr(self, "ai_chat_suggest_btn"):
+            self.ai_chat_suggest_btn.configure(state=("disabled" if busy else "normal"))
+        if hasattr(self, "ai_chat_status_var"):
+            if status_text:
+                self.ai_chat_status_var.set(status_text)
+            else:
+                self.ai_chat_status_var.set("Thinking..." if busy else "Ready")
+
+    def _append_ai_chat_message(
+        self,
+        role: str,
+        text: str,
+        backend_tag: str = "",
+    ) -> None:
+        if not hasattr(self, "ai_chat_transcript"):
+            return
+        message = str(text or "").strip() or "(empty)"
+        title_map = {
+            "user": ("You", "ai_chat_user"),
+            "assistant": ("Assistant", "ai_chat_assistant"),
+            "system": ("System", "ai_chat_system"),
+        }
+        label, tag = title_map.get(role, ("Assistant", "ai_chat_assistant"))
+        if backend_tag:
+            label = f"{label} ({backend_tag})"
+        stamp = datetime.now().strftime("%H:%M:%S")
+        transcript = self.ai_chat_transcript
+        transcript.configure(state="normal")
+        if transcript.index("end-1c") != "1.0":
+            transcript.insert("end", "\n")
+        transcript.insert("end", f"{label}  {stamp}\n", tag)
+        transcript.insert("end", f"{message}\n", "ai_chat_body")
+        transcript.configure(state="disabled")
+        transcript.see("end")
+
+    def _reset_ai_chat(self) -> None:
+        self._ai_chat_history.clear()
+        if not hasattr(self, "ai_chat_transcript"):
+            return
+        self.ai_chat_transcript.configure(state="normal")
+        self.ai_chat_transcript.delete("1.0", "end")
+        self.ai_chat_transcript.configure(state="disabled")
+        self._append_ai_chat_message(
+            "system",
+            "Ask about the current rip or any general question here. "
+            "Automatic rip suggestions still show up in the live log.",
+        )
+        self._set_ai_chat_busy(False, "Ready")
+
+    def _handle_ai_chat_return(self, event) -> str | None:
+        if event.state & 0x1:
+            return None
+        self._submit_ai_chat()
+        return "break"
+
+    def _request_ai_response_async(
+        self,
+        title: str,
+        user_text: str,
+        system_prompt: str,
+        max_tokens: int,
+        on_success,
+        on_error,
+        on_status=None,
+        log_request: bool = True,
+        log_failures: bool = True,
+    ) -> None:
+        text = str(user_text or "").strip()
+        if not text:
+            self.after(0, lambda: on_error("No request text provided."))
+            return
+
+        providers = self._resolve_ai_text_providers()
+        if not providers:
+            self.after(
+                0,
+                lambda: on_error(
+                    "AI is off or no configured provider is available. "
+                    "Use the AI mode toggle or Provider Setup first."
+                ),
+            )
+            return
+
+        if log_request:
+            self.controller.log(f"[AI] {title} requested.")
+
+        def worker() -> None:
+            last_error = "No provider available."
+            for tag, provider, timeout in providers:
+                if provider is None:
+                    continue
+                try:
+                    if on_status is not None:
+                        self.after(0, lambda current=tag: on_status(current))
+                    result = provider.diagnose(
+                        text,
+                        system_prompt,
+                        max_tokens=max_tokens,
+                        timeout=float(timeout),
+                    ).strip()
+                    if log_request:
+                        self.controller.log(f"[AI:{tag}] {title} complete.")
+                    self.after(
+                        0,
+                        lambda response=result, backend=tag: on_success(response, backend),
+                    )
+                    return
+                except Exception as e:
+                    last_error = f"{tag}: {e}"
+                    if log_failures:
+                        self.controller.log(f"[AI:{tag}] {title} failed: {e}")
+            self.after(0, lambda err=last_error: on_error(err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_ai_chat_request(self, prompt: str, display_text: str | None = None) -> None:
+        request_text = str(prompt or "").strip()
+        if not request_text or self._ai_chat_busy:
+            return
+
+        shown_text = str(display_text or request_text).strip()
+        self._ai_chat_history.append({"role": "user", "content": shown_text})
+        self._append_ai_chat_message("user", shown_text)
+        self._set_ai_chat_busy(True, "Thinking...")
+
+        payload = self._build_ai_sidebar_payload(request_text)
+
+        def _on_success(result_text: str, backend_tag: str) -> None:
+            answer = result_text.strip() or "(no response)"
+            self._ai_chat_history.append({"role": "assistant", "content": answer})
+            self._append_ai_chat_message("assistant", answer, backend_tag=backend_tag)
+            self._set_ai_chat_busy(False, f"Ready via {backend_tag.lower()}")
+            if self._ai_sidebar_visible and hasattr(self, "ai_chat_input"):
+                self.ai_chat_input.focus_set()
+
+        def _on_error(message: str) -> None:
+            self._append_ai_chat_message(
+                "system",
+                f"Could not get an answer: {message}",
+            )
+            self._set_ai_chat_busy(False, "Unavailable")
+            if self._ai_sidebar_visible and hasattr(self, "ai_chat_input"):
+                self.ai_chat_input.focus_set()
+
+        self._request_ai_response_async(
+            title="AI Assistant",
+            user_text=payload,
+            system_prompt=_AI_ASSISTANT_SYSTEM_PROMPT,
+            max_tokens=900,
+            on_success=_on_success,
+            on_error=_on_error,
+            on_status=lambda current: self._set_ai_chat_busy(
+                True, f"Thinking with {current.lower()}..."
+            ),
+            log_request=False,
+            log_failures=False,
+        )
+
+    def _submit_ai_chat(self) -> None:
+        if not hasattr(self, "ai_chat_input"):
+            return
+        prompt = self.ai_chat_input.get("1.0", "end-1c").strip()
+        if not prompt:
+            self.ai_chat_input.focus_set()
+            return
+        self.ai_chat_input.delete("1.0", "end")
+        self._start_ai_chat_request(prompt)
+
+    def _request_ai_sidebar_suggestion(self) -> None:
+        self._start_ai_chat_request(
+            (
+                "Look at the current UI snapshot and recent live rip log. "
+                "Suggest the most useful next steps or checks right now. "
+                "Call out anything that looks healthy, anything that looks risky, "
+                "and what the user should do next."
+            ),
+            "Suggest what to do next from the current UI and live log.",
+        )
+
+    def _resolve_ai_text_providers(self) -> list[tuple[str, object, float]]:
+        mode = str(self.cfg.get("opt_ai_mode", "cloud"))
+        if mode == "off":
+            return []
+        try:
+            from shared.ai.provider_registry import (
+                resolve_active_cloud_provider,
+                resolve_local_provider,
+            )
+        except Exception:
+            return []
+
+        cloud = None
+        local = None
+
+        try:
+            if bool(self.cfg.get("opt_ai_cloud_enabled", True)):
+                cloud = resolve_active_cloud_provider()
+                if cloud and not cloud.is_available():
+                    cloud = None
+        except Exception:
+            cloud = None
+
+        try:
+            if bool(self.cfg.get("opt_ai_local_enabled", True)):
+                local = resolve_local_provider()
+                if local and not local.is_available():
+                    local = None
+        except Exception:
+            local = None
+
+        cloud_timeout = float(self.cfg.get("opt_ai_cloud_timeout_seconds", 30))
+        local_timeout = float(self.cfg.get("opt_ai_local_timeout_seconds", 20))
+
+        if mode == "local":
+            return [("LOCAL", local, local_timeout)] if local else []
+
+        providers: list[tuple[str, object, float]] = []
+        if cloud:
+            providers.append(("CLOUD", cloud, cloud_timeout))
+        if local:
+            providers.append(("LOCAL", local, local_timeout))
+        return providers
+
+    def _run_ai_text_request(
+        self,
+        title: str,
+        user_text: str,
+        system_prompt: str,
+        max_tokens: int = 700,
+        replace_target: tuple[tk.Misc, dict[str, object]] | None = None,
+    ) -> None:
+        text = str(user_text or "").strip()
+        if not text:
+            self.show_info("AI", "Select some text first.")
+            return
+
+        providers = self._resolve_ai_text_providers()
+        if not providers:
+            self.show_info(
+                "AI Unavailable",
+                "AI is off or no configured provider is available.\n\n"
+                "Use the AI mode toggle or Provider Setup first.",
+            )
+            return
+
+        progress = tk.Toplevel(self)
+        progress.title(title)
+        progress.configure(bg="#161b22")
+        progress.resizable(False, False)
+        progress.transient(self)
+        progress.grab_set()
+        progress.lift()
+        progress.focus_force()
+
+        tk.Label(
+            progress,
+            text=title,
+            bg="#161b22",
+            fg="#58a6ff",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(padx=20, pady=(16, 6))
+        status_var = tk.StringVar(value="Contacting AI...")
+        tk.Label(
+            progress,
+            textvariable=status_var,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            wraplength=420,
+            justify="left",
+        ).pack(padx=20, pady=(0, 14))
+
+        self.controller.log(f"[AI] {title} requested.")
+
+        def _close_progress() -> None:
+            try:
+                progress.grab_release()
+            except Exception:
+                pass
+            try:
+                progress.destroy()
+            except Exception:
+                pass
+
+        def _show_result(result_text: str, backend_tag: str) -> None:
+            _close_progress()
+            self._show_ai_result_dialog(
+                title=title,
+                result_text=result_text,
+                backend_tag=backend_tag,
+                replace_target=replace_target,
+            )
+
+        def _show_error(message: str) -> None:
+            _close_progress()
+            self.show_error("AI Request Failed", message)
+        self._request_ai_response_async(
+            title=title,
+            user_text=text,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            on_success=_show_result,
+            on_error=_show_error,
+            on_status=lambda current: status_var.set(f"Contacting {current} backend..."),
+            log_request=True,
+            log_failures=True,
+        )
+
+    def _replace_widget_text(
+        self,
+        widget: tk.Misc,
+        selection_ctx: dict[str, object],
+        new_text: str,
+    ) -> None:
+        if not self._is_text_widget_editable(widget):
+            return
+        try:
+            widget.focus_set()
+            kind = selection_ctx.get("kind")
+            if kind == "entry":
+                start = int(selection_ctx["start"])
+                end = int(selection_ctx["end"])
+                widget.delete(start, end)
+                widget.insert(start, new_text)
+            elif kind == "text":
+                start = str(selection_ctx["start"])
+                end = str(selection_ctx["end"])
+                widget.delete(start, end)
+                widget.insert(start, new_text)
+        except Exception as e:
+            self.show_error("Replace Failed", str(e))
+
+    def _show_ai_result_dialog(
+        self,
+        title: str,
+        result_text: str,
+        backend_tag: str,
+        replace_target: tuple[tk.Misc, dict[str, object]] | None = None,
+    ) -> None:
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg="#0d1117")
+        win.geometry("760x520")
+        win.transient(self)
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+
+        tk.Label(
+            win,
+            text=f"{title} ({backend_tag})",
+            bg="#0d1117",
+            fg="#58a6ff",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(padx=16, pady=(14, 6), anchor="w")
+
+        body = scrolledtext.ScrolledText(
+            win,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Consolas", 10),
+            insertbackground="white",
+            wrap="word",
+        )
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        body.insert("1.0", result_text)
+        body.config(state="disabled")
+
+        btn_row = tk.Frame(win, bg="#0d1117")
+        btn_row.pack(fill="x", padx=16, pady=(0, 14))
+
+        tk.Button(
+            btn_row,
+            text="Copy",
+            command=lambda: (self.clipboard_clear(), self.clipboard_append(result_text)),
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="left", padx=(0, 6))
+
+        if replace_target is not None:
+            widget, selection_ctx = replace_target
+            tk.Button(
+                btn_row,
+                text="Replace Selection",
+                command=lambda w=widget, ctx=selection_ctx: (
+                    self._replace_widget_text(w, ctx, result_text),
+                    win.destroy(),
+                ),
+                bg="#238636",
+                fg="white",
+                font=("Segoe UI", 10, "bold"),
+                relief="flat",
+            ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            btn_row,
+            text="Close",
+            command=win.destroy,
+            bg="#30363d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            relief="flat",
+        ).pack(side="right")
+
+    def _run_ai_text_action(
+        self,
+        widget: tk.Misc,
+        action: str,
+    ) -> None:
+        selection = self._get_text_widget_selection(widget)
+        if not selection:
+            self.show_info("AI", "Select some text first.")
+            return
+
+        replace_target = None
+        selection_ctx = self._capture_widget_selection_context(widget)
+        if selection_ctx and self._is_text_widget_editable(widget) and action in {"fix", "rewrite"}:
+            replace_target = (widget, selection_ctx)
+
+        if action == "fix":
+            self._run_ai_text_request(
+                title="AI Spell Check",
+                user_text=selection,
+                system_prompt=(
+                    "You are an editing assistant inside JellyRip. "
+                    "Correct spelling, grammar, punctuation, and obvious typos "
+                    "while preserving meaning, tone, names, and formatting. "
+                    "Return only the corrected text."
+                ),
+                max_tokens=700,
+                replace_target=replace_target,
+            )
+            return
+
+        if action == "rewrite":
+            self._run_ai_text_request(
+                title="AI Rewrite",
+                user_text=selection,
+                system_prompt=(
+                    "You are a concise writing assistant inside JellyRip. "
+                    "Rewrite the text to be clearer and smoother while preserving "
+                    "the meaning and tone. Return only the rewritten text."
+                ),
+                max_tokens=700,
+                replace_target=replace_target,
+            )
+            return
+
+        if action == "explain":
+            self._run_ai_text_request(
+                title="AI Explain",
+                user_text=selection,
+                system_prompt=(
+                    "You are a helpful assistant inside JellyRip. "
+                    "Explain the selected text in plain English. "
+                    "Be concise and useful."
+                ),
+                max_tokens=600,
+            )
+            return
+
+        if action == "search":
+            self._run_ai_text_request(
+                title="AI Search",
+                user_text=selection,
+                system_prompt=(
+                    "You are a search-style assistant inside JellyRip. "
+                    "Given the selected text, answer the likely intent directly. "
+                    "If it is a phrase, explain it. If it is a question, answer it. "
+                    "If it names a concept, summarize the key facts. "
+                    "Be concise and practical."
+                ),
+                max_tokens=700,
+            )
+            return
+
+    def _show_text_context_menu(self, event) -> str:
+        widget = event.widget
+        if not isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox, tk.Text)):
+            return ""
+
+        self._text_context_widget = widget
+        try:
+            widget.focus_set()
+        except Exception:
+            pass
+
+        if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+            try:
+                widget.icursor(f"@{event.x}")
+            except Exception:
+                pass
+        elif isinstance(widget, tk.Text):
+            try:
+                widget.mark_set("insert", f"@{event.x},{event.y}")
+            except Exception:
+                pass
+
+        selection = self._get_text_widget_selection(widget)
+        can_copy = bool(selection)
+        can_edit = self._is_text_widget_editable(widget)
+        has_content = self._text_widget_has_content(widget)
+
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="Cut",
+            command=lambda w=widget: self._cut_from_widget(w),
+            state=("normal" if can_copy and can_edit else "disabled"),
+        )
+        menu.add_command(
+            label="Copy",
+            command=lambda w=widget: self._copy_from_widget(w),
+            state=("normal" if can_copy else "disabled"),
+        )
+        menu.add_command(
+            label="Paste",
+            command=lambda w=widget: self._paste_into_widget(w),
+            state=("normal" if can_edit else "disabled"),
+        )
+        menu.add_command(
+            label="Delete",
+            command=lambda w=widget: self._delete_widget_selection(w),
+            state=("normal" if can_copy and can_edit else "disabled"),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Select All",
+            command=lambda w=widget: self._select_all_in_widget(w),
+            state=("normal" if has_content else "disabled"),
+        )
+        if can_copy:
+            label_text = self._trim_context_label(selection)
+            menu.add_separator()
+            menu.add_command(
+                label=f'Search Google for "{label_text}"',
+                command=lambda text=selection: webbrowser.open_new_tab(
+                    f"https://www.google.com/search?q={quote_plus(text)}"
+                ),
+            )
+            menu.add_command(
+                label=f'Search with AI for "{label_text}"',
+                command=lambda w=widget: self._run_ai_text_action(w, "search"),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Fix Spelling & Grammar with AI",
+                command=lambda w=widget: self._run_ai_text_action(w, "fix"),
+            )
+            menu.add_command(
+                label="Rewrite More Clearly with AI",
+                command=lambda w=widget: self._run_ai_text_action(w, "rewrite"),
+            )
+            menu.add_command(
+                label="Explain Selection with AI",
+                command=lambda w=widget: self._run_ai_text_action(w, "explain"),
+            )
+
+        self._text_context_menu = menu
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def build_interface(self):
         BG = "#0d1117"
@@ -431,6 +1295,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10), relief="flat"
         )
         self.settings_btn.pack(side="right", padx=4)
+        self.ai_chat_toggle_btn = tk.Button(
+            util_frame,
+            text="Assistant",
+            command=self._toggle_ai_sidebar,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 10),
+            relief="flat",
+        )
+        self.ai_chat_toggle_btn.pack(side="right", padx=4)
 
         # --- AI Mode Control (left side of util bar) ---
         ai_frame = tk.Frame(util_frame, bg=BG)
@@ -493,22 +1367,182 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         )
         self.abort_btn.pack(side="right")
 
+        self.content_frame = tk.Frame(self, bg=BG)
+        self.content_frame.pack(fill="both", expand=True, padx=20, pady=(0, 0))
+
+        self.content_pane = tk.PanedWindow(
+            self.content_frame,
+            orient="horizontal",
+            bg=BG,
+            bd=0,
+            sashwidth=8,
+            sashrelief="raised",
+            relief="flat",
+            opaqueresize=True,
+            showhandle=False,
+        )
+        self.content_pane.pack(fill="both", expand=True)
+        self.content_pane.bind("<Configure>", self._on_content_pane_configure)
+
+        self.log_panel = tk.Frame(self.content_pane, bg=BG)
+        self.content_pane.add(self.log_panel, minsize=self._log_panel_min_width)
+
         tk.Label(
-            self, text="Live Log",
+            self.log_panel, text="Live Log",
             bg=BG, fg="#8b949e",
             font=("Segoe UI", 10)
-        ).pack(anchor="w", padx=20)
+        ).pack(anchor="w")
 
         self.log_text = scrolledtext.ScrolledText(
-            self, height=18, bg="#161b22", fg="#c9d1d9",
+            self.log_panel, height=18, bg="#161b22", fg="#c9d1d9",
             font=("Consolas", 10), insertbackground="white",
             state="disabled"
         )
-        self.log_text.pack(
-            fill="both", expand=True, padx=20, pady=(0, 0)
-        )
+        self.log_text.pack(fill="both", expand=True, pady=(0, 0))
         self.log_text.tag_configure("prompt", foreground="#f0e68c")
         self.log_text.tag_configure("answer", foreground="#90ee90")
+
+        self.ai_sidebar_frame = tk.Frame(
+            self.content_pane,
+            bg="#11161d",
+            width=self._ai_sidebar_width,
+            highlightbackground="#30363d",
+            highlightthickness=1,
+        )
+        self.ai_sidebar_frame.pack_propagate(False)
+        self.ai_sidebar_frame.bind("<Configure>", self._on_ai_sidebar_configure)
+
+        ai_header = tk.Frame(self.ai_sidebar_frame, bg="#11161d")
+        ai_header.pack(fill="x", padx=12, pady=(12, 6))
+
+        tk.Label(
+            ai_header,
+            text="Assistant",
+            bg="#11161d",
+            fg="#58a6ff",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side="left")
+
+        self.ai_chat_status_var = tk.StringVar(value="Ready")
+        tk.Label(
+            ai_header,
+            textvariable=self.ai_chat_status_var,
+            bg="#11161d",
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+        ).pack(side="left", padx=(8, 0))
+
+        tk.Button(
+            ai_header,
+            text="X",
+            command=self._hide_ai_sidebar,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+            relief="flat",
+            width=3,
+        ).pack(side="right")
+
+        tk.Label(
+            self.ai_sidebar_frame,
+            text=(
+                "Ask about this rip or a general question here. "
+                "Automatic rip suggestions still land in the live log."
+            ),
+            bg="#11161d",
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+            justify="left",
+            wraplength=320,
+        ).pack(fill="x", padx=12, pady=(0, 8))
+
+        self.ai_chat_transcript = scrolledtext.ScrolledText(
+            self.ai_sidebar_frame,
+            height=12,
+            bg="#161b22",
+            fg="#c9d1d9",
+            font=("Consolas", 10),
+            insertbackground="white",
+            wrap="word",
+            state="disabled",
+        )
+        self.ai_chat_transcript.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        self.ai_chat_transcript.tag_configure("ai_chat_user", foreground="#58a6ff")
+        self.ai_chat_transcript.tag_configure("ai_chat_assistant", foreground="#3fb950")
+        self.ai_chat_transcript.tag_configure("ai_chat_system", foreground="#d29922")
+        self.ai_chat_transcript.tag_configure("ai_chat_body", foreground="#c9d1d9")
+
+        ai_input_section = tk.Frame(self.ai_sidebar_frame, bg="#11161d")
+
+        ai_action_row = tk.Frame(ai_input_section, bg="#11161d")
+        ai_action_row.pack(fill="x", pady=(0, 8))
+
+        self.ai_chat_suggest_btn = tk.Button(
+            ai_action_row,
+            text="Suggest Next Step",
+            command=self._request_ai_sidebar_suggestion,
+            bg="#21262d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 9),
+            relief="flat",
+        )
+        self.ai_chat_suggest_btn.pack(side="left")
+
+        tk.Button(
+            ai_action_row,
+            text="Clear",
+            command=self._reset_ai_chat,
+            bg="#21262d",
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+            relief="flat",
+        ).pack(side="right")
+
+        self.ai_chat_input = tk.Text(
+            ai_input_section,
+            height=4,
+            bg="#0d1117",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            insertbackground="white",
+            relief="flat",
+            wrap="word",
+        )
+        self.ai_chat_input.pack(fill="x", pady=(0, 8))
+        self.ai_chat_input.bind("<Return>", self._handle_ai_chat_return)
+
+        ai_send_row = tk.Frame(ai_input_section, bg="#11161d")
+        ai_send_row.pack(fill="x")
+
+        tk.Label(
+            ai_send_row,
+            text="Enter sends. Shift+Enter adds a new line.",
+            bg="#11161d",
+            fg="#8b949e",
+            font=("Segoe UI", 8),
+        ).pack(side="left")
+
+        self.ai_chat_send_btn = tk.Button(
+            ai_send_row,
+            text="Send",
+            command=self._submit_ai_chat,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            width=10,
+        )
+        self.ai_chat_send_btn.pack(side="right")
+        ai_input_section.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+
+        if self._ai_sidebar_visible:
+            self.content_pane.add(
+                self.ai_sidebar_frame,
+                minsize=self._ai_sidebar_min_width,
+            )
+            self.after_idle(self._apply_ai_sidebar_width)
+        self._reset_ai_chat()
+        self._update_ai_sidebar_toggle_ui()
 
         self.input_bar = tk.Frame(self, bg="#21262d")
         self.input_bar.pack(fill="x", padx=20, pady=4)
@@ -2418,6 +3452,37 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             else:
                 status_var.set("Choose an output folder to build the queue preview.")
 
+        def _refresh_option_help(*_args):
+            current_backend = _selected_backend_key()
+            if current_backend == "ffmpeg":
+                selected_profile = option_var.get().strip() or default_profile_name
+                if selected_profile not in profile_names:
+                    selected_profile = default_profile_name
+                try:
+                    profile_summary = describe_profile(
+                        profile_loader.get_profile(selected_profile)
+                    )
+                except Exception:
+                    profile_summary = "Profile details unavailable."
+                current_source_mode = normalize_ffmpeg_source_mode(
+                    self.cfg.get(
+                        "opt_ffmpeg_source_mode",
+                        FFMPEG_SOURCE_MODE_SAFE_COPY,
+                    )
+                )
+                source_mode_help_var.set(
+                    f"{profile_summary}\n"
+                    f"Source handling: {_ffmpeg_source_mode_label(current_source_mode)}. "
+                    f"{describe_ffmpeg_source_mode(current_source_mode)} "
+                    "Change this in Settings > Advanced."
+                )
+            else:
+                selected_preset = option_var.get().strip() or HANDBRAKE_PRESETS[0]
+                source_mode_help_var.set(
+                    f"Preset: {selected_preset}. HandBrake preset controls the encode rules for video, audio, subtitles, and output.\n"
+                    "Source handling: HandBrake reads the selected source file directly and writes a separate output file."
+                )
+
         def _refresh_backend_state(*_args):
             current_backend = _selected_backend_key()
             backend_label = _transcode_backend_label(current_backend)
@@ -2443,28 +3508,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 selected_value = option_var.get().strip()
                 if selected_value not in profile_names:
                     option_var.set(default_profile_name)
-                current_source_mode = normalize_ffmpeg_source_mode(
-                    self.cfg.get("opt_ffmpeg_source_mode", FFMPEG_SOURCE_MODE_SAFE_COPY)
-                )
-                source_mode_help_var.set(
-                    f"FFmpeg source handling: {_ffmpeg_source_mode_label(current_source_mode)}. "
-                    f"{describe_ffmpeg_source_mode(current_source_mode)} "
-                    "Change this in Settings > Advanced."
-                )
             else:
                 option_label_var.set("HandBrake preset:")
                 option_menu.configure(values=HANDBRAKE_PRESETS)
                 selected_value = option_var.get().strip()
                 if selected_value not in HANDBRAKE_PRESETS:
                     option_var.set(HANDBRAKE_PRESETS[0])
-                source_mode_help_var.set(
-                    "HandBrake reads the selected source file directly and writes a separate output file."
-                )
 
             start_button_var.set(f"Start {backend_label} Queue")
+            _refresh_option_help()
 
         output_root_var.trace_add("write", _refresh_preview)
         backend_var.trace_add("write", _refresh_backend_state)
+        option_var.trace_add("write", _refresh_option_help)
         _refresh_backend_state()
         _refresh_preview()
 
@@ -3852,18 +4908,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
         def _show():
             win = tk.Toplevel(self)
-            win.title("Disc Contents — Select Titles to Rip")
+            win.title("Disc Contents - Select Titles to Rip")
             win.configure(bg="#0d1117")
             win.grab_set()
             win.lift()
             win.focus_force()
-            win.geometry("1060x660")
+            win.geometry("1180x700")
 
             tk.Label(
                 win,
                 text="Select titles to rip. "
-                     "Click anywhere on a row to toggle. "
-                     "Best title candidate highlighted in blue.",
+                     "Click anywhere on a title row or press Space to toggle. "
+                     "Right-click previews when available. "
+                     "Recommended title highlighted in blue.",
                 bg="#0d1117", fg="#8b949e",
                 font=("Segoe UI", 10)
             ).pack(pady=(10, 4), padx=15)
@@ -3893,20 +4950,23 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             tree = ttk.Treeview(
                 tree_frame, style="Disc.Treeview",
-                columns=("duration", "size", "chapters", "audio", "preview"),
-                show="tree headings"
+                columns=("duration", "size", "chapters", "status", "audio", "preview"),
+                show="tree headings",
+                selectmode="none",
             )
             tree.heading("#0",       text="Title / Track")
             tree.heading("duration", text="Duration")
             tree.heading("size",     text="Size")
             tree.heading("chapters", text="Chapters")
+            tree.heading("status",   text="Status")
             tree.heading("audio",    text="Audio")
             tree.heading("preview",  text="Preview")
-            tree.column("#0",       width=220)
+            tree.column("#0",       width=320)
             tree.column("duration", width=80,  anchor="center")
             tree.column("size",     width=80,  anchor="center")
             tree.column("chapters", width=70,  anchor="center")
-            tree.column("audio",    width=320, anchor="w")
+            tree.column("status",   width=210, anchor="w")
+            tree.column("audio",    width=260, anchor="w")
             tree.column("preview",  width=90,  anchor="center")
 
             vsb = ttk.Scrollbar(
@@ -3919,16 +4979,50 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             check_vars  = {}
             base_labels = {}
 
-            # Classify titles for labels + confidence display.
-            classified = classify_titles(disc_titles)
+            def _build_checkbox_image(checked: bool) -> tk.PhotoImage:
+                img = tk.PhotoImage(width=14, height=14)
+                bg = "#161b22"
+                border = "#8b949e"
+                mark = "#58a6ff"
+                img.put(bg, to=(0, 0, 14, 14))
+                img.put(border, to=(1, 1, 13, 2))
+                img.put(border, to=(1, 12, 13, 13))
+                img.put(border, to=(1, 1, 2, 13))
+                img.put(border, to=(12, 1, 13, 13))
+                if checked:
+                    for x, y in (
+                        (3, 7), (4, 8), (5, 9),
+                        (6, 8), (7, 7), (8, 6), (9, 5), (10, 4),
+                    ):
+                        img.put(mark, (x, y))
+                return img
+
+            checkbox_images = {
+                False: _build_checkbox_image(False),
+                True: _build_checkbox_image(True),
+            }
+
+            def _set_checked(iid: str, checked: bool) -> None:
+                check_vars[iid] = checked
+                tree.item(
+                    iid,
+                    text=base_labels[iid],
+                    image=checkbox_images[checked],
+                )
+
+            cached_classified = getattr(self.engine, "last_classification", []) or []
+            if classification_matches_titles(cached_classified, disc_titles):
+                classified = list(cached_classified)
+            else:
+                classified = classify_titles(disc_titles)
+                self.engine.last_classification = classified
+
+            best_ct = get_recommended_title(classified)
+            best_id = best_ct.title_id if best_ct else None
             cls_by_id = {ct.title_id: ct for ct in classified}
+            id_map  = {int(t.get("id", -1)): t for t in disc_titles}
 
-            # Compute best candidate directly from score.
-            best_title, _best_score = choose_best_title(disc_titles)
-            best_id = best_title["id"] if best_title else None
-            id_map  = {t["id"]: t for t in disc_titles}
-
-            for t in disc_titles:
+            for t in (ct.title for ct in classified):
                 audio_summary = format_audio_summary(
                     t.get("audio_tracks", [])
                 )
@@ -3940,15 +5034,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 ct = cls_by_id.get(t["id"])
                 if ct:
                     pct = int(ct.confidence * 100)
-                    cls_tag = f" [{ct.label} {pct}%]"
+                    cls_tag = f" [#{ct.rank} {ct.label} {pct}%]"
                 else:
                     cls_tag = ""
                 base_labels[iid] = f"Title {t['id']+1}: {t['name']}{cls_tag}"
-                check_char       = "☑" if pre_selected else "☐"
 
                 tags = ["title"]
-                if t["id"] == best_id:
+                if ct and ct.recommended:
                     tags.append("main")
+                if ct and not ct.valid:
+                    tags.append("invalid")
                 if ct and ct.label == "DUPLICATE":
                     tags.append("duplicate")
                 if ct and ct.label == "EXTRA":
@@ -3956,16 +5051,26 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
                 tree.insert(
                     "", "end", iid=iid,
-                    text=f"{check_char}  {base_labels[iid]}",
+                    text=base_labels[iid],
+                    image=checkbox_images[pre_selected],
                     values=(
                         t.get("duration", ""),
                         t.get("size", ""),
                         t.get("chapters", ""),
+                        ct.status_text if ct else "",
                         audio_summary,
                         "Preview",
                     ),
                     tags=tuple(tags)
                 )
+
+                if ct:
+                    tree.insert(
+                        iid, "end",
+                        text=f"    Why: {ct.why_text}",
+                        values=("", "", "", ct.status_text, "", ""),
+                        tags=("meta",)
+                    )
 
                 for s in t.get("subtitle_tracks", []):
                     lang = (s.get("lang_name") or
@@ -3973,36 +5078,73 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     tree.insert(
                         iid, "end",
                         text=f"    💬 Subtitle: {lang}",
-                        values=("", "", "", "", ""),
+                        values=("", "", "", "", "", ""),
                         tags=("track",)
                     )
 
             tree.tag_configure("title",     foreground="#c9d1d9")
             tree.tag_configure("main",      foreground="#58a6ff")
-            tree.tag_configure("duplicate",  foreground="#d29922")
-            tree.tag_configure("extra",      foreground="#8b949e")
+            tree.tag_configure("invalid",   foreground="#f85149")
+            tree.tag_configure("duplicate", foreground="#d29922")
+            tree.tag_configure("extra",     foreground="#8b949e")
+            tree.tag_configure("meta",      foreground="#8b949e")
             tree.tag_configure("track",     foreground="#6e7681")
+
+            def _title_item_for_row(item: str) -> str | None:
+                current = item
+                while current:
+                    if current.startswith("title_"):
+                        return current
+                    current = tree.parent(current)
+                return None
+
+            def _preview_title_item(item: str) -> str:
+                if not preview_callback:
+                    return "break"
+                title_item = _title_item_for_row(item)
+                if not title_item:
+                    return "break"
+                tree.focus(title_item)
+                try:
+                    tid = int(title_item.split("_")[1])
+                    preview_callback(tid)
+                except Exception:
+                    pass
+                return "break"
 
             def toggle(event):
                 item = tree.identify_row(event.y)
-                if not item or not item.startswith("title_"):
+                title_item = _title_item_for_row(item)
+                if not title_item or item != title_item:
                     return
+                tree.focus(title_item)
                 col = tree.identify_column(event.x)
-                if col == "#5" and preview_callback:
-                    try:
-                        tid = int(item.split("_")[1])
-                        preview_callback(tid)
-                    except Exception:
-                        pass
+                try:
+                    element = tree.identify_element(event.x, event.y)
+                except Exception:
+                    element = ""
+                if element.endswith("indicator"):
                     return
-                check_vars[item] = not check_vars[item]
-                prefix = "☑" if check_vars[item] else "☐"
-                tree.item(
-                    item, text=f"{prefix}  {base_labels[item]}"
-                )
+                if col == "#6" and preview_callback:
+                    _preview_title_item(title_item)
+                    return
+                _set_checked(title_item, not check_vars[title_item])
                 _update_size_label()
 
             tree.bind("<Button-1>", toggle)
+            tree.bind("<Button-3>", lambda event: _preview_title_item(tree.identify_row(event.y)))
+
+            def _toggle_focused(_event=None):
+                item = tree.focus()
+                if not item or not item.startswith("title_"):
+                    return "break"
+                _set_checked(item, not check_vars[item])
+                _update_size_label()
+                return "break"
+
+            tree.bind("<space>", _toggle_focused)
+            tree.bind("<Return>", _toggle_focused)
+            tree.focus_set()
 
             def _update_size_label():
                 total = sum(
@@ -4016,34 +5158,28 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             def select_all():
                 for iid in check_vars:
-                    check_vars[iid] = True
-                    tree.item(iid, text=f"☑  {base_labels[iid]}")
+                    _set_checked(iid, True)
                 _update_size_label()
 
             def deselect_all():
                 for iid in check_vars:
-                    check_vars[iid] = False
-                    tree.item(iid, text=f"☐  {base_labels[iid]}")
+                    _set_checked(iid, False)
                 _update_size_label()
 
             def select_best():
                 for iid in check_vars:
-                    check_vars[iid] = False
-                    tree.item(iid, text=f"☐  {base_labels[iid]}")
+                    _set_checked(iid, False)
                 if best_id is not None:
                     iid = f"title_{best_id}"
-                    check_vars[iid] = True
-                    tree.item(iid, text=f"☑  {base_labels[iid]}")
+                    _set_checked(iid, True)
                 _update_size_label()
 
             def select_top3():
                 for iid in check_vars:
-                    check_vars[iid] = False
-                    tree.item(iid, text=f"☐  {base_labels[iid]}")
-                for t in disc_titles[:3]:
-                    iid = f"title_{t['id']}"
-                    check_vars[iid] = True
-                    tree.item(iid, text=f"☑  {base_labels[iid]}")
+                    _set_checked(iid, False)
+                for ct in classified[:3]:
+                    iid = f"title_{ct.title_id}"
+                    _set_checked(iid, True)
                 _update_size_label()
 
             btn_row = tk.Frame(win, bg="#0d1117")
@@ -4260,169 +5396,192 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         DEFAULT_COLOR = "#c94b4b"
 
         def _show():
-            win = tk.Toplevel(self)
-            win.title("Temp Session Manager")
-            win.configure(bg="#0d1117")
-            win.grab_set()
-            win.lift()
-            win.focus_force()
-            win.geometry("740x540")
+            win = None
+            try:
+                normalized_folders = []
+                for entry in old_folders:
+                    if isinstance(entry, (tuple, list)) and len(entry) == 4:
+                        full_path, name, file_count, size = entry
+                    else:
+                        full_path = os.path.normpath(str(entry))
+                        name = os.path.basename(full_path.rstrip("\\/")) or full_path
+                        file_count = 0
+                        size = 0
+                    normalized_folders.append(
+                        (full_path, name, int(file_count), int(size))
+                    )
 
-            tk.Label(
-                win, text="Temp Sessions",
-                font=("Segoe UI", 14, "bold"),
-                bg="#0d1117", fg="#58a6ff"
-            ).pack(pady=(15, 5))
-            tk.Label(
-                win,
-                text="Leftover disc folders in your temp directory.\n"
-                     "Check the ones you want to delete.",
-                font=("Segoe UI", 10),
-                bg="#0d1117", fg="#8b949e"
-            ).pack(pady=(0, 10))
-
-            frame = tk.Frame(win, bg="#0d1117")
-            frame.pack(fill="both", expand=True, padx=15, pady=5)
-
-            canvas = tk.Canvas(
-                frame, bg="#0d1117", highlightthickness=0
-            )
-            scrollbar = ttk.Scrollbar(
-                frame, orient="vertical", command=canvas.yview
-            )
-            scroll_frame = tk.Frame(canvas, bg="#0d1117")
-
-            scroll_frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(
-                    scrollregion=canvas.bbox("all")
-                )
-            )
-            canvas.create_window(
-                (0, 0), window=scroll_frame, anchor="nw"
-            )
-            canvas.configure(yscrollcommand=scrollbar.set)
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-
-            check_vars = []
-
-            for full_path, name, file_count, size in old_folders:
-                meta = engine.read_temp_metadata(full_path)
-                var  = tk.BooleanVar(value=False)
-                check_vars.append((var, full_path, name))
-
-                status_text = (
-                    meta.get("status", "unknown")
-                    if meta else "unknown"
-                )
-                color = STATUS_COLORS.get(status_text, DEFAULT_COLOR)
-
-                row = tk.Frame(scroll_frame, bg="#161b22")
-                row.pack(fill="x", pady=3, padx=5)
-
-                tk.Checkbutton(
-                    row, variable=var,
-                    bg="#161b22", activebackground="#161b22",
-                    selectcolor="#238636"
-                ).pack(side="left", padx=8, pady=8)
+                win = tk.Toplevel(self)
+                win.title("Temp Session Manager")
+                win.configure(bg="#0d1117")
+                win.grab_set()
+                win.lift()
+                win.focus_force()
+                win.geometry("740x540")
 
                 tk.Label(
-                    row, text="●", fg=color, bg="#161b22",
-                    font=("Segoe UI", 14)
-                ).pack(side="left", padx=(0, 6))
-
-                info = tk.Frame(row, bg="#161b22")
-                info.pack(
-                    side="left", fill="x", expand=True, pady=6
-                )
-
-                title_text = (
-                    meta.get("title", "Unknown")
-                    if meta else "Unknown"
-                )
-                ts_text = (
-                    meta.get("timestamp", name) if meta else name
-                )
-
+                    win, text="Temp Sessions",
+                    font=("Segoe UI", 14, "bold"),
+                    bg="#0d1117", fg="#58a6ff"
+                ).pack(pady=(15, 5))
                 tk.Label(
-                    info, text=title_text,
-                    font=("Segoe UI", 11, "bold"),
-                    bg="#161b22", fg="#c9d1d9", anchor="w"
-                ).pack(fill="x")
-                tk.Label(
-                    info,
-                    text=f"Ripped: {ts_text}   "
-                         f"Files: {file_count}   "
-                         f"Size: {size / (1024**3):.1f} GB   "
-                         f"Status: {status_text}",
-                    font=("Segoe UI", 9),
-                    bg="#161b22", fg="#8b949e", anchor="w"
-                ).pack(fill="x")
+                    win,
+                    text="Leftover disc folders in your temp directory.\n"
+                         "Check the ones you want to delete.",
+                    font=("Segoe UI", 10),
+                    bg="#0d1117", fg="#8b949e"
+                ).pack(pady=(0, 10))
 
-            btn_row = tk.Frame(win, bg="#0d1117")
-            btn_row.pack(fill="x", padx=15, pady=12)
+                frame = tk.Frame(win, bg="#0d1117")
+                frame.pack(fill="both", expand=True, padx=15, pady=5)
 
-            def select_all():
-                for var, _, _ in check_vars:
-                    var.set(True)
+                canvas = tk.Canvas(
+                    frame, bg="#0d1117", highlightthickness=0
+                )
+                scrollbar = ttk.Scrollbar(
+                    frame, orient="vertical", command=canvas.yview
+                )
+                scroll_frame = tk.Frame(canvas, bg="#0d1117")
 
-            def deselect_all():
-                for var, _, _ in check_vars:
-                    var.set(False)
+                scroll_frame.bind(
+                    "<Configure>",
+                    lambda e: canvas.configure(
+                        scrollregion=canvas.bbox("all")
+                    )
+                )
+                canvas.create_window(
+                    (0, 0), window=scroll_frame, anchor="nw"
+                )
+                canvas.configure(yscrollcommand=scrollbar.set)
+                canvas.pack(side="left", fill="both", expand=True)
+                scrollbar.pack(side="right", fill="y")
 
-            def delete_selected():
-                selected = [
-                    (full_path, name)
-                    for var, full_path, name in check_vars
-                    if var.get()
-                ]
+                check_vars = []
 
-                # Close first to keep UI responsive; delete on background
-                # thread so large folder trees do not block tkinter.
-                win.destroy()
+                for full_path, name, file_count, size in normalized_folders:
+                    meta = engine.read_temp_metadata(full_path)
+                    var = tk.BooleanVar(value=False)
+                    check_vars.append((var, full_path, name))
 
-                def _delete_worker():
-                    for full_path, name in selected:
-                        try:
-                            shutil.rmtree(full_path)
-                            log_fn(f"Deleted temp folder: {name}")
-                        except Exception as e:
-                            log_fn(f"Could not delete {name}: {e}")
+                    status_text = (
+                        meta.get("status", "unknown")
+                        if meta else "unknown"
+                    )
+                    color = STATUS_COLORS.get(status_text, DEFAULT_COLOR)
+
+                    row = tk.Frame(scroll_frame, bg="#161b22")
+                    row.pack(fill="x", pady=3, padx=5)
+
+                    tk.Checkbutton(
+                        row, variable=var,
+                        bg="#161b22", activebackground="#161b22",
+                        selectcolor="#238636"
+                    ).pack(side="left", padx=8, pady=8)
+
+                    tk.Label(
+                        row, text="*", fg=color, bg="#161b22",
+                        font=("Segoe UI", 14)
+                    ).pack(side="left", padx=(0, 6))
+
+                    info = tk.Frame(row, bg="#161b22")
+                    info.pack(
+                        side="left", fill="x", expand=True, pady=6
+                    )
+
+                    title_text = (
+                        meta.get("title", "Unknown")
+                        if meta else "Unknown"
+                    )
+                    ts_text = (
+                        meta.get("timestamp", name) if meta else name
+                    )
+
+                    tk.Label(
+                        info, text=title_text,
+                        font=("Segoe UI", 11, "bold"),
+                        bg="#161b22", fg="#c9d1d9", anchor="w"
+                    ).pack(fill="x")
+                    tk.Label(
+                        info,
+                        text=f"Ripped: {ts_text}   "
+                             f"Files: {file_count}   "
+                             f"Size: {size / (1024**3):.1f} GB   "
+                             f"Status: {status_text}",
+                        font=("Segoe UI", 9),
+                        bg="#161b22", fg="#8b949e", anchor="w"
+                    ).pack(fill="x")
+
+                btn_row = tk.Frame(win, bg="#0d1117")
+                btn_row.pack(fill="x", padx=15, pady=12)
+
+                def select_all():
+                    for var, _, _ in check_vars:
+                        var.set(True)
+
+                def deselect_all():
+                    for var, _, _ in check_vars:
+                        var.set(False)
+
+                def delete_selected():
+                    selected = [
+                        (full_path, name)
+                        for var, full_path, name in check_vars
+                        if var.get()
+                    ]
+
+                    # Close first to keep UI responsive; delete on background
+                    # thread so large folder trees do not block tkinter.
+                    win.destroy()
+
+                    def _delete_worker():
+                        for full_path, name in selected:
+                            try:
+                                shutil.rmtree(full_path)
+                                log_fn(f"Deleted temp folder: {name}")
+                            except Exception as e:
+                                log_fn(f"Could not delete {name}: {e}")
+                        done.set()
+
+                    threading.Thread(
+                        target=_delete_worker,
+                        daemon=True
+                    ).start()
+
+                def close():
+                    win.destroy()
                     done.set()
 
-                threading.Thread(
-                    target=_delete_worker,
-                    daemon=True
-                ).start()
+                win.protocol("WM_DELETE_WINDOW", close)
 
-            def close():
-                win.destroy()
+                tk.Button(
+                    btn_row, text="Select All",
+                    bg="#21262d", fg="#c9d1d9",
+                    command=select_all, relief="flat"
+                ).pack(side="left", padx=4)
+                tk.Button(
+                    btn_row, text="Deselect All",
+                    bg="#21262d", fg="#c9d1d9",
+                    command=deselect_all, relief="flat"
+                ).pack(side="left", padx=4)
+                tk.Button(
+                    btn_row, text="Delete Selected",
+                    bg="#c94b4b", fg="white",
+                    font=("Segoe UI", 11, "bold"),
+                    command=delete_selected, relief="flat"
+                ).pack(side="right", padx=4)
+                tk.Button(
+                    btn_row, text="Close",
+                    bg="#21262d", fg="white",
+                    command=close, relief="flat"
+                ).pack(side="right", padx=4)
+            except Exception as e:
+                if win is not None:
+                    try:
+                        win.destroy()
+                    except Exception:
+                        pass
+                log_fn(f"Temp session manager unavailable: {e}")
                 done.set()
-
-            win.protocol("WM_DELETE_WINDOW", close)
-
-            tk.Button(
-                btn_row, text="Select All",
-                bg="#21262d", fg="#c9d1d9",
-                command=select_all, relief="flat"
-            ).pack(side="left", padx=4)
-            tk.Button(
-                btn_row, text="Deselect All",
-                bg="#21262d", fg="#c9d1d9",
-                command=deselect_all, relief="flat"
-            ).pack(side="left", padx=4)
-            tk.Button(
-                btn_row, text="Delete Selected",
-                bg="#c94b4b", fg="white",
-                font=("Segoe UI", 11, "bold"),
-                command=delete_selected, relief="flat"
-            ).pack(side="right", padx=4)
-            tk.Button(
-                btn_row, text="Close",
-                bg="#21262d", fg="white",
-                command=close, relief="flat"
-            ).pack(side="right", padx=4)
 
         self.after(0, _show)
         while not done.wait(timeout=0.1):
@@ -4907,9 +6066,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             float_row(everyday_tab, "opt_smart_low_confidence_threshold",
                       "Smart Rip low-confidence warning threshold:", 0.45)
             toggle_row(everyday_tab, "opt_show_temp_manager",
-                       "Show temp folders at startup")
+                       "Show temp folders before TV or dump runs")
             toggle_row(everyday_tab, "opt_auto_delete_temp",
                        "Delete temp files after successful organize")
+            toggle_row(everyday_tab, "opt_auto_delete_session_metadata",
+                       "Delete session JSON after successful organize")
             toggle_row(everyday_tab, "opt_clean_partials_startup",
                        "Remove unfinished files at startup")
             toggle_row(everyday_tab, "opt_warn_out_of_order_episodes",
@@ -5355,6 +6516,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if messagebox.askokcancel(
             "Exit", "Close Jellyfin Raw Ripper?", parent=self
         ):
+            self._remember_ai_sidebar_width()
+            self._persist_config()
             self.engine.abort()
             # Attempt to join any running rip thread
             if self.rip_thread and self.rip_thread.is_alive():

@@ -3,6 +3,20 @@ import io
 import threading
 
 
+def test_describe_profile_summarizes_default_profile(tmp_path):
+    from transcode.profiles import ProfileLoader, describe_profile
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+
+    summary = describe_profile(loader.get_profile())
+
+    assert "Video: H.265, CRF 22, medium preset, auto GPU/CPU" in summary
+    assert "Audio: copy all tracks" in summary
+    assert "Subtitles: copy all" in summary
+    assert "Skip: under 7 GB, already H.265" in summary
+    assert "Metadata: preserve" in summary
+
+
 def test_build_transcode_plan_preserves_relative_mkv_paths(tmp_path):
     from transcode.planner import build_transcode_plan
 

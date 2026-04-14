@@ -102,6 +102,7 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_fsync": True,
     "opt_show_temp_manager": True,
     "opt_auto_delete_temp": True,
+    "opt_auto_delete_session_metadata": True,
     "opt_clean_partials_startup": True,
     "opt_warn_low_space": True,
     "opt_hard_block_gb": 20,
@@ -145,6 +146,8 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_ai_disable_after_failures": 3,
     # AI provider connection (managed via gui/ai_provider_dialog.py)
     "opt_ai_active_cloud_provider": "",  # "claude" | "openai" | "gemini" | ""
+    "opt_ai_sidebar_open": False,
+    "opt_ai_sidebar_width": 360,
 }
 
 RIP_ATTEMPT_FLAGS: list[list[str]] = [

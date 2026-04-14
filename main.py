@@ -91,7 +91,19 @@ def main() -> None:
     config = load_config()
     # No autofill or mutation allowed
     app = JellyRipperGUI(config)
-    app.mainloop()
+    try:
+        app.mainloop()
+    except KeyboardInterrupt:
+        engine = getattr(app, "engine", None)
+        abort = getattr(engine, "abort", None)
+        if callable(abort):
+            abort()
+        try:
+            app.destroy()
+        except Exception:
+            pass
+        print("console interrupt", file=sys.stderr)
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

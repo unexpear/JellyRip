@@ -3,6 +3,25 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+_VIDEO_CODEC_LABELS = {
+    "copy": "copy",
+    "h264": "H.264",
+    "h265": "H.265",
+}
+_HW_ACCEL_LABELS = {
+    "cpu": "CPU",
+    "auto_prefer": "auto GPU/CPU",
+    "nvenc": "NVENC",
+    "qsv": "Intel QSV",
+    "amf": "AMD AMF",
+}
+_CHANNEL_LABELS = {
+    1: "mono",
+    2: "stereo",
+    6: "5.1",
+    8: "7.1",
+}
+
 PROFILE_SCHEMA = {
     # Video stream selection and encoding options
     "video": {
@@ -218,3 +237,102 @@ class ProfileLoader:
         if name in self.profiles:
             self.default = name
             self.save()
+
+
+def describe_profile(profile: "TranscodeProfile | Dict[str, Any]") -> str:
+    if isinstance(profile, TranscodeProfile):
+        data = profile.to_dict()
+    else:
+        data = profile
+    normalized = normalize_profile_data(dict(data))
+
+    video = normalized.get("video", {})
+    audio = normalized.get("audio", {})
+    subtitles = normalized.get("subtitles", {})
+    constraints = normalized.get("constraints", {})
+    metadata = normalized.get("metadata", {})
+
+    video_codec = str(video.get("codec") or "copy").strip().lower()
+    video_label = _VIDEO_CODEC_LABELS.get(video_codec, video_codec.upper() or "copy")
+    if video_codec == "copy" or str(video.get("mode") or "").strip().lower() == "copy":
+        video_summary = "Video: copy"
+    else:
+        quality_parts: list[str] = [video_label]
+        mode = str(video.get("mode") or "").strip().lower()
+        if mode == "crf" and video.get("crf") is not None:
+            quality_parts.append(f"CRF {video['crf']}")
+        elif mode == "bitrate" and video.get("bitrate") is not None:
+            quality_parts.append(f"{video['bitrate']} kbps")
+        preset = str(video.get("preset") or "").strip()
+        if preset:
+            quality_parts.append(f"{preset} preset")
+        hw_accel = str(video.get("hw_accel") or "cpu").strip().lower()
+        quality_parts.append(_HW_ACCEL_LABELS.get(hw_accel, hw_accel.upper() or "CPU"))
+        video_summary = "Video: " + ", ".join(quality_parts)
+
+    audio_mode = str(audio.get("mode") or "copy").strip().lower()
+    track_scope = str(audio.get("tracks") or "all").strip().lower()
+    if track_scope == "language":
+        language = str(audio.get("language") or "").strip()
+        track_summary = f"{language or 'language-matched'} tracks"
+    elif track_scope == "main":
+        track_summary = "main track"
+    else:
+        track_summary = "all tracks"
+    if audio_mode == "copy":
+        audio_summary = f"Audio: copy {track_summary}"
+    else:
+        audio_parts: list[str] = [audio_mode.upper()]
+        if audio.get("bitrate") is not None:
+            audio_parts.append(f"{audio['bitrate']} kbps")
+        channels = audio.get("channels")
+        if isinstance(channels, int) and channels > 0:
+            audio_parts.append(_CHANNEL_LABELS.get(channels, f"{channels}ch"))
+        audio_summary = f"Audio: {' '.join(audio_parts)} from {track_summary}"
+
+    subtitle_mode = str(subtitles.get("mode") or "none").strip().lower()
+    subtitle_language = str(subtitles.get("language") or "").strip()
+    burn = bool(subtitles.get("burn"))
+    if subtitle_mode == "none":
+        subtitle_summary = "Subtitles: none"
+    elif subtitle_mode == "language":
+        subtitle_summary = (
+            f"Subtitles: {'burn' if burn else 'copy'} "
+            f"{subtitle_language or 'language-matched'}"
+        )
+    else:
+        subtitle_summary = (
+            f"Subtitles: {'burn' if burn else 'copy'} {subtitle_mode}"
+        )
+
+    skip_parts: list[str] = []
+    skip_if_below_gb = constraints.get("skip_if_below_gb")
+    if isinstance(skip_if_below_gb, (int, float)):
+        if float(skip_if_below_gb).is_integer():
+            skip_value = str(int(skip_if_below_gb))
+        else:
+            skip_value = str(skip_if_below_gb)
+        skip_parts.append(f"under {skip_value} GB")
+    if constraints.get("skip_if_codec_matches") and video_codec != "copy":
+        skip_parts.append(f"already {video_label}")
+    skip_summary = (
+        f"Skip: {', '.join(skip_parts)}"
+        if skip_parts else
+        "Skip: none"
+    )
+
+    metadata_summary = (
+        "Metadata: preserve"
+        if metadata.get("preserve", True) else
+        "Metadata: drop"
+    )
+
+    return " | ".join(
+        [
+            video_summary,
+            audio_summary,
+            subtitle_summary,
+            skip_summary,
+            metadata_summary,
+        ]
+    )

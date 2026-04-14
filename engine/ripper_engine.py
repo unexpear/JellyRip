@@ -32,6 +32,21 @@ from utils.parsing import (
 from utils.scoring import score_title
 from utils.classifier import classify_titles, format_classification_log
 
+SESSION_METADATA_FILENAMES = frozenset({
+    "_rip_meta.json",
+    "_rip_meta.json.tmp",
+    "session.state.json",
+    "session.state.json.tmp",
+})
+RIP_METADATA_FILENAMES = frozenset({
+    "_rip_meta.json",
+    "_rip_meta.json.tmp",
+})
+STATE_METADATA_FILENAMES = frozenset({
+    "session.state.json",
+    "session.state.json.tmp",
+})
+
 
 @dataclass(frozen=True)
 class Job:
@@ -61,21 +76,81 @@ class Progress:
 
 
 class RipperEngine:
-    def find_old_temp_folders(self, temp_root: str) -> list[str]:
-        """Return a list of old temp folders in the given temp_root directory."""
-        if not temp_root or not os.path.isdir(temp_root):
+    def find_old_temp_folders(
+        self,
+        temp_root: str,
+        timeout: float = 8.0,
+    ) -> list[tuple[str, str, int, int]]:
+        """Return UI-ready metadata for leftover temp folders.
+
+        Runs in a daemon thread so a slow network share cannot block the
+        caller indefinitely. Each row is `(full_path, name, file_count, size)`.
+        """
+        import logging
+
+        if not temp_root:
             return []
-        try:
-            # Consider a temp folder 'old' if it is a directory and not empty
-            folders = []
-            for entry in os.listdir(temp_root):
-                full_path = os.path.join(temp_root, entry)
-                if os.path.isdir(full_path):
-                    # Optionally, filter by age or naming pattern here
-                    folders.append(full_path)
-            return folders
-        except Exception:
+
+        old_folders: list[tuple[str, str, int, int]] = []
+        abort_event = self.abort_event
+
+        def _scan() -> None:
+            if abort_event.is_set():
+                return
+            if not os.path.isdir(temp_root):
+                return
+            try:
+                names = os.listdir(temp_root)
+            except Exception as e:
+                logging.warning("Temp folder scan failed to listdir %s: %s", temp_root, e)
+                return
+
+            for name in names:
+                if abort_event.is_set():
+                    return
+                full_path = os.path.join(temp_root, name)
+                if not os.path.isdir(full_path):
+                    continue
+
+                file_count = 0
+                total_size = 0
+                has_payload_files = False
+
+                try:
+                    for dirpath, dirnames, filenames in os.walk(full_path):
+                        if abort_event.is_set():
+                            return
+                        if any(
+                            filename not in SESSION_METADATA_FILENAMES
+                            for filename in filenames
+                        ):
+                            has_payload_files = True
+                        file_count += len(filenames)
+                        for filename in filenames:
+                            try:
+                                total_size += os.path.getsize(
+                                    os.path.join(dirpath, filename)
+                                )
+                            except OSError:
+                                continue
+                except Exception as e:
+                    logging.warning("Temp folder scan failed in %s: %s", full_path, e)
+                    continue
+
+                if has_payload_files:
+                    old_folders.append((full_path, name, file_count, total_size))
+
+        thread = threading.Thread(target=_scan, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            logging.warning(
+                "Temp folder scan exceeded %.1fs for %s; skipping temp manager rows.",
+                timeout,
+                temp_root,
+            )
             return []
+        return old_folders
     def run_job_streaming(self, job: Job) -> Generator[EngineEvent, None, None]:
         result = self.run_job(job)
         for line in result.outputs:
@@ -413,6 +488,34 @@ class RipperEngine:
         except Exception:
             return None
 
+    def delete_temp_metadata(self, rip_path, on_log=None):
+        """Delete session JSON sidecars from a temp folder after success."""
+        removed = 0
+        has_rip_metadata = any(
+            os.path.exists(self._io_path(os.path.join(rip_path, filename)))
+            for filename in RIP_METADATA_FILENAMES
+        )
+        filenames = set(RIP_METADATA_FILENAMES)
+        if has_rip_metadata:
+            filenames.update(STATE_METADATA_FILENAMES)
+        for filename in filenames:
+            path = os.path.join(rip_path, filename)
+            io_path = self._io_path(path)
+            if not os.path.exists(io_path):
+                continue
+            try:
+                os.remove(io_path)
+                removed += 1
+            except Exception as e:
+                if on_log:
+                    on_log(
+                        "Warning: could not delete session metadata "
+                        f"{os.path.basename(path)}: {e}"
+                    )
+        if removed and on_log:
+            on_log(f"Removed {removed} session metadata file(s).")
+        return removed
+
     def scan_disc(self, on_log, on_progress):
         """
         Scan disc and return list of title dicts sorted by score.
@@ -647,7 +750,17 @@ class RipperEngine:
         # Classify titles into MAIN / DUPLICATE / EXTRA / UNKNOWN
         self.last_classification = classify_titles(result)
         if self.last_classification:
-            for log_line in format_classification_log(self.last_classification):
+            classification_log_cap = 20
+            if len(self.last_classification) > classification_log_cap:
+                on_log(
+                    "Classification results "
+                    f"(top {classification_log_cap} of "
+                    f"{len(self.last_classification)} shown):"
+                )
+                classification_rows = self.last_classification[:classification_log_cap]
+            else:
+                classification_rows = self.last_classification
+            for log_line in format_classification_log(classification_rows):
                 on_log(log_line)
 
         self._last_scan_total_bytes = sum(

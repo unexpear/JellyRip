@@ -42,6 +42,7 @@ _LABEL_COLORS = {
 # Jellyfin extras folder names per
 # https://jellyfin.org/docs/general/server/media/movies/#extras
 JELLYFIN_EXTRAS_CATEGORIES = [
+    "Extras",
     "Behind The Scenes",
     "Deleted Scenes",
     "Featurettes",
@@ -126,7 +127,10 @@ def show_scan_results(
     classified: list[ClassifiedTitle],
     drive_info: dict | None = None,
 ) -> str | None:
-    """Show scan + classification results. Returns 'movie' or 'tv', or None if cancelled."""
+    """Show scan + classification results.
+
+    Returns "movie", "tv", or "standard", or None if cancelled.
+    """
 
     result: list[str | None] = [None]
 
@@ -184,7 +188,7 @@ def show_scan_results(
     list_frame = tk.Frame(win, bg=_BG)
     list_frame.pack(fill="both", expand=True, padx=20, pady=(6, 0))
 
-    canvas = tk.Canvas(list_frame, bg=_BG, highlightthickness=0, width=520, height=min(300, len(classified) * 36 + 10))
+    canvas = tk.Canvas(list_frame, bg=_BG, highlightthickness=0, width=560, height=min(340, len(classified) * 54 + 10))
     scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
     items_frame = tk.Frame(canvas, bg=_BG)
 
@@ -226,6 +230,18 @@ def show_scan_results(
             row, text=f"{dur}  {size}",
             bg=_BG, fg=_FG_DIM,
             font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(side="left", padx=(8, 0))
+        tk.Label(
+            row, text=f"  {ct.status_text}",
+            bg=_BG, fg=_FG_DIM,
+            font=("Segoe UI", 10, "bold" if ct.recommended else "normal"),
+            anchor="w",
+        ).pack(side="left", padx=(10, 0))
+        tk.Label(
+            row, text=f"  {ct.why_text}",
+            bg=_BG, fg=_FG_DIM,
+            font=("Segoe UI", 9),
             anchor="w",
         ).pack(side="left", padx=(8, 0))
 
@@ -283,6 +299,13 @@ def show_scan_results(
         font=("Segoe UI", 12, "bold"),
         width=14, relief="flat",
     ).pack(side="left")
+    tk.Button(
+        type_frame, text="Standard",
+        command=lambda: _select("standard"),
+        bg=_BG3, fg=_FG,
+        font=("Segoe UI", 12, "bold"),
+        width=14, relief="flat",
+    ).pack(side="left", padx=(12, 0))
 
     # Cancel
     tk.Frame(win, bg=_BG3, height=1).pack(fill="x", padx=0, pady=(16, 0))
@@ -343,7 +366,7 @@ def show_content_mapping(
     list_frame = tk.Frame(win, bg=_BG)
     list_frame.pack(fill="both", expand=True, padx=20, pady=(6, 0))
 
-    canvas = tk.Canvas(list_frame, bg=_BG, highlightthickness=0, width=560, height=min(350, len(classified) * 36 + 10))
+    canvas = tk.Canvas(list_frame, bg=_BG, highlightthickness=0, width=620, height=min(380, len(classified) * 54 + 10))
     scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
     items_frame = tk.Frame(canvas, bg=_BG)
 
@@ -359,7 +382,7 @@ def show_content_mapping(
     for ct in classified:
         tid = ct.title_id
         # Pre-check MAIN and EXTRA, uncheck DUPLICATE and UNKNOWN
-        default_on = ct.label in ("MAIN", "EXTRA")
+        default_on = ct.recommended or (ct.valid and ct.label == "EXTRA")
         var = tk.BooleanVar(value=default_on)
         check_vars[tid] = var
 
@@ -404,6 +427,28 @@ def show_content_mapping(
             font=("Segoe UI", 10),
             anchor="w",
         ).pack(side="left", padx=(8, 0))
+        tk.Label(
+            row, text=f"  {ct.status_text}",
+            bg=_BG, fg=_FG_DIM,
+            font=("Segoe UI", 10, "bold" if ct.recommended else "normal"),
+            anchor="w",
+        ).pack(side="left", padx=(10, 0))
+        tk.Label(
+            row, text=f"  {ct.why_text}",
+            bg=_BG, fg=_FG_DIM,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(side="left", padx=(8, 0))
+
+        def _toggle_row(_event=None, _var=var):
+            _var.set(not _var.get())
+            return "break"
+
+        row.bind("<Button-1>", _toggle_row)
+        for child in row.winfo_children():
+            if child is cb:
+                continue
+            child.bind("<Button-1>", _toggle_row)
 
     canvas.pack(side="left", fill="both", expand=True)
     if len(classified) > 9:
@@ -540,7 +585,7 @@ def show_extras_classification(
             font=("Segoe UI", 10),
         ).pack(side="left", padx=(4, 4))
 
-        var = tk.StringVar(value="Featurettes")
+        var = tk.StringVar(value="Extras")
         combo_vars[tid] = var
         combo = ttk.Combobox(
             row, textvariable=var,

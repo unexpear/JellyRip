@@ -19,6 +19,7 @@ from utils.state_machine import SessionState, SessionStateMachine
 from utils.scoring import choose_best_title
 from utils.classifier import ClassifiedTitle
 from gui.session_setup_dialog import MovieSessionSetup, TVSessionSetup
+from gui.setup_wizard import JELLYFIN_EXTRAS_CATEGORIES
 
 
 class DummyGUI:
@@ -137,6 +138,10 @@ def test_controller_imports_make_rip_folder_name():
     assert callable(controller_module.make_rip_folder_name)
 
 
+def test_extras_categories_include_plain_extras():
+    assert JELLYFIN_EXTRAS_CATEGORIES[0] == "Extras"
+
+
 def test_unattended_setup_allows_editing_accidental_values():
     engine = RipperEngine(_engine_cfg())
     gui = ScriptedSetupGUI(
@@ -212,6 +217,36 @@ def test_ffprobe_cache_accumulates_entries(tmp_path, monkeypatch):
     engine._probe_file_duration_and_size(str(second), ffprobe="ffprobe")
 
     assert len(engine._ffprobe_cache) == 2
+
+
+def test_find_old_temp_folders_returns_ui_ready_rows(tmp_path):
+    _controller, engine = _controller_with_engine()
+
+    old = tmp_path / "Disc_2026-04-13_12-59-46"
+    nested = old / "nested"
+    nested.mkdir(parents=True)
+    (old / "_rip_meta.json").write_text("{}", encoding="utf-8")
+    (nested / "video.mkv").write_bytes(b"1234")
+    (tmp_path / "empty").mkdir()
+
+    rows = engine.find_old_temp_folders(str(tmp_path), timeout=0.2)
+
+    row = next(item for item in rows if item[1] == old.name)
+    assert row == (str(old), old.name, 2, 6)
+    assert all(name != "empty" for _full, name, _count, _size in rows)
+
+
+def test_find_old_temp_folders_skips_metadata_only_folder(tmp_path):
+    _controller, engine = _controller_with_engine()
+
+    meta_only = tmp_path / "meta_only"
+    meta_only.mkdir()
+    (meta_only / "_rip_meta.json").write_text("{}", encoding="utf-8")
+    (meta_only / "session.state.json").write_text("{}", encoding="utf-8")
+
+    rows = engine.find_old_temp_folders(str(tmp_path), timeout=0.2)
+
+    assert rows == []
 
 
 def test_zero_output_is_failure(tmp_path):
@@ -323,6 +358,20 @@ def test_wipe_preserves_metadata(tmp_path):
     assert meta.exists()
     assert not mkv.exists()
     assert not partial.exists()
+
+
+def test_delete_temp_metadata_removes_session_jsons(tmp_path):
+    engine = RipperEngine(_engine_cfg())
+    rip_meta = tmp_path / "_rip_meta.json"
+    state_meta = tmp_path / "session.state.json"
+    rip_meta.write_text("{}", encoding="utf-8")
+    state_meta.write_text("{}", encoding="utf-8")
+
+    removed = engine.delete_temp_metadata(str(tmp_path))
+
+    assert removed == 2
+    assert not rip_meta.exists()
+    assert not state_meta.exists()
 
 
 def test_purge_removes_existing_files(tmp_path):
@@ -1353,6 +1402,92 @@ def test_movie_run_custom_folder_overrides_continue_past_path_selection(tmp_path
     assert any("Flow: session initialized" in m for m in controller.gui.messages)
 
 
+def test_movie_run_does_not_open_temp_manager_when_enabled(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    movies_root = tmp_path / "movies"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = True
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.show_error = lambda *_args, **_kwargs: None
+
+    called = {"temp_manager": False}
+
+    def _unexpected_temp_manager(_temp_root):
+        called["temp_manager"] = True
+
+    monkeypatch.setattr(controller, "_offer_temp_manager", _unexpected_temp_manager)
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: None)
+
+    controller.run_movie_disc()
+
+    assert called["temp_manager"] is False
+    assert any("Flow: session initialized" in m for m in controller.gui.messages)
+
+
+def test_run_organize_deletes_session_json_when_temp_folder_preserved(
+    tmp_path,
+    monkeypatch,
+):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    source = temp_root / "Disc_2026-04-13_12-59-46"
+    movies_root = tmp_path / "movies"
+    source.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+
+    mkv = source / "title_t00.mkv"
+    mkv.write_text("data", encoding="utf-8")
+    (source / "_rip_meta.json").write_text("{}", encoding="utf-8")
+    (source / "session.state.json").write_text("{}", encoding="utf-8")
+
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+    engine.cfg["opt_auto_delete_temp"] = False
+    engine.cfg["opt_auto_delete_session_metadata"] = True
+
+    inputs = iter([str(source), "m", "Chosen Movie", "", "2024"])
+    controller.gui.ask_input = (
+        lambda _label, _prompt, default_value="": next(inputs)
+    )
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(
+        controller,
+        "_prompt_run_path_overrides",
+        lambda _fields: {},
+    )
+    monkeypatch.setattr(
+        engine,
+        "analyze_files",
+        lambda *_args, **_kwargs: [(str(mkv), 7200.0, 4000.0)],
+    )
+    monkeypatch.setattr(
+        controller,
+        "_select_and_move",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(controller, "write_session_summary", lambda: None)
+    monkeypatch.setattr(controller, "flush_log", lambda: None)
+
+    controller.run_organize()
+
+    assert source.exists()
+    assert not (source / "_rip_meta.json").exists()
+    assert not (source / "session.state.json").exists()
+    assert mkv.exists()
+
+
 def test_movie_run_manual_selection_preserves_main_movie_picker(tmp_path, monkeypatch):
     controller, engine = _controller_with_engine()
 
@@ -1460,7 +1595,7 @@ def test_movie_run_manual_selection_preserves_main_movie_picker(tmp_path, monkey
         1: 600_000_000,
     }
     assert captured["session_rip_path"] is not None
-    assert disc_tree_args["preview"] is None
+    assert callable(disc_tree_args["preview"])
 
 
 def test_run_smart_rip_wizard_flow_completes_movie(tmp_path, monkeypatch):
@@ -1584,6 +1719,124 @@ def test_run_smart_rip_wizard_flow_completes_movie(tmp_path, monkeypatch):
     assert "Chosen Movie (2024)" in move_calls.get("dest_folder", "")
     assert any("movie" in m.lower() for m in controller.gui.messages
                if "media type" in m.lower())
+
+
+def test_run_smart_rip_standard_flow_uses_manual_picker(tmp_path, monkeypatch):
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    movies_root = tmp_path / "movies"
+    tv_root = tmp_path / "tv"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    movies_root.mkdir(parents=True, exist_ok=True)
+    tv_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_scan_disc_size"] = False
+    engine.cfg["opt_confirm_before_rip"] = False
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["movies_folder"] = str(movies_root)
+    engine.cfg["tv_folder"] = str(tv_root)
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    controller.gui.ask_yesno = lambda _prompt: False
+    controller.gui.show_scan_results_step = lambda _cl, _di=None: "standard"
+    controller.gui.ask_movie_setup = lambda **_kw: MovieSessionSetup(
+        title="Chosen Movie", year="2024", edition="",
+        metadata_provider="TMDB", metadata_id="",
+        replace_existing=False, keep_raw=False, extras_mode="ask",
+    )
+    controller.gui.show_content_mapping_step = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("standard flow should skip content mapping")
+        )
+    )
+    controller.gui.show_output_plan_step = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("standard flow should skip output preview")
+        )
+    )
+
+    disc_titles = [
+        {
+            "id": 0, "name": "Main Feature",
+            "duration": "120:00", "size": "4.0 GB",
+            "duration_seconds": 7200, "size_bytes": 4_000_000_000,
+        },
+        {
+            "id": 1, "name": "Bonus",
+            "duration": "10:00", "size": "0.6 GB",
+            "duration_seconds": 600, "size_bytes": 600_000_000,
+        },
+    ]
+    analyzed = [
+        (str(temp_root / "main.mkv"), 7200.0, 4000.0),
+    ]
+
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+    monkeypatch.setattr(
+        engine, "run_job",
+        lambda _job: SimpleNamespace(success=True, errors=[]),
+    )
+    monkeypatch.setattr(
+        controller, "_normalize_rip_result",
+        lambda *_a, **_k: (True, [item[0] for item in analyzed]),
+    )
+    monkeypatch.setattr(
+        controller, "_stabilize_ripped_files",
+        lambda *_a, **_k: (True, False),
+    )
+    monkeypatch.setattr(
+        controller, "_verify_expected_sizes",
+        lambda *_a, **_k: ("pass", "ok"),
+    )
+    monkeypatch.setattr(
+        controller, "_verify_container_integrity",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(engine, "analyze_files", lambda *_a, **_k: analyzed)
+
+    picker_calls = {"count": 0}
+    monkeypatch.setattr(
+        controller,
+        "_open_manual_disc_picker",
+        lambda _titles, _is_tv: (
+            picker_calls.__setitem__("count", picker_calls["count"] + 1)
+            or ([0, 1], 4_600_000_000)
+        ),
+    )
+
+    move_call = {}
+
+    def fake_select_and_move(
+        _titles_list,
+        _is_tv,
+        _title,
+        _dest_folder,
+        _extras_folder,
+        _season,
+        _year,
+        expected_size_by_title=None,
+        session_rip_path=None,
+        session_meta=None,
+        selected_title_ids=None,
+        **_kwargs,
+    ):
+        move_call["selected_title_ids"] = selected_title_ids
+        move_call["dest_folder"] = _dest_folder
+        return True
+
+    monkeypatch.setattr(controller, "_select_and_move", fake_select_and_move)
+
+    controller.run_smart_rip()
+
+    assert picker_calls["count"] == 1
+    assert move_call["selected_title_ids"] is None
+    assert "Chosen Movie (2024)" in move_call["dest_folder"]
+    assert any("standard" in m.lower() for m in controller.gui.messages)
 
 
 def test_run_smart_rip_cancel_at_scan_results_stops(tmp_path, monkeypatch):

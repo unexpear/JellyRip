@@ -3,9 +3,11 @@
 import pytest
 from utils.classifier import (
     ClassifiedTitle,
+    classification_matches_titles,
     classify_and_pick_main,
     classify_titles,
     format_classification_log,
+    get_recommended_title,
 )
 
 
@@ -102,6 +104,24 @@ class TestClassifyTitles:
         labels = [ct.label for ct in result]
         assert labels.count("MAIN") == 1
         assert labels.count("DUPLICATE") == 4
+
+    def test_recommended_skips_invalid_top_rank(self):
+        titles = [
+            _title(0, 7200, 0.0, chapters=24),   # invalid because size is zero
+            _title(1, 7100, 28.0, chapters=22),  # valid fallback
+            _title(2, 300, 1.0),
+        ]
+        result = classify_titles(titles)
+        recommended = get_recommended_title(result)
+
+        assert recommended is not None
+        assert recommended.title_id == 1
+        assert recommended.recommended is True
+        assert recommended.label == "MAIN"
+        invalid = next(ct for ct in result if ct.title_id == 0)
+        assert invalid.valid is False
+        assert invalid.recommended is False
+        assert invalid.rejection_reason == "missing size"
 
 
 # --- Confidence ---
@@ -207,6 +227,30 @@ class TestClassifiedTitle:
         )
         assert ct.title_id == 3
 
+    def test_status_text_prefers_recommended(self):
+        ct = ClassifiedTitle(
+            title={"id": 1, "name": "Main"},
+            score=0.9,
+            label="MAIN",
+            confidence=0.9,
+            reasons=["longest duration"],
+            recommended=True,
+        )
+        assert ct.status_text == "Recommended"
+
+    def test_status_text_marks_invalid(self):
+        ct = ClassifiedTitle(
+            title={"id": 1, "name": "Broken"},
+            score=0.9,
+            label="MAIN",
+            confidence=0.9,
+            reasons=["highest combined score"],
+            valid=False,
+            rejection_reason="missing size",
+        )
+        assert ct.status_text == "Rejected: missing size"
+        assert ct.why_text == "missing size"
+
 
 # --- classify_and_pick_main ---
 
@@ -225,6 +269,16 @@ class TestClassifyAndPickMain:
         main, classified = classify_and_pick_main(titles)
         assert main is not None
         assert main.label == "MAIN"
+        assert main.recommended is True
+        assert len(classified) == 2
+
+    def test_returns_none_when_no_valid_recommendation_exists(self):
+        titles = [
+            _title(0, 0, 0.0),
+            _title(1, 0, 0.0),
+        ]
+        main, classified = classify_and_pick_main(titles)
+        assert main is None
         assert len(classified) == 2
 
 
@@ -243,3 +297,20 @@ class TestFormatLog:
         assert all(line.startswith("[SCAN]") for line in lines)
         assert any("MAIN" in line for line in lines)
         assert any("EXTRA" in line for line in lines)
+        assert any("#1" in line for line in lines)
+        assert any("Recommended" in line for line in lines)
+
+
+class TestSharedHelpers:
+    def test_classification_matches_titles(self):
+        titles = [
+            _title(0, 7200, 30.0),
+            _title(1, 600, 2.0),
+        ]
+        classified = classify_titles(titles)
+        assert classification_matches_titles(classified, titles) is True
+
+    def test_classification_mismatch_detected(self):
+        classified = classify_titles([_title(0, 7200, 30.0)])
+        other_titles = [_title(0, 7000, 30.0)]
+        assert classification_matches_titles(classified, other_titles) is False

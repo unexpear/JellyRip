@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.request
 from typing import Any
@@ -27,13 +28,14 @@ class LocalProvider(BaseProvider):
         self._base_url = "http://localhost:11434"
 
     def info(self) -> ProviderInfo:
+        available_models = self._merge_available_models(self._get_available_models())
         return ProviderInfo(
             id="local",
             display_name="Local (Ollama)",
             category="local",
             requires_api_key=False,
             default_model=self._DEFAULT_MODEL,
-            available_models=list(self._MODELS),
+            available_models=available_models,
             help_url="https://ollama.com/download",
         )
 
@@ -43,18 +45,78 @@ class LocalProvider(BaseProvider):
         if "base_url" in kwargs:
             self._base_url = str(kwargs["base_url"]).rstrip("/")
 
+    @staticmethod
+    def _family_token(model_name: str) -> str:
+        head = model_name.lower().split(":", 1)[0]
+        return head.split("-", 1)[0]
+
+    @staticmethod
+    def _size_token(model_name: str) -> str:
+        tail = model_name.lower().split(":", 1)[1] if ":" in model_name else ""
+        for token in re.split(r"[^a-z0-9.]+", tail):
+            if token.endswith("b") and any(ch.isdigit() for ch in token):
+                return token
+        return ""
+
+    def _merge_available_models(self, installed_models: list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for name in [*installed_models, *self._MODELS]:
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            ordered.append(name)
+            seen.add(key)
+        return ordered
+
+    def _resolve_model_name(self, available_models: list[str] | None = None) -> str | None:
+        models = list(available_models or self._get_available_models())
+        if not models:
+            return None
+
+        configured = self._model.strip().lower()
+        exact = {name.lower(): name for name in models}
+        if configured in exact:
+            return exact[configured]
+
+        requested_family = self._family_token(self._model)
+        requested_size = self._size_token(self._model)
+        best_name: str | None = None
+        best_score = -1
+        for name in models:
+            lowered = name.lower()
+            score = 0
+            if self._family_token(lowered) == requested_family:
+                score += 4
+            if requested_size and self._size_token(lowered) == requested_size:
+                score += 2
+            if requested_family and requested_family in lowered:
+                score += 1
+            if score > best_score:
+                best_score = score
+                best_name = name
+
+        return best_name if best_score > 0 else None
+
+    def _require_model_name(self) -> str:
+        available_models = self._get_available_models()
+        resolved = self._resolve_model_name(available_models)
+        if resolved:
+            return resolved
+        available_preview = ", ".join(available_models[:5]) or "none"
+        raise ValueError(
+            f"Model '{self._model}' not pulled. Available: {available_preview}"
+        )
+
+    def is_configured_model_exact(self, available_models: list[str] | None = None) -> bool:
+        models = [name.lower() for name in (available_models or self._get_available_models())]
+        return self._model.strip().lower() in models
+
     def is_available(self) -> bool:
         try:
-            req = urllib.request.Request(
-                f"{self._base_url}/api/tags", method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-            model_base = self._model.split(":")[0]
-            for m in data.get("models", []):
-                if model_base in m.get("name", ""):
-                    return True
-            return False
+            return bool(self._resolve_model_name())
         except Exception:
             return False
 
@@ -71,8 +133,9 @@ class LocalProvider(BaseProvider):
             return []
 
     def _call(self, system: str, user: str, max_tokens: int, timeout: float) -> str:
+        actual_model = self._require_model_name()
         body = json.dumps({
-            "model": self._model,
+            "model": actual_model,
             "system": system,
             "prompt": user,
             "stream": False,
@@ -99,24 +162,23 @@ class LocalProvider(BaseProvider):
                 data = json.loads(resp.read())
             ms = (time.time() - start) * 1000
 
-            model_base = self._model.split(":")[0]
-            found = False
-            for m in data.get("models", []):
-                if model_base in m.get("name", ""):
-                    found = True
-                    break
-
-            if not found:
+            available_models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+            resolved_model = self._resolve_model_name(available_models)
+            if not resolved_model:
                 pulled = [m.get("name", "?") for m in data.get("models", [])]
                 return ConnectionResult(
                     success=False,
                     latency_ms=ms,
                     error=f"Model '{self._model}' not pulled. Available: {', '.join(pulled[:5]) or 'none'}",
                 )
+
+            confirmed = resolved_model
+            if resolved_model.lower() != self._model.strip().lower():
+                confirmed = f"{resolved_model} (closest installed)"
             return ConnectionResult(
                 success=True,
                 latency_ms=ms,
-                model_confirmed=self._model,
+                model_confirmed=confirmed,
             )
         except Exception as e:
             return ConnectionResult(success=False, error=str(e))
