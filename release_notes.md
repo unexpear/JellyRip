@@ -1,4 +1,4 @@
-# JellyRip v1.0.16 Release Notes
+# JellyRip v1.0.17 Release Notes
 
 ## Release Channel
 
@@ -6,25 +6,25 @@ Unstable pre-release.
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.16/JellyRipInstaller.exe)
-- Release page: [v1.0.16 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.16)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.17/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.17/JellyRipInstaller.exe)
+- Release page: [v1.0.17 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.17)
 - All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
-## What's New in 1.0.16
+## What's New in 1.0.17
 
-### FFmpeg and transcode reliability
+### MAIN release artifact layout
 
-- Improved FFmpeg abort handling so queued work shuts down more cleanly.
-- Expanded copy-progress logging and transcode validation around FFmpeg workflows.
+- MAIN builds now place `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and release notice files under `dist/main`.
+- The build, installer, and release scripts now use that dedicated MAIN artifact directory consistently.
 
-### Release bundling and packaging
+### Nested FFmpeg bundle discovery
 
-- Bundled FFmpeg runtime assets and notices more intentionally for packaged releases.
-- Restored the richer PyInstaller spec so release builds carry version metadata and bundled runtime dependencies consistently.
+- Release packaging now checks the nested Desktop sibling layout used by this MAIN worktree when locating the provided FFmpeg full build.
+- That keeps bundled MAIN releases working without moving the external FFmpeg folder into the repository.
 
 ### Release hygiene
 
-- Release metadata now aligns on the `1.0.16` line across the app, installer, docs, and release notes.
+- Release metadata now aligns on the `1.0.17` line across the app, installer, docs, tester worksheet, and release notes.
 - Build output remains a GitHub Releases artifact instead of a tracked repository binary.
-- In-app update checks now follow the newest published release, including unstable prereleases.
+- In-app update checks continue to follow the newest published release, including unstable prereleases.

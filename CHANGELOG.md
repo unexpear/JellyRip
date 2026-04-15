@@ -2,6 +2,18 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.17] - 2026-04-15
+
+### Changed
+
+- MAIN release builds now stage `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and notice files under `dist/main` so the trunk worktree has a dedicated artifact location.
+- Build, installer, and release scripts now read release assets from `dist/main`, matching the documented MAIN-only packaging flow.
+
+### Fixed
+
+- FFmpeg bundle discovery now checks the nested Desktop sibling layout used by this MAIN worktree, so bundled release builds still find the provided full build without copying it into the repo.
+- Release metadata is aligned on the `1.0.17` line across the app runtime, installer, docs, tester worksheet, and release notes.
+
 ## [1.0.16] - 2026-04-13
 
 ### Changed

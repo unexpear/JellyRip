@@ -84,8 +84,8 @@ def test_download_asset_detects_stall(monkeypatch, tmp_path):
 def test_fetch_latest_release_can_include_prereleases(monkeypatch):
     releases = [
         {
-            "tag_name": "v1.0.16",
-            "html_url": "https://example.invalid/v1.0.16",
+            "tag_name": "v1.0.17",
+            "html_url": "https://example.invalid/v1.0.17",
             "prerelease": True,
             "draft": False,
             "assets": [
@@ -130,8 +130,8 @@ def test_fetch_latest_release_can_include_prereleases(monkeypatch):
         include_prereleases=True,
     )
 
-    assert release["tag"] == "v1.0.16"
-    assert release["version"] == "1.0.16"
+    assert release["tag"] == "v1.0.17"
+    assert release["version"] == "1.0.17"
     assert release["asset_name"] == "JellyRipInstaller.exe"
     assert release["prerelease"] is True
 
@@ -139,8 +139,8 @@ def test_fetch_latest_release_can_include_prereleases(monkeypatch):
 def test_fetch_latest_release_skips_prereleases_by_default(monkeypatch):
     releases = [
         {
-            "tag_name": "v1.0.16",
-            "html_url": "https://example.invalid/v1.0.16",
+            "tag_name": "v1.0.17",
+            "html_url": "https://example.invalid/v1.0.17",
             "prerelease": True,
             "draft": False,
             "assets": [],

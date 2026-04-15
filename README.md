@@ -10,7 +10,7 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.16` (latest unstable pre-release)
+- Current unstable line: `v1.0.17` (latest unstable pre-release)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -29,9 +29,9 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.16` unstable pre-release)
+(recommended, currently `v1.0.17` unstable pre-release)
 
-1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.16).
+1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.17).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
   first (common PyInstaller false positive).
@@ -149,7 +149,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.16
+release.bat 1.0.17
 ```
 
 This runs tests, checks version consistency, builds both executables,

@@ -3,14 +3,14 @@ REM ============================================================
 REM  JellyRip release pipeline — enforces correct order:
 REM    git-check -> tests -> build -> verify -> push -> publish
 REM
-REM  Usage:  release.bat 1.0.16
+REM  Usage:  release.bat 1.0.17
 REM ============================================================
 setlocal enabledelayedexpansion
 
 set VERSION=%~1
 if "%VERSION%"=="" (
     echo Usage: release.bat ^<version^>
-    echo Example: release.bat 1.0.16
+    echo Example: release.bat 1.0.17
     exit /b 1
 )
 
@@ -162,17 +162,25 @@ echo.
 
 REM ---- Step 6: Verify build outputs ----
 echo [6/8] Verifying build outputs...
-for %%F in ("%ARTIFACT_DIR%\JellyRip.exe") do (
-    if %%~zF LSS 1000000 (
-        echo ABORT: JellyRip.exe is suspiciously small (%%~zF bytes).
-        exit /b 1
-    )
+set "APP_EXE_SIZE="
+for %%F in (%ARTIFACT_DIR%\JellyRip.exe) do set "APP_EXE_SIZE=%%~zF"
+if not defined APP_EXE_SIZE (
+    echo ABORT: Could not determine size for %ARTIFACT_DIR%\JellyRip.exe.
+    exit /b 1
 )
-for %%F in ("%ARTIFACT_DIR%\JellyRipInstaller.exe") do (
-    if %%~zF LSS 1000000 (
-        echo ABORT: JellyRipInstaller.exe is suspiciously small (%%~zF bytes).
-        exit /b 1
-    )
+if !APP_EXE_SIZE! LSS 1000000 (
+    echo ABORT: JellyRip.exe is suspiciously small - !APP_EXE_SIZE! bytes.
+    exit /b 1
+)
+set "INSTALLER_EXE_SIZE="
+for %%F in (%ARTIFACT_DIR%\JellyRipInstaller.exe) do set "INSTALLER_EXE_SIZE=%%~zF"
+if not defined INSTALLER_EXE_SIZE (
+    echo ABORT: Could not determine size for %ARTIFACT_DIR%\JellyRipInstaller.exe.
+    exit /b 1
+)
+if !INSTALLER_EXE_SIZE! LSS 1000000 (
+    echo ABORT: JellyRipInstaller.exe is suspiciously small - !INSTALLER_EXE_SIZE! bytes.
+    exit /b 1
 )
 echo       Both executables verified.
 echo.
