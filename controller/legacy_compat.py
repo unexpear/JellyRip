@@ -177,7 +177,7 @@ class LegacyControllerMixin:
         # Debug: raw MakeMKV LibreDrive line for troubleshooting
         raw = info.get("libre_drive_raw", "")
         if raw:
-            self.log(f"[AI][DEBUG] LibreDrive raw: \"{raw}\"")
+            self.log(f"[Diagnostics][DEBUG] LibreDrive raw: \"{raw}\"")
 
         # --- UI dialog: show drive status in scan results panel ---
         disc_type = info.get("disc_type")
@@ -798,4 +798,3 @@ class LegacyControllerMixin:
             selected_ids,
             expected_size_by_title,
         )
-

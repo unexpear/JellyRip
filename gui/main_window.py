@@ -2,7 +2,6 @@
 
 
 import glob
-import json
 import os
 import platform
 import queue as queue_module
@@ -174,6 +173,7 @@ from utils.classifier import (
     get_recommended_title,
 )
 
+from gui.theme import build_app_theme
 from gui.update_ui import check_for_updates, launch_downloaded_update
 
 
@@ -186,16 +186,6 @@ HANDBRAKE_PRESETS = [
 ]
 TRANSCODE_PROFILE_FILENAME = "transcode_profiles.json"
 CONCURRENT_MODE_KEYS = frozenset({"scan"})
-_AI_ASSISTANT_SYSTEM_PROMPT = (
-    "You are JellyRip Assistant, a side-panel helper inside the JellyRip desktop app. "
-    "You can answer general questions, explain what is happening in the app, and suggest next steps. "
-    "Every request includes a UI snapshot with the current status, progress, selected drive, "
-    "and recent live log lines so you can reason from what the user sees. "
-    "You do not have direct screen vision beyond that snapshot. "
-    "If the request is about JellyRip, use the UI snapshot first. "
-    "If it is a general question such as when a movie came out, answer it directly. "
-    "Be concise, practical, and honest about uncertainty."
-)
 
 
 def _ffmpeg_source_mode_label(value: str) -> str:
@@ -269,7 +259,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
     def on_complete(self, _job_id: str) -> None:
         self.set_progress(100)
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, startup_context=None):
         """
         LAYER 3 — GUI
 
@@ -290,10 +280,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         """
         super().__init__()
         self.cfg   = cfg
-        self.title(f"Jellyfin Raw Ripper v{__version__}")
-        self.geometry("1200x900")
-        self.minsize(1000, 750)
-        self.configure(bg="#0d1117")
+        self._startup_context = dict(startup_context or {})
+        self._theme = build_app_theme(self.cfg.get("opt_theme_overrides"))
+        self.title(f"Raw Jelly Ripper v{__version__}")
+        screen_width = max(1024, int(self.winfo_screenwidth()))
+        screen_height = max(768, int(self.winfo_screenheight()))
+        window_width = max(1024, min(1260, screen_width - 160))
+        window_height = max(760, min(900, screen_height - 120))
+        self.geometry(f"{window_width}x{window_height}")
+        self.minsize(min(window_width, 1040), min(window_height, 760))
+        self.configure(bg=self._theme["window_bg"])
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.message_queue = queue_module.Queue()
@@ -308,15 +304,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self._log_widget_lock = threading.Lock()
         self._text_context_menu: tk.Menu | None = None
         self._text_context_widget: tk.Misc | None = None
-        self._ai_sidebar_visible = bool(self.cfg.get("opt_ai_sidebar_open", False))
-        self._ai_chat_busy = False
-        self._ai_chat_history: list[dict[str, str]] = []
-        self._ai_sidebar_min_width = 300
         self._log_panel_min_width = 520
-        self._ai_sidebar_width = max(
-            self._ai_sidebar_min_width,
-            int(self.cfg.get("opt_ai_sidebar_width", 360)),
-        )
+        self._progress_visible = False
 
         configure_safe_int_debug(
             cfg.get("opt_debug_safe_int", False),
@@ -329,12 +318,43 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
         self.build_interface()
         self._install_text_context_menu_bindings()
-        self.controller.log(f"Jellyfin Raw Ripper v{__version__} started")
+        self.controller.log(f"Raw Jelly Ripper v{__version__} started")
         self.controller.log("Choose a mode to begin")
         self._taskbar_progress = None
         self.after(500, self._init_taskbar)
         # Schedule process_queue last to guarantee all widgets are initialized
         self.after(100, self.process_queue)
+        if self._startup_context.get("issues"):
+            self.after(150, self._apply_startup_context)
+
+    def _apply_startup_context(self) -> None:
+        raw_issues = self._startup_context.get("issues", [])
+        issues = [
+            str(issue).strip()
+            for issue in raw_issues
+            if str(issue).strip()
+        ]
+        if not issues:
+            return
+
+        self.controller.log("Startup recovery enabled.")
+        for issue in issues:
+            self.controller.log(f"Startup: {issue}")
+
+        self.set_status("Settings need attention")
+        summary = "\n\n".join(issues)
+        try:
+            messagebox.showwarning(
+                "Startup Recovery",
+                summary
+                + "\n\nJellyfin Raw Ripper opened with safe defaults so you can fix this in Settings.",
+                parent=self,
+            )
+        except Exception:
+            self.controller.log("Startup: could not show recovery dialog.")
+
+        if self._startup_context.get("open_settings"):
+            self.after(0, self._open_settings_safe)
 
     def _append_log_text_main(self, msg, tag=None):
         """Append one line to the log widget from the Tk main thread only."""
@@ -481,627 +501,113 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         except Exception:
             pass
 
-    def _update_ai_sidebar_toggle_ui(self) -> None:
-        if not hasattr(self, "ai_chat_toggle_btn"):
-            return
-        if self._ai_sidebar_visible:
-            self.ai_chat_toggle_btn.configure(
-                bg="#30363d",
-                fg="#e6edf3",
-                relief="sunken",
-            )
-        else:
-            self.ai_chat_toggle_btn.configure(
-                bg="#21262d",
-                fg="#8b949e",
-                relief="flat",
-            )
-
-    def _remember_ai_sidebar_width(self, width: int | None = None) -> None:
-        raw_width = width
-        if raw_width is None and hasattr(self, "ai_sidebar_frame"):
-            try:
-                raw_width = int(self.ai_sidebar_frame.winfo_width())
-            except Exception:
-                raw_width = None
-        if raw_width is None:
-            return
-        new_width = max(self._ai_sidebar_min_width, int(raw_width))
-        self._ai_sidebar_width = new_width
-        self.cfg["opt_ai_sidebar_width"] = new_width
-
-    def _on_ai_sidebar_configure(self, event) -> None:
-        if not self._ai_sidebar_visible:
-            return
-        if int(getattr(event, "width", 0)) <= 1:
-            return
-        self._remember_ai_sidebar_width(int(event.width))
-
-    def _apply_ai_sidebar_width(self) -> None:
-        if not hasattr(self, "content_pane") or not hasattr(self, "ai_sidebar_frame"):
-            return
-        if str(self.ai_sidebar_frame) not in self.content_pane.panes():
-            return
-        pane_width = int(self.content_pane.winfo_width())
-        if pane_width <= 1:
-            self.after(50, self._apply_ai_sidebar_width)
-            return
-        max_sidebar = max(
-            self._ai_sidebar_min_width,
-            pane_width - self._log_panel_min_width,
-        )
-        sidebar_width = min(self._ai_sidebar_width, max_sidebar)
-        sidebar_width = max(self._ai_sidebar_min_width, sidebar_width)
-        sash_x = max(self._log_panel_min_width, pane_width - sidebar_width)
+    def _configure_main_styles(self) -> None:
+        colors = self._theme
+        style = ttk.Style(self)
         try:
-            self.content_pane.sash_place(0, sash_x, 0)
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "JellyRipMain.TCombobox",
+            fieldbackground=colors["input_bg"],
+            background=colors["input_bg"],
+            foreground=colors["input_fg"],
+            arrowcolor=colors["muted_soft"],
+            bordercolor=colors["panel_border"],
+            lightcolor=colors["input_bg"],
+            darkcolor=colors["input_bg"],
+            relief="flat",
+            padding=(12, 6, 12, 6),
+        )
+        style.map(
+            "JellyRipMain.TCombobox",
+            fieldbackground=[("readonly", colors["input_bg"])],
+            foreground=[("readonly", colors["input_fg"])],
+            selectbackground=[("readonly", colors["input_bg"])],
+            selectforeground=[("readonly", colors["input_fg"])],
+            background=[("readonly", colors["input_bg"])],
+            arrowcolor=[
+                ("active", colors["title"]),
+                ("readonly", colors["muted_soft"]),
+            ],
+        )
+        style.configure(
+            "JellyRipMain.Horizontal.TProgressbar",
+            background=colors["progress_fill"],
+            troughcolor=colors["progress_trough"],
+            bordercolor=colors["panel_border"],
+            lightcolor=colors["progress_fill"],
+            darkcolor=colors["progress_fill"],
+            thickness=10,
+        )
+
+    def _set_progress_visibility(self, visible: bool) -> None:
+        if not hasattr(self, "progress_shell"):
+            return
+        if visible and not self._progress_visible:
+            self.progress_shell.grid(
+                row=1,
+                column=0,
+                columnspan=4,
+                sticky="ew",
+                pady=(8, 0),
+            )
+            self._progress_visible = True
+        elif not visible and self._progress_visible:
+            self.progress_shell.grid_remove()
+            self._progress_visible = False
+
+    def _focus_live_log(self) -> None:
+        if not hasattr(self, "log_text"):
+            return
+        try:
+            self.log_text.focus_set()
+            self.log_text.see("end")
         except Exception:
             pass
 
-    def _on_content_pane_configure(self, _event) -> None:
-        if not self._ai_sidebar_visible:
-            return
-        self.after_idle(self._apply_ai_sidebar_width)
-
-    def _show_ai_sidebar(self) -> None:
-        if not hasattr(self, "ai_sidebar_frame") or not hasattr(self, "content_pane"):
-            return
-        if str(self.ai_sidebar_frame) not in self.content_pane.panes():
-            self.content_pane.add(
-                self.ai_sidebar_frame,
-                minsize=self._ai_sidebar_min_width,
+    def _main_status_style_for_message(self, msg):
+        colors = getattr(self, "_theme", None) or build_app_theme()
+        normalized = str(msg or "").strip().lower()
+        if not normalized or normalized in {"ready", "idle"} or "choose a mode" in normalized:
+            return (
+                colors["pill_idle_bg"],
+                colors["pill_idle_border"],
+                colors["ready_text"],
             )
-        self._ai_sidebar_visible = True
-        self.cfg["opt_ai_sidebar_open"] = True
-        self.after_idle(self._apply_ai_sidebar_width)
-        self._persist_config()
-        self._update_ai_sidebar_toggle_ui()
-        if hasattr(self, "ai_chat_input"):
-            self.after(0, self.ai_chat_input.focus_set)
-
-    def _hide_ai_sidebar(self) -> None:
-        self._remember_ai_sidebar_width()
-        if hasattr(self, "content_pane") and hasattr(self, "ai_sidebar_frame"):
-            if str(self.ai_sidebar_frame) in self.content_pane.panes():
-                try:
-                    self.content_pane.forget(self.ai_sidebar_frame)
-                except Exception:
-                    pass
-        self._ai_sidebar_visible = False
-        self.cfg["opt_ai_sidebar_open"] = False
-        self._persist_config()
-        self._update_ai_sidebar_toggle_ui()
-
-    def _toggle_ai_sidebar(self) -> None:
-        if self._ai_sidebar_visible:
-            self._hide_ai_sidebar()
-        else:
-            self._show_ai_sidebar()
-
-    def _collect_live_log_tail(
-        self,
-        max_lines: int = 60,
-        max_chars: int = 6000,
-    ) -> str:
-        if not hasattr(self, "log_text"):
-            return ""
-        try:
-            content = self.log_text.get("1.0", "end-1c")
-        except Exception:
-            return ""
-        if not content:
-            return ""
-        lines = content.splitlines()
-        tail = "\n".join(lines[-max_lines:])
-        if len(tail) > max_chars:
-            tail = tail[-max_chars:]
-        return tail
-
-    def _build_ai_sidebar_payload(self, prompt: str) -> str:
-        status = self.status_var.get() if hasattr(self, "status_var") else ""
-        progress = float(self.progress_var.get()) if hasattr(self, "progress_var") else 0.0
-        drive = self.drive_var.get() if hasattr(self, "drive_var") else ""
-        ai_mode = self._ai_mode_var.get() if hasattr(self, "_ai_mode_var") else "off"
-        abort_state = (
-            str(self.abort_btn.cget("state")) if hasattr(self, "abort_btn") else "disabled"
-        )
-        payload = {
-            "request": str(prompt or "").strip(),
-            "conversation_history": self._ai_chat_history[-8:],
-            "ui_snapshot": {
-                "window_title": self.title(),
-                "status": status,
-                "progress_percent": round(progress, 1),
-                "selected_drive": drive,
-                "ai_mode": ai_mode,
-                "abort_button_state": abort_state,
-                "assistant_panel_open": bool(self._ai_sidebar_visible),
-                "live_log_tail": self._collect_live_log_tail(),
-            },
-        }
-        return json.dumps(payload, indent=2)
-
-    def _set_ai_chat_busy(self, busy: bool, status_text: str | None = None) -> None:
-        self._ai_chat_busy = busy
-        if hasattr(self, "ai_chat_send_btn"):
-            self.ai_chat_send_btn.configure(state=("disabled" if busy else "normal"))
-        if hasattr(self, "ai_chat_suggest_btn"):
-            self.ai_chat_suggest_btn.configure(state=("disabled" if busy else "normal"))
-        if hasattr(self, "ai_chat_status_var"):
-            if status_text:
-                self.ai_chat_status_var.set(status_text)
-            else:
-                self.ai_chat_status_var.set("Thinking..." if busy else "Ready")
-
-    def _append_ai_chat_message(
-        self,
-        role: str,
-        text: str,
-        backend_tag: str = "",
-    ) -> None:
-        if not hasattr(self, "ai_chat_transcript"):
-            return
-        message = str(text or "").strip() or "(empty)"
-        title_map = {
-            "user": ("You", "ai_chat_user"),
-            "assistant": ("Assistant", "ai_chat_assistant"),
-            "system": ("System", "ai_chat_system"),
-        }
-        label, tag = title_map.get(role, ("Assistant", "ai_chat_assistant"))
-        if backend_tag:
-            label = f"{label} ({backend_tag})"
-        stamp = datetime.now().strftime("%H:%M:%S")
-        transcript = self.ai_chat_transcript
-        transcript.configure(state="normal")
-        if transcript.index("end-1c") != "1.0":
-            transcript.insert("end", "\n")
-        transcript.insert("end", f"{label}  {stamp}\n", tag)
-        transcript.insert("end", f"{message}\n", "ai_chat_body")
-        transcript.configure(state="disabled")
-        transcript.see("end")
-
-    def _reset_ai_chat(self) -> None:
-        self._ai_chat_history.clear()
-        if not hasattr(self, "ai_chat_transcript"):
-            return
-        self.ai_chat_transcript.configure(state="normal")
-        self.ai_chat_transcript.delete("1.0", "end")
-        self.ai_chat_transcript.configure(state="disabled")
-        self._append_ai_chat_message(
-            "system",
-            "Ask about the current rip or any general question here. "
-            "Automatic rip suggestions still show up in the live log.",
-        )
-        self._set_ai_chat_busy(False, "Ready")
-
-    def _handle_ai_chat_return(self, event) -> str | None:
-        if event.state & 0x1:
-            return None
-        self._submit_ai_chat()
-        return "break"
-
-    def _request_ai_response_async(
-        self,
-        title: str,
-        user_text: str,
-        system_prompt: str,
-        max_tokens: int,
-        on_success,
-        on_error,
-        on_status=None,
-        log_request: bool = True,
-        log_failures: bool = True,
-    ) -> None:
-        text = str(user_text or "").strip()
-        if not text:
-            self.after(0, lambda: on_error("No request text provided."))
-            return
-
-        providers = self._resolve_ai_text_providers()
-        if not providers:
-            self.after(
-                0,
-                lambda: on_error(
-                    "AI is off or no configured provider is available. "
-                    "Use the AI mode toggle or Provider Setup first."
-                ),
+        if any(
+            token in normalized
+            for token in ("failed", "error", "missing", "invalid", "blocked", "unavailable")
+        ):
+            return (
+                colors["pill_error_bg"],
+                colors["pill_error_border"],
+                colors["pill_error_border"],
             )
-            return
-
-        if log_request:
-            self.controller.log(f"[AI] {title} requested.")
-
-        def worker() -> None:
-            last_error = "No provider available."
-            for tag, provider, timeout in providers:
-                if provider is None:
-                    continue
-                try:
-                    if on_status is not None:
-                        self.after(0, lambda current=tag: on_status(current))
-                    result = provider.diagnose(
-                        text,
-                        system_prompt,
-                        max_tokens=max_tokens,
-                        timeout=float(timeout),
-                    ).strip()
-                    if log_request:
-                        self.controller.log(f"[AI:{tag}] {title} complete.")
-                    self.after(
-                        0,
-                        lambda response=result, backend=tag: on_success(response, backend),
-                    )
-                    return
-                except Exception as e:
-                    last_error = f"{tag}: {e}"
-                    if log_failures:
-                        self.controller.log(f"[AI:{tag}] {title} failed: {e}")
-            self.after(0, lambda err=last_error: on_error(err))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _start_ai_chat_request(self, prompt: str, display_text: str | None = None) -> None:
-        request_text = str(prompt or "").strip()
-        if not request_text or self._ai_chat_busy:
-            return
-
-        shown_text = str(display_text or request_text).strip()
-        self._ai_chat_history.append({"role": "user", "content": shown_text})
-        self._append_ai_chat_message("user", shown_text)
-        self._set_ai_chat_busy(True, "Thinking...")
-
-        payload = self._build_ai_sidebar_payload(request_text)
-
-        def _on_success(result_text: str, backend_tag: str) -> None:
-            answer = result_text.strip() or "(no response)"
-            self._ai_chat_history.append({"role": "assistant", "content": answer})
-            self._append_ai_chat_message("assistant", answer, backend_tag=backend_tag)
-            self._set_ai_chat_busy(False, f"Ready via {backend_tag.lower()}")
-            if self._ai_sidebar_visible and hasattr(self, "ai_chat_input"):
-                self.ai_chat_input.focus_set()
-
-        def _on_error(message: str) -> None:
-            self._append_ai_chat_message(
-                "system",
-                f"Could not get an answer: {message}",
+        if any(
+            token in normalized
+            for token in ("attention", "warning", "aborting", "cancelled", "canceled", "retry", "waiting")
+        ):
+            return (
+                colors["pill_warn_bg"],
+                colors["pill_warn_border"],
+                colors["pill_warn_border"],
             )
-            self._set_ai_chat_busy(False, "Unavailable")
-            if self._ai_sidebar_visible and hasattr(self, "ai_chat_input"):
-                self.ai_chat_input.focus_set()
-
-        self._request_ai_response_async(
-            title="AI Assistant",
-            user_text=payload,
-            system_prompt=_AI_ASSISTANT_SYSTEM_PROMPT,
-            max_tokens=900,
-            on_success=_on_success,
-            on_error=_on_error,
-            on_status=lambda current: self._set_ai_chat_busy(
-                True, f"Thinking with {current.lower()}..."
-            ),
-            log_request=False,
-            log_failures=False,
+        return (
+            colors["pill_active_bg"],
+            colors["pill_active_border"],
+            colors["pill_active_border"],
         )
 
-    def _submit_ai_chat(self) -> None:
-        if not hasattr(self, "ai_chat_input"):
-            return
-        prompt = self.ai_chat_input.get("1.0", "end-1c").strip()
-        if not prompt:
-            self.ai_chat_input.focus_set()
-            return
-        self.ai_chat_input.delete("1.0", "end")
-        self._start_ai_chat_request(prompt)
-
-    def _request_ai_sidebar_suggestion(self) -> None:
-        self._start_ai_chat_request(
-            (
-                "Look at the current UI snapshot and recent live rip log. "
-                "Suggest the most useful next steps or checks right now. "
-                "Call out anything that looks healthy, anything that looks risky, "
-                "and what the user should do next."
-            ),
-            "Suggest what to do next from the current UI and live log.",
+    def _apply_main_status_style(self, msg=None):
+        bg, border, fg = self._main_status_style_for_message(
+            self.status_var.get() if msg is None and hasattr(self, "status_var") else msg
         )
-
-    def _resolve_ai_text_providers(self) -> list[tuple[str, object, float]]:
-        mode = str(self.cfg.get("opt_ai_mode", "cloud"))
-        if mode == "off":
-            return []
-        try:
-            from shared.ai.provider_registry import (
-                resolve_active_cloud_provider,
-                resolve_local_provider,
-            )
-        except Exception:
-            return []
-
-        cloud = None
-        local = None
-
-        try:
-            if bool(self.cfg.get("opt_ai_cloud_enabled", True)):
-                cloud = resolve_active_cloud_provider()
-                if cloud and not cloud.is_available():
-                    cloud = None
-        except Exception:
-            cloud = None
-
-        try:
-            if bool(self.cfg.get("opt_ai_local_enabled", True)):
-                local = resolve_local_provider()
-                if local and not local.is_available():
-                    local = None
-        except Exception:
-            local = None
-
-        cloud_timeout = float(self.cfg.get("opt_ai_cloud_timeout_seconds", 30))
-        local_timeout = float(self.cfg.get("opt_ai_local_timeout_seconds", 20))
-
-        if mode == "local":
-            return [("LOCAL", local, local_timeout)] if local else []
-
-        providers: list[tuple[str, object, float]] = []
-        if cloud:
-            providers.append(("CLOUD", cloud, cloud_timeout))
-        if local:
-            providers.append(("LOCAL", local, local_timeout))
-        return providers
-
-    def _run_ai_text_request(
-        self,
-        title: str,
-        user_text: str,
-        system_prompt: str,
-        max_tokens: int = 700,
-        replace_target: tuple[tk.Misc, dict[str, object]] | None = None,
-    ) -> None:
-        text = str(user_text or "").strip()
-        if not text:
-            self.show_info("AI", "Select some text first.")
-            return
-
-        providers = self._resolve_ai_text_providers()
-        if not providers:
-            self.show_info(
-                "AI Unavailable",
-                "AI is off or no configured provider is available.\n\n"
-                "Use the AI mode toggle or Provider Setup first.",
-            )
-            return
-
-        progress = tk.Toplevel(self)
-        progress.title(title)
-        progress.configure(bg="#161b22")
-        progress.resizable(False, False)
-        progress.transient(self)
-        progress.grab_set()
-        progress.lift()
-        progress.focus_force()
-
-        tk.Label(
-            progress,
-            text=title,
-            bg="#161b22",
-            fg="#58a6ff",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(padx=20, pady=(16, 6))
-        status_var = tk.StringVar(value="Contacting AI...")
-        tk.Label(
-            progress,
-            textvariable=status_var,
-            bg="#161b22",
-            fg="#c9d1d9",
-            font=("Segoe UI", 10),
-            wraplength=420,
-            justify="left",
-        ).pack(padx=20, pady=(0, 14))
-
-        self.controller.log(f"[AI] {title} requested.")
-
-        def _close_progress() -> None:
-            try:
-                progress.grab_release()
-            except Exception:
-                pass
-            try:
-                progress.destroy()
-            except Exception:
-                pass
-
-        def _show_result(result_text: str, backend_tag: str) -> None:
-            _close_progress()
-            self._show_ai_result_dialog(
-                title=title,
-                result_text=result_text,
-                backend_tag=backend_tag,
-                replace_target=replace_target,
-            )
-
-        def _show_error(message: str) -> None:
-            _close_progress()
-            self.show_error("AI Request Failed", message)
-        self._request_ai_response_async(
-            title=title,
-            user_text=text,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            on_success=_show_result,
-            on_error=_show_error,
-            on_status=lambda current: status_var.set(f"Contacting {current} backend..."),
-            log_request=True,
-            log_failures=True,
-        )
-
-    def _replace_widget_text(
-        self,
-        widget: tk.Misc,
-        selection_ctx: dict[str, object],
-        new_text: str,
-    ) -> None:
-        if not self._is_text_widget_editable(widget):
-            return
-        try:
-            widget.focus_set()
-            kind = selection_ctx.get("kind")
-            if kind == "entry":
-                start = int(selection_ctx["start"])
-                end = int(selection_ctx["end"])
-                widget.delete(start, end)
-                widget.insert(start, new_text)
-            elif kind == "text":
-                start = str(selection_ctx["start"])
-                end = str(selection_ctx["end"])
-                widget.delete(start, end)
-                widget.insert(start, new_text)
-        except Exception as e:
-            self.show_error("Replace Failed", str(e))
-
-    def _show_ai_result_dialog(
-        self,
-        title: str,
-        result_text: str,
-        backend_tag: str,
-        replace_target: tuple[tk.Misc, dict[str, object]] | None = None,
-    ) -> None:
-        win = tk.Toplevel(self)
-        win.title(title)
-        win.configure(bg="#0d1117")
-        win.geometry("760x520")
-        win.transient(self)
-        win.grab_set()
-        win.lift()
-        win.focus_force()
-
-        tk.Label(
-            win,
-            text=f"{title} ({backend_tag})",
-            bg="#0d1117",
-            fg="#58a6ff",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(padx=16, pady=(14, 6), anchor="w")
-
-        body = scrolledtext.ScrolledText(
-            win,
-            bg="#161b22",
-            fg="#c9d1d9",
-            font=("Consolas", 10),
-            insertbackground="white",
-            wrap="word",
-        )
-        body.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-        body.insert("1.0", result_text)
-        body.config(state="disabled")
-
-        btn_row = tk.Frame(win, bg="#0d1117")
-        btn_row.pack(fill="x", padx=16, pady=(0, 14))
-
-        tk.Button(
-            btn_row,
-            text="Copy",
-            command=lambda: (self.clipboard_clear(), self.clipboard_append(result_text)),
-            bg="#21262d",
-            fg="#c9d1d9",
-            font=("Segoe UI", 10),
-            relief="flat",
-        ).pack(side="left", padx=(0, 6))
-
-        if replace_target is not None:
-            widget, selection_ctx = replace_target
-            tk.Button(
-                btn_row,
-                text="Replace Selection",
-                command=lambda w=widget, ctx=selection_ctx: (
-                    self._replace_widget_text(w, ctx, result_text),
-                    win.destroy(),
-                ),
-                bg="#238636",
-                fg="white",
-                font=("Segoe UI", 10, "bold"),
-                relief="flat",
-            ).pack(side="left", padx=(0, 6))
-
-        tk.Button(
-            btn_row,
-            text="Close",
-            command=win.destroy,
-            bg="#30363d",
-            fg="#c9d1d9",
-            font=("Segoe UI", 10),
-            relief="flat",
-        ).pack(side="right")
-
-    def _run_ai_text_action(
-        self,
-        widget: tk.Misc,
-        action: str,
-    ) -> None:
-        selection = self._get_text_widget_selection(widget)
-        if not selection:
-            self.show_info("AI", "Select some text first.")
-            return
-
-        replace_target = None
-        selection_ctx = self._capture_widget_selection_context(widget)
-        if selection_ctx and self._is_text_widget_editable(widget) and action in {"fix", "rewrite"}:
-            replace_target = (widget, selection_ctx)
-
-        if action == "fix":
-            self._run_ai_text_request(
-                title="AI Spell Check",
-                user_text=selection,
-                system_prompt=(
-                    "You are an editing assistant inside JellyRip. "
-                    "Correct spelling, grammar, punctuation, and obvious typos "
-                    "while preserving meaning, tone, names, and formatting. "
-                    "Return only the corrected text."
-                ),
-                max_tokens=700,
-                replace_target=replace_target,
-            )
-            return
-
-        if action == "rewrite":
-            self._run_ai_text_request(
-                title="AI Rewrite",
-                user_text=selection,
-                system_prompt=(
-                    "You are a concise writing assistant inside JellyRip. "
-                    "Rewrite the text to be clearer and smoother while preserving "
-                    "the meaning and tone. Return only the rewritten text."
-                ),
-                max_tokens=700,
-                replace_target=replace_target,
-            )
-            return
-
-        if action == "explain":
-            self._run_ai_text_request(
-                title="AI Explain",
-                user_text=selection,
-                system_prompt=(
-                    "You are a helpful assistant inside JellyRip. "
-                    "Explain the selected text in plain English. "
-                    "Be concise and useful."
-                ),
-                max_tokens=600,
-            )
-            return
-
-        if action == "search":
-            self._run_ai_text_request(
-                title="AI Search",
-                user_text=selection,
-                system_prompt=(
-                    "You are a search-style assistant inside JellyRip. "
-                    "Given the selected text, answer the likely intent directly. "
-                    "If it is a phrase, explain it. If it is a question, answer it. "
-                    "If it names a concept, summarize the key facts. "
-                    "Be concise and practical."
-                ),
-                max_tokens=700,
-            )
-            return
+        if hasattr(self, "status_indicator"):
+            self.status_indicator.configure(bg=bg, highlightbackground=border)
+        if hasattr(self, "status_value_label"):
+            self.status_value_label.configure(bg=bg, fg=fg)
 
     def _show_text_context_menu(self, event) -> str:
         widget = event.widget
@@ -1166,23 +672,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     f"https://www.google.com/search?q={quote_plus(text)}"
                 ),
             )
-            menu.add_command(
-                label=f'Search with AI for "{label_text}"',
-                command=lambda w=widget: self._run_ai_text_action(w, "search"),
-            )
-            menu.add_separator()
-            menu.add_command(
-                label="Fix Spelling & Grammar with AI",
-                command=lambda w=widget: self._run_ai_text_action(w, "fix"),
-            )
-            menu.add_command(
-                label="Rewrite More Clearly with AI",
-                command=lambda w=widget: self._run_ai_text_action(w, "rewrite"),
-            )
-            menu.add_command(
-                label="Explain Selection with AI",
-                command=lambda w=widget: self._run_ai_text_action(w, "explain"),
-            )
 
         self._text_context_menu = menu
         try:
@@ -1192,6 +681,402 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         return "break"
 
     def build_interface(self):
+        colors = self._theme
+        bg = colors["window_bg"]
+        self.configure(bg=bg)
+        self._configure_main_styles()
+
+        toolbar_button = {
+            "bg": colors["toolbar_button"],
+            "fg": colors["toolbar_button_muted"],
+            "activebackground": colors["toolbar_button_active"],
+            "activeforeground": colors["toolbar_button_text"],
+            "disabledforeground": colors["muted"],
+            "font": ("Segoe UI", 14, "bold"),
+            "relief": "flat",
+            "bd": 0,
+            "highlightthickness": 1,
+            "highlightbackground": colors["panel_border"],
+            "highlightcolor": colors["panel_border"],
+            "padx": 14,
+            "pady": 10,
+            "cursor": "hand2",
+        }
+        tile_button = {
+            "fg": colors["text"],
+            "activeforeground": colors["text"],
+            "font": ("Segoe UI", 21, "bold"),
+            "relief": "flat",
+            "bd": 0,
+            "highlightthickness": 0,
+            "padx": 18,
+            "pady": 18,
+            "justify": "center",
+            "anchor": "center",
+            "cursor": "hand2",
+        }
+
+        def make_tile(
+            parent,
+            row,
+            column,
+            text,
+            mode,
+            color,
+            command,
+            *,
+            columnspan=1,
+            wraplength=360,
+        ):
+            tile = tk.Frame(
+                parent,
+                bg=color,
+                highlightbackground=color,
+                highlightthickness=1,
+                bd=0,
+            )
+            tile.grid(
+                row=row,
+                column=column,
+                columnspan=columnspan,
+                sticky="nsew",
+                padx=8,
+                pady=8,
+            )
+            btn = tk.Button(
+                tile,
+                text=text,
+                command=command,
+                bg=color,
+                activebackground=color,
+                wraplength=wraplength,
+                disabledforeground=colors["text"],
+                **tile_button,
+            )
+            btn.pack(fill="both", expand=True)
+            self.mode_buttons[mode] = btn
+            return btn
+
+        drive_frame = tk.Frame(self, bg=bg)
+        drive_frame.pack(fill="x", padx=36, pady=(14, 0))
+        drive_frame.grid_columnconfigure(1, weight=1)
+
+        tk.Label(
+            drive_frame,
+            text="Drive:",
+            bg=bg,
+            fg=colors["muted"],
+            font=("Segoe UI", 17),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 18))
+
+        self.drive_var = tk.StringVar(value="Loading drives...")
+        self.drive_options = [(0, "Default Drive (disc:0)")]
+        self.drive_menu = ttk.Combobox(
+            drive_frame,
+            textvariable=self.drive_var,
+            values=["Loading drives..."],
+            state="readonly",
+            style="JellyRipMain.TCombobox",
+            font=("Segoe UI", 15, "bold"),
+        )
+        self.drive_menu.bind("<<ComboboxSelected>>", self._on_drive_select)
+        self.drive_menu.grid(row=0, column=1, sticky="ew", ipady=4)
+
+        tk.Button(
+            drive_frame,
+            text="Refresh",
+            command=self._refresh_drives,
+            **toolbar_button,
+        ).grid(row=0, column=2, sticky="ns", padx=(18, 0))
+
+        util_frame = tk.Frame(
+            self,
+            bg=colors["surface"],
+            highlightbackground=colors["panel_border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        util_frame.pack(fill="x", padx=36, pady=(10, 0))
+
+        toolbar_actions = tk.Frame(util_frame, bg=colors["surface"])
+        toolbar_actions.pack(fill="x", padx=14, pady=10)
+        for col in range(5):
+            toolbar_actions.grid_columnconfigure(col, weight=1, uniform="toolbar")
+
+        self.settings_btn = tk.Button(
+            toolbar_actions,
+            text="Settings",
+            command=self._open_settings_safe,
+            **toolbar_button,
+        )
+        self.settings_btn.grid(row=0, column=0, sticky="ew", padx=6)
+
+        self.update_btn = tk.Button(
+            toolbar_actions,
+            text="Updates",
+            command=self.check_for_updates,
+            **toolbar_button,
+        )
+        self.update_btn.grid(row=0, column=1, sticky="ew", padx=6)
+
+        self.log_btn = tk.Button(
+            toolbar_actions,
+            text="Log",
+            command=self._focus_live_log,
+            **toolbar_button,
+        )
+        self.log_btn.grid(row=0, column=2, sticky="ew", padx=6)
+
+        self.copy_log_btn = tk.Button(
+            toolbar_actions,
+            text="Copy Log",
+            command=self.copy_log_to_clipboard,
+            **toolbar_button,
+        )
+        self.copy_log_btn.grid(row=0, column=3, sticky="ew", padx=6)
+
+        self.browse_btn = tk.Button(
+            toolbar_actions,
+            text="Browse",
+            command=self._browse_folder_in_explorer,
+            **toolbar_button,
+        )
+        self.browse_btn.grid(row=0, column=4, sticky="ew", padx=6)
+
+        action_frame = tk.Frame(self, bg=bg)
+        action_frame.pack(fill="x", padx=36, pady=(12, 0))
+        for col in range(3):
+            action_frame.grid_columnconfigure(col, weight=1, uniform="action")
+        action_frame.grid_rowconfigure(0, minsize=88)
+        action_frame.grid_rowconfigure(1, minsize=88)
+
+        self.mode_buttons = {}
+        make_tile(action_frame, 0, 0, "Rip TV Show Disc", "t", colors["green"], lambda: self.start_task("t"))
+        make_tile(action_frame, 0, 1, "Rip Movie Disc", "m", colors["teal"], lambda: self.start_task("m"))
+        make_tile(action_frame, 0, 2, "Dump All Titles", "d", colors["blue"], lambda: self.start_task("d"))
+        make_tile(
+            action_frame,
+            1,
+            0,
+            "Organize Existing MKVs",
+            "i",
+            colors["purple"],
+            lambda: self.start_task("i"),
+            columnspan=2,
+            wraplength=720,
+        )
+        make_tile(
+            action_frame,
+            1,
+            2,
+            "Prep for FFmpeg or HandBrake",
+            "scan",
+            colors["orange"],
+            self._open_folder_scanner,
+            wraplength=320,
+        )
+
+        self._bottom_dock = tk.Frame(self, bg=bg)
+        self._bottom_dock.pack(side="bottom", fill="x")
+
+        self.content_frame = tk.Frame(self, bg=bg)
+        self.content_frame.pack(fill="both", expand=True, padx=36, pady=(12, 0))
+
+        self.log_panel = tk.Frame(self.content_frame, bg=bg)
+        self.log_panel.pack(fill="both", expand=True)
+
+        status_strip = tk.Frame(self.log_panel, bg=bg)
+        status_strip.pack(fill="x", pady=(0, 8))
+        for col in range(4):
+            status_strip.grid_columnconfigure(col, weight=1, uniform="status")
+        self.status_strip = status_strip
+
+        self.status_brand = tk.Frame(
+            status_strip,
+            bg=colors["header_bg"],
+            highlightbackground=colors["header_border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        self.status_brand.grid(row=0, column=0, columnspan=3, sticky="ew", padx=(0, 12))
+        self.status_brand_inner = tk.Frame(self.status_brand, bg=colors["header_bg"], bd=0)
+        self.status_brand_inner.pack(expand=True, pady=2)
+        for text in ("Raw", "Jelly", "Ripper"):
+            tk.Label(
+                self.status_brand_inner,
+                text=text,
+                bg=colors["header_bg"],
+                fg=colors["title"],
+                font=("Segoe UI", 28, "bold"),
+                anchor="center",
+                justify="center",
+                padx=28,
+                pady=14,
+                bd=0,
+            ).pack(side="left")
+
+        self.status_indicator = tk.Frame(
+            status_strip,
+            bg=colors["pill_idle_bg"],
+            highlightbackground=colors["pill_idle_border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        self.status_indicator.grid(row=0, column=3, sticky="ew")
+
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_value_label = tk.Label(
+            self.status_indicator,
+            textvariable=self.status_var,
+            bg=colors["pill_idle_bg"],
+            fg=colors["ready_text"],
+            font=("Segoe UI", 28, "italic"),
+            anchor="center",
+            justify="center",
+            padx=14,
+            pady=14,
+            bd=0,
+        )
+        self.status_value_label.pack(fill="both", expand=True)
+        self._apply_main_status_style(self.status_var.get())
+
+        self.progress_shell = tk.Frame(status_strip, bg=bg)
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(
+            self.progress_shell,
+            variable=self.progress_var,
+            maximum=100,
+            mode="determinate",
+            style="JellyRipMain.Horizontal.TProgressbar",
+        )
+        self.progress_bar.pack(fill="x", expand=True)
+
+        log_card = tk.Frame(
+            self.log_panel,
+            bg=colors["surface_alt"],
+            highlightbackground=colors["panel_border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        log_card.pack(fill="both", expand=True)
+
+        log_header = tk.Frame(log_card, bg=colors["surface_alt"], bd=0)
+        log_header.pack(fill="x")
+        tk.Label(
+            log_header,
+            text="Live Log",
+            bg=colors["surface_alt"],
+            fg=colors["text"],
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w", padx=18, pady=(12, 10))
+
+        tk.Frame(log_card, bg=colors["panel_border"], height=1).pack(fill="x")
+
+        self.log_text = scrolledtext.ScrolledText(
+            log_card,
+            height=18,
+            bg=colors["log_bg"],
+            fg=colors["log_text"],
+            font=("Consolas", 13),
+            insertbackground=colors["text"],
+            wrap="word",
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=12,
+            state="disabled",
+        )
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.tag_configure("prompt", foreground="#ffd166")
+        self.log_text.tag_configure("answer", foreground=colors["title"])
+
+        self.input_bar = tk.Frame(
+            self,
+            bg=colors["surface"],
+            highlightbackground=colors["panel_border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        self.input_bar.pack(fill="x", padx=36, pady=(10, 0))
+        self.input_bar.pack_forget()
+
+        self.input_label_var = tk.StringVar(value="")
+        tk.Label(
+            self.input_bar,
+            textvariable=self.input_label_var,
+            bg=colors["surface"],
+            fg=colors["text"],
+            font=("Segoe UI", 11),
+            anchor="w",
+        ).pack(side="left", padx=(12, 6), pady=10)
+
+        self.input_var = tk.StringVar()
+        self.input_field = tk.Entry(
+            self.input_bar,
+            textvariable=self.input_var,
+            bg=colors["surface_deep"],
+            fg=colors["text"],
+            font=("Segoe UI", 12),
+            insertbackground=colors["text"],
+            relief="flat",
+            bd=0,
+            width=42,
+        )
+        self.input_field.pack(side="left", fill="x", expand=True, padx=6, pady=10)
+        self.input_field.bind("<Return>", lambda e: self._confirm_input())
+
+        tk.Button(
+            self.input_bar,
+            text="Confirm",
+            command=self._confirm_input,
+            bg=colors["green"],
+            fg=colors["text"],
+            activebackground=colors["green"],
+            activeforeground=colors["text"],
+            font=("Segoe UI", 11, "bold"),
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=8,
+            cursor="hand2",
+        ).pack(side="left", padx=6, pady=8)
+
+        tk.Button(
+            self.input_bar,
+            text="Skip",
+            command=self._skip_input,
+            **toolbar_button,
+        ).pack(side="left", padx=(0, 10), pady=8)
+
+        self.abort_btn = tk.Button(
+            self._bottom_dock,
+            text="ABORT SESSION",
+            command=self.request_abort,
+            bg=colors["abort"],
+            fg=colors["text"],
+            activebackground=colors["abort"],
+            activeforeground=colors["text"],
+            disabledforeground=colors["text"],
+            font=("Segoe UI", 22, "bold"),
+            relief="flat",
+            bd=0,
+            padx=18,
+            pady=18,
+            cursor="hand2",
+            state="disabled",
+        )
+        self.abort_btn.pack(fill="x", padx=36, pady=(14, 0))
+
+        safe_margin_px = int(self.cfg.get("opt_bottom_safe_margin_px", 72))
+        self._bottom_safe_spacer = tk.Frame(self._bottom_dock, bg=bg, height=safe_margin_px)
+        self._bottom_safe_spacer.pack(fill="x")
+        self._bottom_safe_spacer.pack_propagate(False)
+
+        # Do not auto-probe optical drives on startup; probing can spin up
+        # physical media drives and stall on some systems. Users can refresh
+        # explicitly with the Refresh button.
+
+    def _build_interface_legacy(self):
         BG = "#0d1117"
         self.configure(bg=BG)
 
@@ -1295,52 +1180,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10), relief="flat"
         )
         self.settings_btn.pack(side="right", padx=4)
-        self.ai_chat_toggle_btn = tk.Button(
-            util_frame,
-            text="Assistant",
-            command=self._toggle_ai_sidebar,
-            bg="#21262d",
-            fg="#8b949e",
-            font=("Segoe UI", 10),
-            relief="flat",
-        )
-        self.ai_chat_toggle_btn.pack(side="right", padx=4)
-
-        # --- AI Mode Control (left side of util bar) ---
-        ai_frame = tk.Frame(util_frame, bg=BG)
-        ai_frame.pack(side="left", padx=(0, 12))
-        tk.Label(
-            ai_frame, text="AI:",
-            bg=BG, fg="#8b949e",
-            font=("Segoe UI", 10)
-        ).pack(side="left", padx=(0, 4))
-
-        self._ai_mode_var = tk.StringVar(value=str(self.cfg.get("opt_ai_mode", "cloud")))
-        self._ai_mode_buttons: dict[str, tk.Button] = {}
-        for mode_value, mode_label in [("off", "OFF"), ("cloud", "CLOUD"), ("local", "LOCAL")]:
-            btn = tk.Button(
-                ai_frame, text=mode_label,
-                command=lambda m=mode_value: self._set_ai_mode(m),
-                bg="#21262d", fg="#8b949e",
-                font=("Segoe UI", 9), relief="flat",
-                width=6, padx=0,
-            )
-            btn.pack(side="left", padx=1)
-            self._ai_mode_buttons[mode_value] = btn
-        self._ai_status_label = tk.Label(
-            ai_frame, text="",
-            bg=BG, fg="#3fb950",
-            font=("Segoe UI", 9)
-        )
-        self._ai_status_label.pack(side="left", padx=(6, 0))
-        tk.Button(
-            ai_frame, text="\u2699",
-            bg="#21262d", fg="#8b949e",
-            font=("Segoe UI", 9), relief="flat",
-            width=3, padx=0,
-            command=self._open_ai_providers,
-        ).pack(side="left", padx=(4, 0))
-        self._update_ai_mode_ui()
 
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
@@ -1382,7 +1221,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             showhandle=False,
         )
         self.content_pane.pack(fill="both", expand=True)
-        self.content_pane.bind("<Configure>", self._on_content_pane_configure)
 
         self.log_panel = tk.Frame(self.content_pane, bg=BG)
         self.content_pane.add(self.log_panel, minsize=self._log_panel_min_width)
@@ -1401,148 +1239,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self.log_text.pack(fill="both", expand=True, pady=(0, 0))
         self.log_text.tag_configure("prompt", foreground="#f0e68c")
         self.log_text.tag_configure("answer", foreground="#90ee90")
-
-        self.ai_sidebar_frame = tk.Frame(
-            self.content_pane,
-            bg="#11161d",
-            width=self._ai_sidebar_width,
-            highlightbackground="#30363d",
-            highlightthickness=1,
-        )
-        self.ai_sidebar_frame.pack_propagate(False)
-        self.ai_sidebar_frame.bind("<Configure>", self._on_ai_sidebar_configure)
-
-        ai_header = tk.Frame(self.ai_sidebar_frame, bg="#11161d")
-        ai_header.pack(fill="x", padx=12, pady=(12, 6))
-
-        tk.Label(
-            ai_header,
-            text="Assistant",
-            bg="#11161d",
-            fg="#58a6ff",
-            font=("Segoe UI", 11, "bold"),
-        ).pack(side="left")
-
-        self.ai_chat_status_var = tk.StringVar(value="Ready")
-        tk.Label(
-            ai_header,
-            textvariable=self.ai_chat_status_var,
-            bg="#11161d",
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-        ).pack(side="left", padx=(8, 0))
-
-        tk.Button(
-            ai_header,
-            text="X",
-            command=self._hide_ai_sidebar,
-            bg="#21262d",
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-            relief="flat",
-            width=3,
-        ).pack(side="right")
-
-        tk.Label(
-            self.ai_sidebar_frame,
-            text=(
-                "Ask about this rip or a general question here. "
-                "Automatic rip suggestions still land in the live log."
-            ),
-            bg="#11161d",
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-            justify="left",
-            wraplength=320,
-        ).pack(fill="x", padx=12, pady=(0, 8))
-
-        self.ai_chat_transcript = scrolledtext.ScrolledText(
-            self.ai_sidebar_frame,
-            height=12,
-            bg="#161b22",
-            fg="#c9d1d9",
-            font=("Consolas", 10),
-            insertbackground="white",
-            wrap="word",
-            state="disabled",
-        )
-        self.ai_chat_transcript.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        self.ai_chat_transcript.tag_configure("ai_chat_user", foreground="#58a6ff")
-        self.ai_chat_transcript.tag_configure("ai_chat_assistant", foreground="#3fb950")
-        self.ai_chat_transcript.tag_configure("ai_chat_system", foreground="#d29922")
-        self.ai_chat_transcript.tag_configure("ai_chat_body", foreground="#c9d1d9")
-
-        ai_input_section = tk.Frame(self.ai_sidebar_frame, bg="#11161d")
-
-        ai_action_row = tk.Frame(ai_input_section, bg="#11161d")
-        ai_action_row.pack(fill="x", pady=(0, 8))
-
-        self.ai_chat_suggest_btn = tk.Button(
-            ai_action_row,
-            text="Suggest Next Step",
-            command=self._request_ai_sidebar_suggestion,
-            bg="#21262d",
-            fg="#c9d1d9",
-            font=("Segoe UI", 9),
-            relief="flat",
-        )
-        self.ai_chat_suggest_btn.pack(side="left")
-
-        tk.Button(
-            ai_action_row,
-            text="Clear",
-            command=self._reset_ai_chat,
-            bg="#21262d",
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-            relief="flat",
-        ).pack(side="right")
-
-        self.ai_chat_input = tk.Text(
-            ai_input_section,
-            height=4,
-            bg="#0d1117",
-            fg="#c9d1d9",
-            font=("Segoe UI", 10),
-            insertbackground="white",
-            relief="flat",
-            wrap="word",
-        )
-        self.ai_chat_input.pack(fill="x", pady=(0, 8))
-        self.ai_chat_input.bind("<Return>", self._handle_ai_chat_return)
-
-        ai_send_row = tk.Frame(ai_input_section, bg="#11161d")
-        ai_send_row.pack(fill="x")
-
-        tk.Label(
-            ai_send_row,
-            text="Enter sends. Shift+Enter adds a new line.",
-            bg="#11161d",
-            fg="#8b949e",
-            font=("Segoe UI", 8),
-        ).pack(side="left")
-
-        self.ai_chat_send_btn = tk.Button(
-            ai_send_row,
-            text="Send",
-            command=self._submit_ai_chat,
-            bg="#238636",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            relief="flat",
-            width=10,
-        )
-        self.ai_chat_send_btn.pack(side="right")
-        ai_input_section.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
-
-        if self._ai_sidebar_visible:
-            self.content_pane.add(
-                self.ai_sidebar_frame,
-                minsize=self._ai_sidebar_min_width,
-            )
-            self.after_idle(self._apply_ai_sidebar_width)
-        self._reset_ai_chat()
-        self._update_ai_sidebar_toggle_ui()
 
         self.input_bar = tk.Frame(self, bg="#21262d")
         self.input_bar.pack(fill="x", padx=20, pady=4)
@@ -1598,80 +1294,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if not folder:
             return
         self._open_path_in_explorer(folder)
-
-    # --- AI Mode Control ---
-
-    def _set_ai_mode(self, mode: str) -> None:
-        """Handle AI mode toggle click."""
-        self._ai_mode_var.set(mode)
-        self.cfg["opt_ai_mode"] = mode
-        try:
-            from shared.ai_diagnostics import get_diagnostics
-            mgr = get_diagnostics()
-            if mgr:
-                mgr.set_mode(mode)
-        except Exception:
-            pass
-        self._update_ai_mode_ui()
-        try:
-            from config import save_config
-            save_config(self.cfg)
-        except Exception:
-            pass
-
-    def _update_ai_mode_ui(self) -> None:
-        """Update AI toggle button highlights and status indicator."""
-        BG = "#0d1117"
-        current = self._ai_mode_var.get()
-        for mode_value, btn in self._ai_mode_buttons.items():
-            if mode_value == current:
-                btn.configure(bg="#30363d", fg="#e6edf3", relief="sunken")
-            else:
-                btn.configure(bg="#21262d", fg="#8b949e", relief="flat")
-
-        # Status indicator
-        try:
-            from shared.ai_diagnostics import get_diagnostics
-            mgr = get_diagnostics()
-            if mgr:
-                status = mgr.get_status()
-                state = status["state"]
-                state_colors = {
-                    "active": "#3fb950",
-                    "degraded": "#d29922",
-                    "disabled": "#f85149",
-                    "off": "#484f58",
-                }
-                color = state_colors.get(state, "#484f58")
-                calls = f"{status['calls_made']}/{status['calls_max']}"
-                self._ai_status_label.configure(
-                    text=f"\u25cf {state.title()} ({calls})",
-                    fg=color,
-                )
-            else:
-                self._ai_status_label.configure(text="\u25cf Init", fg="#484f58")
-        except Exception:
-            self._ai_status_label.configure(text="", fg="#484f58")
-
-    def _test_ai_backends(self) -> None:
-        """Run quick health check of AI backends (for future Test AI button)."""
-        try:
-            from shared.ai_diagnostics import get_diagnostics
-            mgr = get_diagnostics()
-            if not mgr:
-                self.show_info("AI Test", "Diagnostics not initialized.")
-                return
-            results = mgr.test_backends()
-            msg = f"Cloud: {results.get('cloud', 'N/A')}\nLocal: {results.get('local', 'N/A')}"
-            self.show_info("AI Backend Test", msg)
-            self._update_ai_mode_ui()
-        except Exception as e:
-            self.show_info("AI Test", f"Test failed: {e}")
-
-    def _open_ai_providers(self) -> None:
-        """Open the AI provider connection dialog."""
-        from gui.ai_provider_dialog import open_ai_provider_dialog
-        open_ai_provider_dialog(self, on_change=self._update_ai_mode_ui)
 
     def _open_folder_scanner(self):
         from tools.folder_scanner import scan_folder
@@ -4012,7 +3634,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self.input_label_var.set(label)
         self.input_var.set(initial_value or "")
         self._input_active = True
-        self.input_bar.pack(fill="x", padx=20, pady=4)
+        self.input_bar.pack(fill="x", padx=36, pady=(10, 0))
         if initial_value:
             self.input_field.selection_range(0, "end")
         self.input_field.focus_set()
@@ -6197,33 +5819,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 logs_tab,
                 "opt_log_trim_lines", "Trim log down to this many lines:", 200000
             )
-            section(logs_tab, "AI Providers")
-            ai_provider_row = tk.Frame(logs_tab, bg="#0d1117")
-            ai_provider_row.pack(fill="x", padx=16, pady=4)
-            tk.Label(
-                ai_provider_row,
-                text="Configure AI backend connections (API keys, models, local setup):",
-                bg="#0d1117", fg="#c9d1d9",
-                font=("Segoe UI", 10), anchor="w",
-            ).pack(side="left")
-            tk.Button(
-                ai_provider_row, text="Open AI Providers...",
-                bg="#21262d", fg="#58a6ff",
-                font=("Segoe UI", 10), relief="flat",
-                cursor="hand2",
-                command=self._open_ai_providers,
-            ).pack(side="left", padx=(8, 0))
-            toggle_row(logs_tab, "opt_ai_diagnostics_enabled",
-                       "Enable AI diagnostics")
-            toggle_row(logs_tab, "opt_ai_log_to_gui",
-                       "Show AI suggestions in live log")
-            toggle_row(logs_tab, "opt_ai_log_to_file",
-                       "Write AI diagnostics to session log files")
-            number_row(logs_tab, "opt_ai_max_calls_per_session",
-                       "Max AI calls per session:", 20)
-            number_row(logs_tab, "opt_ai_disable_after_failures",
-                       "Disable AI after consecutive failures:", 3)
-
             section(logs_tab, "Debugging")
             toggle_row(logs_tab, "opt_debug_safe_int",
                        "Debug: log bad integer values")
@@ -6374,6 +5969,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
     def start_indeterminate(self):
         def _start():
+            self._set_progress_visibility(True)
             if self.progress_bar["mode"] != "indeterminate":
                 self.progress_bar.config(mode="indeterminate")
             self.progress_bar.start(12)
@@ -6385,6 +5981,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             if self.progress_bar["mode"] != "determinate":
                 self.progress_bar.config(mode="determinate")
             self.progress_var.set(0)
+            self._set_progress_visibility(False)
         self.after(0, _stop)
 
     def _init_taskbar(self):
@@ -6393,7 +5990,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         except Exception:
             self._taskbar_progress = None
 
-    def _notify_complete(self, title="JellyRip", message="Rip complete."):
+    def _notify_complete(self, title="Raw Jelly Ripper", message="Rip complete."):
         """Send a Windows toast notification and play a completion beep."""
         if sys.platform != "win32":
             return
@@ -6437,6 +6034,8 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
     def set_progress(self, value):
         def _update():
             self.progress_var.set(value if value is not None and value >= 0 else 0)
+            show_progress = value is not None and value > 0
+            self._set_progress_visibility(show_progress)
             if self._taskbar_progress:
                 if value is None or value < 0:
                     self._taskbar_progress.clear()
@@ -6445,7 +6044,14 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self.after(0, _update)
 
     def set_status(self, msg):
-        self.after(0, lambda: self.status_var.set(msg))
+        status_text = str(msg).strip() or "Ready"
+
+        def _update():
+            if hasattr(self, "status_var"):
+                self.status_var.set(status_text)
+            self._apply_main_status_style(status_text)
+
+        self.after(0, _update)
 
     def append_log(self, msg):
         self.message_queue.put(msg)
@@ -6493,7 +6099,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if hasattr(self, "update_btn"):
             self.update_btn.config(state="disabled")
         if hasattr(self, "abort_btn"):
-            self.abort_btn.config(state="normal")  # Keep abort enabled during tasks
+            self.abort_btn.config(text="ABORT SESSION", state="normal")
 
     def enable_buttons(self):
         for btn in self.mode_buttons.values():
@@ -6503,20 +6109,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         if hasattr(self, "update_btn"):
             self.update_btn.config(state="normal")
         if hasattr(self, "abort_btn"):
-            self.abort_btn.config(state="disabled")  # Disable abort when idle
+            self.abort_btn.config(text="ABORT SESSION", state="disabled")
 
     def request_abort(self):
         """Abort immediately — no confirmation dialog required."""
         self.controller.log("ABORT REQUESTED BY USER")
         self.set_status("Aborting...")
-        self.abort_btn.config(state="disabled")
+        self.abort_btn.config(text="ABORTING...", state="disabled")
         self.engine.abort()
 
     def on_close(self):
         if messagebox.askokcancel(
-            "Exit", "Close Jellyfin Raw Ripper?", parent=self
+            "Exit", "Close Raw Jelly Ripper?", parent=self
         ):
-            self._remember_ai_sidebar_width()
             self._persist_config()
             self.engine.abort()
             # Attempt to join any running rip thread
@@ -6646,18 +6251,18 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 _success = True
             except Exception as e:
                 self.controller.log(f"Unhandled error: {e}")
-                # AI diagnostics: record crash and dump ring buffer
+                # Record crash details and dump the diagnostics ring buffer.
                 try:
                     from shared.ai_diagnostics import diag_exception, get_diagnostics
                     diag_exception(e, context="GUI task_wrapper top-level crash")
                     mgr = get_diagnostics()
                     if mgr:
                         path = mgr.dump_ring_buffer()
-                        self.controller.log(f"[AI] Crash buffer dumped to: {path}")
+                        self.controller.log(f"[Diagnostics] Crash buffer dumped to: {path}")
                 except Exception:
                     pass
                 self.after(0, lambda msg=str(e): self._notify_complete(
-                    "JellyRip — Error", f"Rip failed: {msg}"
+                    "Raw Jelly Ripper - Error", f"Rip failed: {msg}"
                 ))
             finally:
                 # Restore safe-mode-overridden config keys so Settings shows
@@ -6681,14 +6286,14 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                     is_partial = (not is_full_success) and bool(files)
                     if is_full_success:
                         self.after(0, lambda: self._notify_complete(
-                            "JellyRip", "Rip complete!"
+                            "Raw Jelly Ripper", "Rip complete!"
                         ))
                     elif is_partial:
                         def handle_partial():
                             accept = self.ask_accept_partial()
                             if accept:
                                 self._notify_complete(
-                                    "JellyRip", "Partial rip accepted. Files and metadata kept."
+                                    "Raw Jelly Ripper", "Partial rip accepted. Files and metadata kept."
                                 )
                             else:
                                 # Delete session folder and metadata
@@ -6698,20 +6303,20 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                                     try:
                                         shutil.rmtree(session_dir)
                                         self._notify_complete(
-                                            "JellyRip", "Partial rip deleted. Session and files removed."
+                                            "Raw Jelly Ripper", "Partial rip deleted. Session and files removed."
                                         )
                                     except Exception as e:
                                         self._notify_complete(
-                                            "JellyRip", f"Error deleting session: {e}"
+                                            "Raw Jelly Ripper", f"Error deleting session: {e}"
                                         )
                                 else:
                                     self._notify_complete(
-                                        "JellyRip", "Session directory not found. Nothing deleted."
+                                        "Raw Jelly Ripper", "Session directory not found. Nothing deleted."
                                     )
                         self.after(0, handle_partial)
                     else:
                         self.after(0, lambda: self._notify_complete(
-                            "JellyRip", "Rip failed. No files kept."
+                            "Raw Jelly Ripper", "Rip failed. No files kept."
                         ))
 
         self.rip_thread = threading.Thread(

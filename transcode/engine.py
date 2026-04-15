@@ -524,7 +524,7 @@ class TranscodeEngine:
                 logf.write(f"\nExit code: {proc.returncode}\n")
                 logf.flush()
 
-                # AI diagnostics: report failures
+                # Report failures to the diagnostics layer.
                 if proc.returncode != 0:
                     diag_process(_diag_capture, success=False,
                                  category="subprocess_nonzero_exit")

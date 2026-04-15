@@ -29,6 +29,11 @@ from utils.parsing import (
     parse_size_to_bytes,
     safe_int,
 )
+from utils.makemkv_log import (
+    MakeMKVIssueSummary,
+    MakeMKVMessageCoalescer,
+    analyze_makemkv_messages,
+)
 from utils.scoring import score_title
 from utils.classifier import classify_titles, format_classification_log
 
@@ -307,6 +312,8 @@ class RipperEngine:
         self._last_scan_target = None
         self.last_disc_info = {}
         self.last_classification: list = []
+        self.last_scan_issue_summary: MakeMKVIssueSummary | None = None
+        self.last_process_issue_summary: MakeMKVIssueSummary | None = None
 
     @staticmethod
     def _io_path(path):
@@ -541,10 +548,20 @@ class RipperEngine:
         minlength = int(self.cfg.get("opt_minlength_seconds", 0) or 0)
         minlength_args = [f"--minlength={minlength}"] if minlength > 0 else []
 
+        _scan_start = time.time()
+        _diag_capture = ProcessCapture(
+            command=[makemkvcon] + global_args +
+            ["-r", "info", disc_target] + minlength_args + info_args,
+            start_time=datetime.now().isoformat(),
+            working_directory=os.getcwd(),
+        )
+        _diag_raw_lines: list[str] = []
+        _msg_lines: list[str] = []
         on_log(f"Scanning disc ({disc_target})...")
         disc_info   = {}
         titles      = {}
         title_count = 0
+        proc = None
         try:
             proc = subprocess.Popen(
                 [makemkvcon] + global_args +
@@ -562,6 +579,8 @@ class RipperEngine:
                 line = line.strip()
                 if not line:
                     continue
+                if len(_diag_raw_lines) < 5000:
+                    _diag_raw_lines.append(line)
                 if line.startswith("CINFO:"):
                     parts = line[6:].split(",", 2)
                     if len(parts) < 3:
@@ -652,13 +671,58 @@ class RipperEngine:
                         stream["channels"] = val
                     elif attr == 21:
                         stream["lang_name"] = val
+                elif line.startswith("MSG:"):
+                    parts = line[4:].split(",", 4)
+                    if len(parts) >= 5:
+                        msg = parts[4].strip().strip('"')
+                        if msg:
+                            _msg_lines.append(msg)
             try:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
         except Exception as e:
+            _diag_capture.end_time = datetime.now().isoformat()
+            _diag_capture.duration_seconds = time.time() - _scan_start
+            _diag_capture.stdout = "\n".join(_diag_raw_lines[-200:])
             on_log(f"Error scanning disc: {e}")
+            diag_exception(e, context="scan_disc", category="scan_anomaly")
+            return None
+        finally:
+            if proc is not None and self.current_process is proc:
+                self.current_process = None
+
+        scan_rc = 1
+        if proc is not None and proc.returncode is not None:
+            scan_rc = int(proc.returncode)
+        _diag_capture.exit_code = scan_rc
+        _diag_capture.end_time = datetime.now().isoformat()
+        _diag_capture.duration_seconds = time.time() - _scan_start
+        _diag_capture.stdout = "\n".join(_diag_raw_lines[-200:])
+
+        scan_summary = analyze_makemkv_messages(_msg_lines)
+        self.last_scan_issue_summary = scan_summary
+        for summary_line in scan_summary.build_summary_lines(
+            phase="scan",
+            exit_code=scan_rc,
+        ):
+            on_log(summary_line)
+        if scan_summary.has_disc_read_errors:
+            diag_record(
+                "warning" if scan_rc == 0 else "error",
+                "disc_read_error",
+                "MakeMKV logged disc-read errors during scan",
+                details={
+                    "phase": "scan",
+                    "exit_code": scan_rc,
+                    **scan_summary.to_dict(),
+                },
+                process_capture=_diag_capture,
+            )
+        if scan_rc != 0:
+            on_log(f"MakeMKV scan failed (exit code {scan_rc}).")
+            diag_process(_diag_capture, success=False, category="scan_anomaly")
             return None
 
         result = []
@@ -1098,6 +1162,14 @@ class RipperEngine:
             working_directory=os.getcwd(),
         )
         _diag_raw_lines: list[str] = []
+        self.last_process_issue_summary = None
+        issue_summary = MakeMKVIssueSummary()
+        message_coalescer = MakeMKVMessageCoalescer()
+
+        def _emit_makemkv_message(message: str) -> None:
+            issue_summary.record(message)
+            for emitted in message_coalescer.feed(message):
+                on_log(emitted)
 
         proc = subprocess.Popen(
             cmd,
@@ -1207,11 +1279,7 @@ class RipperEngine:
                 if len(parts) >= 5:
                     msg = parts[4].strip().strip('"')
                     if msg:
-                        on_log(msg)
-                        # Log all messages but don't treat them as failures.
-                        # MakeMKV tolerates recoverable errors (read errors,
-                        # parsing issues, etc) and continues. Trust the
-                        # return code, not the message content.
+                        _emit_makemkv_message(msg)
 
         try:
             proc.wait(timeout=30)
@@ -1246,11 +1314,12 @@ class RipperEngine:
                     if len(parts) >= 5:
                         msg = parts[4].strip().strip('"')
                         if msg:
-                            on_log(msg)
-                            # Log all messages. Don't use them for failure
-                            # detection â€” trust the return code only.
+                            _emit_makemkv_message(msg)
         except queue_module.Empty:
             pass
+
+        for emitted in message_coalescer.flush():
+            on_log(emitted)
 
         # Warn if MakeMKV exited successfully but we got stall warnings
         # during the rip â€” this can indicate disc read/write problems that
@@ -1261,12 +1330,31 @@ class RipperEngine:
                 "Files may be incomplete or missing; validation will follow."
             )
 
-        # AI diagnostics: finalize capture
+        self.last_process_issue_summary = issue_summary
+        for summary_line in issue_summary.build_summary_lines(
+            phase="rip",
+            exit_code=rc,
+        ):
+            on_log(summary_line)
+
+        # Finalize the diagnostics process capture.
         _diag_capture.exit_code = rc
         _diag_capture.end_time = datetime.now().isoformat()
         _diag_capture.duration_seconds = time.time() - rip_start
         _diag_capture.stdout = "\n".join(_diag_raw_lines[-200:])
         _diag_capture.stall_detected = stall_warned
+        if issue_summary.has_disc_read_errors:
+            diag_record(
+                "warning" if rc == 0 else "error",
+                "disc_read_error",
+                "MakeMKV logged disc-read errors during rip",
+                details={
+                    "phase": "rip",
+                    "exit_code": rc,
+                    **issue_summary.to_dict(),
+                },
+                process_capture=_diag_capture,
+            )
         if rc != 0:
             diag_process(_diag_capture, success=False,
                          category="subprocess_nonzero_exit")
@@ -2015,7 +2103,6 @@ class RipperEngine:
             on_log(f"Session log written to: {log_file}")
         except Exception as e:
             on_log(f"Warning: could not write log: {e}")
-
 
 
 __all__ = ["RipperEngine"]

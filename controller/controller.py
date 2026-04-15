@@ -121,7 +121,7 @@ class RipperController(LegacyControllerMixin):
             logger=self.log,
         )
 
-        # Initialize AI diagnostics manager
+        # Initialize diagnostics manager
         gui_log_fn = self.log if hasattr(self, "log") else None
         self.diagnostics = init_diagnostics(
             config=self.engine.cfg,
@@ -425,7 +425,7 @@ class RipperController(LegacyControllerMixin):
             try:
                 summary = self.diagnostics.generate_session_summary()
                 if summary:
-                    self.log("[AI] Session summary written to session.ai.log")
+                    self.log("[Diagnostics] Session summary written.")
             except Exception:
                 pass
 
@@ -2018,7 +2018,7 @@ class RipperController(LegacyControllerMixin):
             try:
                 summary = self.diagnostics.generate_session_summary()
                 if summary:
-                    self.log("[AI] Session summary written to session.ai.log")
+                    self.log("[Diagnostics] Session summary written.")
             except Exception:
                 pass
 

@@ -161,7 +161,7 @@ def scan_disc(engine, on_log, on_progress):
                 line = line.strip()
                 if not line:
                     continue
-                # AI diagnostics: capture raw scan line
+                # Capture raw scan lines for diagnostics.
                 if len(_diag_raw_lines) < 5000:
                     _diag_raw_lines.append(line)
                 if line.startswith("CINFO:"):
@@ -264,7 +264,7 @@ def scan_disc(engine, on_log, on_progress):
             # Filter and sort titles
             valid_titles = [t for t in titles.values() if not t["_invalid"]]
             valid_titles.sort(key=lambda t: -t["duration_seconds"])
-            # AI diagnostics: flag scan anomaly if no valid titles despite success
+            # Flag a scan anomaly if MakeMKV succeeds but no valid titles remain.
             if not valid_titles and titles:
                 diag_record("warning", "scan_anomaly",
                             f"Scan succeeded (exit 0) but all {len(titles)} titles were invalid",
