@@ -6,6 +6,7 @@
 #define MyAppPublisher "unexpear"
 #define MyAppURL "https://github.com/unexpear/JellyRip"
 #define MyAppExeName "JellyRip.exe"
+#define MyAppBuildOutputDir "..\dist\main"
 
 [Setup]
 AppId={{A3E2F5D5-5BA2-4A26-8C0A-4D88D22D87A8}
@@ -27,7 +28,7 @@ UsePreviousAppDir=yes
 CloseApplications=yes
 CloseApplicationsFilter={#MyAppExeName}
 RestartApplications=no
-OutputDir=..\dist
+OutputDir={#MyAppBuildOutputDir}
 OutputBaseFilename=JellyRipInstaller
 Compression=lzma
 SolidCompression=yes
@@ -43,14 +44,14 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 
 [Files]
-Source: "..\dist\JellyRip.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\JellyRip.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\ffplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\FFmpeg-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\FFmpeg-README.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\FFmpeg-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppBuildOutputDir}\FFmpeg-README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\JellyRip"; Filename: "{app}\{#MyAppExeName}"

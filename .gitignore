@@ -5,6 +5,8 @@
 
 # Keep bundled runtime files explicit and ignore generated app binaries
 build/
+dist/main/*
+!dist/main/.gitkeep
 dist/ffmpeg.exe
 dist/ffplay.exe
 dist/ffprobe.exe

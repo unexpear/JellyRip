@@ -117,10 +117,12 @@ Contribution and security guidance:
 ### Standalone executable
 
 ```bash
-pip install pyinstaller
-pyinstaller JellyRip.spec
+build.bat
 ```
 
+The MAIN build scripts place standalone build artifacts under `dist\main`.
+`build.bat` wraps `pyinstaller JellyRip.spec` with the MAIN artifact and
+work directories preconfigured.
 The spec bundles the Gyan FFmpeg full build (`ffmpeg.exe`, `ffprobe.exe`,
 and `ffplay.exe`). Put the extracted build under `.\ffmpeg\` or `..\ffmpeg\`,
 or set `JELLYRIP_FFMPEG_DIR` before building. Release builds must also ship
@@ -136,10 +138,10 @@ Commercial installer builds require an appropriate Inno Setup license.
 
 Expected outputs:
 
-- `dist/JellyRip.exe`
-- `dist/JellyRipInstaller.exe`
-- `dist\ffmpeg.exe`, `dist\ffprobe.exe`, and `dist\ffplay.exe`
-- `dist\FFmpeg-LICENSE.txt` and `dist\FFmpeg-README.txt`
+- `dist/main/JellyRip.exe`
+- `dist/main/JellyRipInstaller.exe`
+- `dist\main\ffmpeg.exe`, `dist\main\ffprobe.exe`, and `dist\main\ffplay.exe`
+- `dist\main\FFmpeg-LICENSE.txt` and `dist\main\FFmpeg-README.txt`
 
 Build output is intentionally git-ignored and should be published
 through GitHub Releases rather than committed to the repository.

@@ -130,6 +130,8 @@ def _search_roots() -> list[Path]:
         PROJECT_ROOT / "ffmpeg" / "bin",
         PROJECT_ROOT.parent / "ffmpeg",
         PROJECT_ROOT.parent / "ffmpeg" / "bin",
+        PROJECT_ROOT.parent.parent / "ffmpeg",
+        PROJECT_ROOT.parent.parent / "ffmpeg" / "bin",
     ):
         _add_search_root(roots, root)
     return roots

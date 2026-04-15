@@ -36,6 +36,10 @@ Add-SearchRoot -Path (Join-Path $ProjectRoot "ffmpeg")
 Add-SearchRoot -Path (Join-Path $ProjectRoot "ffmpeg\bin")
 Add-SearchRoot -Path (Join-Path (Split-Path -Parent $ProjectRoot) "ffmpeg")
 Add-SearchRoot -Path (Join-Path (Split-Path -Parent $ProjectRoot) "ffmpeg\bin")
+$projectRootParent = Split-Path -Parent $ProjectRoot
+$projectRootGrandparent = Split-Path -Parent $projectRootParent
+Add-SearchRoot -Path (Join-Path $projectRootGrandparent "ffmpeg")
+Add-SearchRoot -Path (Join-Path $projectRootGrandparent "ffmpeg\bin")
 
 function Find-BundleFile {
     param([string]$FileName)
