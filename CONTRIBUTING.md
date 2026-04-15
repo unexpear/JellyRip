@@ -91,6 +91,18 @@ Before opening a PR or preparing a release-quality patch:
 - update `CHANGELOG.md` for notable user-facing changes
 - update `README.md` or `docs/` when setup, workflows, or expectations change
 
+## Branch workflow
+
+`main` is the trunk branch for this repository.
+
+- start new work from `main`
+- keep topic branches short-lived
+- merge completed work back into `main`
+- branch from updated `main`, not from another contributor's topic branch, unless the dependency is intentional
+
+See [docs/branch-workflow.md](docs/branch-workflow.md) for the working
+rules and example commands.
+
 ## Testing guidance
 
 Automated tests are required for logic changes when the behavior can be reproduced without real hardware.

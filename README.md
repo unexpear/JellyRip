@@ -109,6 +109,7 @@ Manual live-rip validation worksheet:
 Contribution and security guidance:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/branch-workflow.md](docs/branch-workflow.md)
 - [SECURITY.md](SECURITY.md)
 
 ## Building Releases
