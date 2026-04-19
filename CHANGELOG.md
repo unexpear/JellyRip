@@ -2,6 +2,21 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.18] - 2026-04-19
+
+### Changed
+
+- Release metadata is aligned on the `1.0.18` line across the app runtime, installer, docs, tester worksheet, and release notes.
+- MAIN builds continue to stage `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and notice files under `dist/main`.
+
+### Fixed
+
+- Transcode prep now falls back to a valid detected FFmpeg or HandBrakeCLI binary when a stale configured path no longer resolves.
+- Manual movie-disc runs now preserve the selected edition when building the destination folder name.
+- Settings saves now avoid partial config commits when the paired expert-profile write fails.
+- The signed-update block path now shows the intended GUI error instead of throwing a callback arity exception.
+- Verification fallback retries no longer report a rejected transcode as completed before the retry starts.
+
 ## [1.0.17] - 2026-04-15
 
 ### Changed

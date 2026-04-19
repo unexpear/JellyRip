@@ -1,24 +1,29 @@
-## JellyRip v1.0.17 Release Notes (UNSTABLE)
+## JellyRip v1.0.18 Release Notes (UNSTABLE)
 
 Release channel: unstable pre-release.
+Close to stable, but still lightly tested.
 
 ### Download
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.17/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.17/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.17
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.18/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.18/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.18
 - All releases: https://github.com/unexpear/JellyRip/releases
 
-### What's New in 1.0.17
+### What's New in 1.0.18
 
-MAIN release artifact layout
-- MAIN builds now place `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and release notice files under `dist/main`.
-- The build, installer, and release scripts now use that dedicated MAIN artifact directory consistently.
+Transcode path recovery
+- Transcode prep now falls back to the valid detected FFmpeg or HandBrakeCLI path when a saved configured path no longer resolves.
+- That restores the expected upgrade behavior where bundled binaries and known install locations still work without forcing an immediate settings repair.
 
-Nested FFmpeg bundle discovery
-- Release packaging now checks the nested Desktop sibling layout used by this MAIN worktree when locating the provided FFmpeg full build.
-- That keeps bundled MAIN releases working without moving the external FFmpeg folder into the repository.
+Manual movie edition handling
+- Manual movie-disc runs now carry the selected edition into controller state and destination folder naming.
+- Alternate cuts no longer collapse into the base movie folder during the manual flow.
+
+Save and update robustness
+- Settings saves now avoid partial config commits when the paired expert-profile write fails.
+- The signed-update block path now shows the intended GUI error instead of throwing a callback arity exception.
+- Verification fallback retries no longer announce a rejected transcode as completed before the retry starts.
 
 Release hygiene
-- Release metadata now aligns on the 1.0.17 line across the app, installer, docs, tester worksheet, and release notes.
-- Build output remains a GitHub Releases artifact instead of a tracked repository binary.
-- In-app update checks continue to follow the newest published release, including unstable prereleases.
+- Release metadata now aligns on the 1.0.18 line across the app, installer, docs, tester worksheet, and release notes.
+- MAIN builds continue to stage `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and notice files under `dist/main`.

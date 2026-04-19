@@ -3,14 +3,14 @@ REM ============================================================
 REM  JellyRip release pipeline — enforces correct order:
 REM    git-check -> tests -> build -> verify -> push -> publish
 REM
-REM  Usage:  release.bat 1.0.17
+REM  Usage:  release.bat 1.0.18
 REM ============================================================
 setlocal enabledelayedexpansion
 
 set VERSION=%~1
 if "%VERSION%"=="" (
     echo Usage: release.bat ^<version^>
-    echo Example: release.bat 1.0.17
+    echo Example: release.bat 1.0.18
     exit /b 1
 )
 
