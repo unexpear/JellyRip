@@ -205,7 +205,7 @@ def build_recommendation_job(
         fallback_rules.append({"trigger": "bitrate_collapse", "action": "lower_crf"})
     # Mux failure: classify the failure even when no auto-recovery is possible.
     fallback_rules.append({"trigger": "mux_failure", "action": "mux_failure"})
-    # Audio layout mismatch: classify only (downmix recovery not implemented).
+    # Audio layout mismatch: retry once with a stereo downmix.
     if contract.audio_layout:
         fallback_rules.append({"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"})
 

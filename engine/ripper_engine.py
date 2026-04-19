@@ -22,7 +22,7 @@ from shared.ai_diagnostics import (
 )
 
 from config import resolve_ffprobe, resolve_makemkvcon
-from utils.helpers import clean_name
+from utils.helpers import MakeMKVDriveInfo, clean_name, get_available_drives
 from utils.parsing import (
     parse_cli_args,
     parse_duration_to_seconds,
@@ -201,30 +201,57 @@ class RipperEngine:
         with self._abort_lock:
             self.abort_event.clear()
 
+    def _allow_path_tool_resolution(self) -> bool:
+        return (
+            _sys.platform == "win32"
+            and bool(self.cfg.get("opt_allow_path_tool_resolution", False))
+        )
+
     def validate_tools(self) -> tuple[bool, str]:
         """Validate configured MakeMKV and ffprobe paths before starting work."""
         makemkvcon = resolve_makemkvcon(
-            os.path.normpath(self.cfg.get("makemkvcon_path", ""))
+            os.path.normpath(self.cfg.get("makemkvcon_path", "")),
+            allow_path_lookup=self._allow_path_tool_resolution(),
         )
-        ffprobe, ffprobe_source = resolve_ffprobe(
-            os.path.normpath(self.cfg.get("ffprobe_path", ""))
+        ffprobe = resolve_ffprobe(
+            os.path.normpath(self.cfg.get("ffprobe_path", "")),
+            allow_path_lookup=self._allow_path_tool_resolution(),
         )
-        if not os.path.isfile(makemkvcon):
-            return False, (
-                f"MakeMKV not found at:\n{makemkvcon}"
-                f"\n\nPlease check Settings."
-            )
-        if not os.path.isfile(ffprobe):
-            return False, (
-                "ffprobe not found."
-                "\n\nDownload ffmpeg from https://ffmpeg.org and point"
-                "\nSettings -> Paths -> ffprobe folder to its bin directory."
-            )
-        self._resolved_makemkvcon = makemkvcon
+        if not makemkvcon.path:
+            msg = makemkvcon.error or "MakeMKV executable not found."
+            if makemkvcon.suggestion_path:
+                msg += (
+                    "\n\nDetected MakeMKV via "
+                    f"{makemkvcon.suggestion_source}: {makemkvcon.suggestion_path}"
+                    "\nUpdate Settings to use it."
+                )
+            else:
+                msg += "\n\nPlease check Settings."
+            return False, msg
+        if not ffprobe.path:
+            msg = ffprobe.error or "ffprobe executable not found."
+            if ffprobe.suggestion_path:
+                msg += (
+                    "\n\nDetected ffprobe via "
+                    f"{ffprobe.suggestion_source}: {ffprobe.suggestion_path}"
+                    "\nUpdate Settings to use it."
+                )
+            else:
+                msg += (
+                    "\n\nDownload ffmpeg from https://ffmpeg.org and point"
+                    "\nSettings -> Paths -> ffprobe folder to its bin directory."
+                )
+            return False, msg
+        self._resolved_makemkvcon = makemkvcon.path
         self._resolved_makemkvcon_src = os.path.normpath(
             self.cfg.get("makemkvcon_path", "")
         )
-        self._ffprobe_source = ffprobe_source
+        self._makemkvcon_source = makemkvcon.source
+        self._resolved_ffprobe = ffprobe.path
+        self._resolved_ffprobe_src = os.path.normpath(
+            self.cfg.get("ffprobe_path", "")
+        )
+        self._ffprobe_source = ffprobe.source
         return True, ""
 
     def _get_makemkvcon(self) -> str:
@@ -232,10 +259,133 @@ class RipperEngine:
         current = os.path.normpath(self.cfg.get("makemkvcon_path", ""))
         if cached and getattr(self, "_resolved_makemkvcon_src", None) == current:
             return cached
-        resolved = resolve_makemkvcon(current)
-        self._resolved_makemkvcon = resolved
+        resolved = resolve_makemkvcon(
+            current,
+            allow_path_lookup=self._allow_path_tool_resolution(),
+        )
+        self._resolved_makemkvcon = resolved.path
         self._resolved_makemkvcon_src = current
-        return resolved
+        self._makemkvcon_source = resolved.source
+        return resolved.path
+
+    def _get_ffprobe(self) -> str:
+        cached = getattr(self, "_resolved_ffprobe", None)
+        current = os.path.normpath(self.cfg.get("ffprobe_path", ""))
+        if cached and getattr(self, "_resolved_ffprobe_src", None) == current:
+            return cached
+        resolved = resolve_ffprobe(
+            current,
+            allow_path_lookup=self._allow_path_tool_resolution(),
+        )
+        self._resolved_ffprobe = resolved.path
+        self._resolved_ffprobe_src = current
+        self._ffprobe_source = resolved.source
+        return resolved.path
+
+    @staticmethod
+    def _format_drive_probe_summary(drive: MakeMKVDriveInfo) -> str:
+        drive_name = drive.drive_name or "Unknown drive"
+        disc_name = drive.disc_name or "No disc"
+        device_path = drive.device_path or f"disc:{drive.index}"
+        return (
+            f"Drive {drive.index}: {drive_name} | "
+            f"Disc: {disc_name} | "
+            f"Path: {device_path} | "
+            f"State: {drive.usability_state} ({drive.state_code})"
+        )
+
+    def _sleep_with_abort(self, seconds: float) -> bool:
+        deadline = time.time() + max(0.0, float(seconds))
+        while time.time() < deadline:
+            if self.abort_event.is_set():
+                return False
+            time.sleep(min(0.25, max(0.0, deadline - time.time())))
+        return not self.abort_event.is_set()
+
+    def _probe_selected_drive(
+        self,
+        on_log,
+        *,
+        context: str,
+    ) -> tuple[bool, MakeMKVDriveInfo | None]:
+        selected_index = safe_int(self.cfg.get("opt_drive_index", 0))
+        makemkvcon = self._get_makemkvcon()
+        try:
+            drives = get_available_drives(makemkvcon)
+        except Exception as exc:
+            on_log(f"Drive probe ({context}) failed: {exc}")
+            return False, None
+
+        self.last_available_drives = list(drives)
+        selected_drive = next(
+            (drive for drive in drives if drive.index == selected_index),
+            None,
+        )
+        self.last_selected_drive_probe = selected_drive
+
+        if selected_drive is None:
+            on_log(
+                "Drive probe "
+                f"({context}): selected drive disc:{selected_index} "
+                "is not present in the current MakeMKV drive list."
+            )
+            return False, None
+
+        on_log(
+            f"Drive probe ({context}): "
+            f"{self._format_drive_probe_summary(selected_drive)}"
+        )
+        usable = selected_drive.state_code == 2
+        if usable:
+            return True, selected_drive
+
+        if selected_drive.state_code == 0:
+            on_log(
+                f"Drive probe ({context}): "
+                "drive is visible but not ready for ripping."
+            )
+        elif selected_drive.state_code == 256:
+            on_log(
+                f"Drive probe ({context}): drive is unavailable."
+            )
+        else:
+            on_log(
+                f"Drive probe ({context}): "
+                f"drive reported non-ready state code {selected_drive.state_code}."
+            )
+        return False, selected_drive
+
+    def _wait_for_drive_ready(
+        self,
+        on_log,
+        *,
+        context: str,
+        retries: int = 3,
+    ) -> bool:
+        backoff_seconds = (2, 4, 8)
+        for retry_index in range(retries + 1):
+            if self.abort_event.is_set():
+                return False
+            usable, _drive = self._probe_selected_drive(
+                on_log,
+                context=context,
+            )
+            if usable:
+                return True
+            if retry_index >= retries:
+                on_log(
+                    f"Drive probe ({context}): selected drive never became ready "
+                    f"after {retries} retry attempt(s)."
+                )
+                return False
+            wait_seconds = backoff_seconds[min(retry_index, len(backoff_seconds) - 1)]
+            on_log(
+                f"Drive probe ({context}): waiting {wait_seconds}s before retry "
+                f"{retry_index + 1}/{retries}."
+            )
+            if not self._sleep_with_abort(wait_seconds):
+                return False
+        return False
 
     def cleanup_partial_files(self, root_path, on_log):
         """Remove stale `.partial` files without touching completed MKVs."""
@@ -304,6 +454,8 @@ class RipperEngine:
         self.last_title_file_map = {}
         self.last_degraded_titles: list = []
         self.last_drive_info: dict = {}
+        self.last_available_drives: list[MakeMKVDriveInfo] = []
+        self.last_selected_drive_probe: MakeMKVDriveInfo | None = None
         self._ffprobe_cache = {}  # LRU cache with 1000-entry limit
         self._ffprobe_cache_lock = threading.Lock()
         self._ffprobe_cache_max_size = 1000
@@ -1483,9 +1635,7 @@ class RipperEngine:
         pathname order for determinism. Unknown-duration files are appended
         at the end and sorted largest-first.
         """
-        ffprobe = resolve_ffprobe(
-            os.path.normpath(self.cfg["ffprobe_path"])
-        )[0]
+        ffprobe = self._get_ffprobe()
         abort   = self.abort_event
         results = []
         total   = len(mkv_files)
@@ -1579,9 +1729,7 @@ class RipperEngine:
             if cached is not None:
                 return cached
 
-        ffprobe_exe = ffprobe or resolve_ffprobe(
-            os.path.normpath(self.cfg["ffprobe_path"])
-        )[0]
+        ffprobe_exe = ffprobe or self._get_ffprobe()
         mb = stat.st_size // (1024**2)
         dur = -1.0
         out = ""
@@ -1668,9 +1816,7 @@ class RipperEngine:
     def _quick_ffprobe_ok(self, path, on_log):
         """Fast container integrity check: ffprobe must return duration > 0."""
         try:
-            ffprobe = resolve_ffprobe(
-                os.path.normpath(self.cfg["ffprobe_path"])
-            )[0]
+            ffprobe = self._get_ffprobe()
             duration, _mb = self._probe_file_duration_and_size(
                 path, ffprobe=ffprobe, honor_abort=False, on_log=on_log
             )
@@ -1688,7 +1834,13 @@ class RipperEngine:
             )
             return False
 
-    def move_file_atomic(self, source, final_path, on_log):
+    def move_file_atomic(
+        self,
+        source,
+        final_path,
+        on_log,
+        replace_existing=False,
+    ):
         """
         Move a file safely using copy+rename (atomic move).
         Preserves timestamps via shutil.copystat.
@@ -1726,10 +1878,14 @@ class RipperEngine:
                 on_log(f"ERROR checking source stability: {e}")
                 return False
 
-        if os.path.exists(final_path):
+        if os.path.exists(final_path) and not replace_existing:
             final_path = self.unique_path(final_path)
             on_log(
                 f"Destination exists. Using unique path: {final_path}"
+            )
+        elif os.path.exists(final_path):
+            on_log(
+                f"Destination exists. Replacing: {final_path}"
             )
 
         verify_retries = max(
@@ -1802,7 +1958,7 @@ class RipperEngine:
                 shutil.copystat(io_source, io_temp_dest)
             except Exception:
                 pass
-            if os.path.exists(io_final_path):
+            if os.path.exists(io_final_path) and not replace_existing:
                 new_final = self.unique_path(final_path)
                 on_log(
                     "Destination appeared during move; "
@@ -1879,7 +2035,8 @@ class RipperEngine:
                    real_names, extra_indices, is_tv, title, dest_folder,
                    extras_folder, season, year, extra_counter,
                    on_progress, on_log,
-                   bonus_indices=None, bonus_folder=None):
+                   bonus_indices=None, bonus_folder=None,
+                   replace_main_existing=False):
         """Move selected main/extras/bonus files into final library structure.
 
         extra_indices: None = keep all non-main as extras,
@@ -1949,12 +2106,17 @@ class RipperEngine:
                 else:
                     name = f"{clean_name(title)} ({year}).mkv"
 
-                final_path = self.unique_path(
-                    os.path.join(dest_folder, name)
-                )
+                final_path = os.path.join(dest_folder, name)
+                if not replace_main_existing:
+                    final_path = self.unique_path(final_path)
                 on_log(f"Moving: {os.path.basename(source)}")
                 on_log(f"    To: {final_path}")
-                ok = self.move_file_atomic(source, final_path, on_log)
+                ok = self.move_file_atomic(
+                    source,
+                    final_path,
+                    on_log,
+                    replace_existing=bool(replace_main_existing),
+                )
                 if not ok:
                     return False, extra_counter, moved_paths
 

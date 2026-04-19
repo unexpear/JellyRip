@@ -602,6 +602,128 @@ def test_transcode_queue_maps_ffmpeg_progress_to_overall_percent(tmp_path, monke
     assert overall_progress[-1] == 100.0
 
 
+def test_transcode_queue_audio_layout_fallback_keeps_reverification(tmp_path, monkeypatch):
+    from core.pipeline import TranscodeJob
+    from transcode.post_encode_verifier import VerificationOutcome, VerificationResult
+    from transcode.profiles import ProfileLoader
+    from transcode.queue import TranscodeQueue
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    queue = TranscodeQueue(log_dir=str(tmp_path / "logs"))
+    job = TranscodeJob(
+        "input.mkv",
+        str(tmp_path / "output.mkv"),
+        loader.get_profile(),
+        metadata={
+            "expected": {
+                "audio_layout": "5.1(side)",
+                "audio_stream_count": 1,
+            },
+            "fallback_rules": [
+                {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
+            ],
+        },
+    )
+    queue.add_job(job)
+
+    def _fake_run_job(job, dry_run=False, feedback_cb=None, progress_cb=None):
+        log_name = f"{os.path.basename(getattr(job, 'output_path', 'job'))}.log"
+        return 0, str(tmp_path / "logs" / log_name)
+
+    def _fake_verify_job(job, feedback_cb=None):
+        expected = (getattr(job, "metadata", {}) or {}).get("expected")
+        if "stereo_fallback" in getattr(job, "output_path", ""):
+            if not isinstance(expected, dict):
+                return None
+            return VerificationResult(
+                outcome=VerificationOutcome.FAIL,
+                errors=["Audio layout mismatch: expected 'stereo', got 'mono'."],
+            )
+        return VerificationResult(
+            outcome=VerificationOutcome.FAIL,
+            errors=["Audio layout mismatch: expected '5.1(side)', got 'stereo'."],
+        )
+
+    monkeypatch.setattr(queue.engine, "run_job", _fake_run_job)
+    monkeypatch.setattr(queue, "_verify_job", _fake_verify_job)
+
+    first_result = queue.run_next()
+
+    assert first_result[0] == 0
+    assert len(queue.jobs) == 1
+    fallback_job = queue.jobs[0]
+    assert fallback_job.metadata["expected"]["audio_layout"] == "stereo"
+    assert fallback_job.metadata["fallback_action"] == "audio_layout_mismatch"
+
+    second_result = queue.run_next()
+
+    assert second_result[0] == 0
+    assert queue.jobs == []
+    assert queue.completed == []
+    assert [failed_job for failed_job, _log_path in queue.failed] == [fallback_job]
+    assert [degraded_job for degraded_job, _log_path, _verification in queue.degraded] == [job]
+
+
+def test_transcode_queue_retry_pending_progress_does_not_report_completion(
+    tmp_path, monkeypatch
+):
+    from core.pipeline import TranscodeJob
+    from transcode.post_encode_verifier import VerificationOutcome, VerificationResult
+    from transcode.profiles import ProfileLoader
+    from transcode.queue import TranscodeQueue
+
+    loader = ProfileLoader(str(tmp_path / "profiles.json"))
+    queue = TranscodeQueue(log_dir=str(tmp_path / "logs"))
+    job = TranscodeJob(
+        "input.mkv",
+        str(tmp_path / "output.mkv"),
+        loader.get_profile(),
+    )
+    fallback_job = TranscodeJob(
+        "input.mkv",
+        str(tmp_path / "output_retry.mkv"),
+        loader.get_profile(),
+    )
+    queue.add_job(job)
+
+    def _fake_run_job(job, dry_run=False, feedback_cb=None, progress_cb=None):
+        return 0, str(tmp_path / "logs" / "sample.log")
+
+    monkeypatch.setattr(queue.engine, "run_job", _fake_run_job)
+    monkeypatch.setattr(
+        queue,
+        "_verify_job",
+        lambda *_args, **_kwargs: VerificationResult(
+            outcome=VerificationOutcome.FAIL,
+            errors=["verification failed"],
+        ),
+    )
+    monkeypatch.setattr(
+        queue,
+        "_try_fallback",
+        lambda *_args, **_kwargs: (
+            fallback_job,
+            {"trigger": "verification", "action": "use_cpu"},
+        ),
+    )
+
+    feedback_messages = []
+    progress_events = []
+    result = queue.run_next(
+        feedback_cb=feedback_messages.append,
+        progress_cb=progress_events.append,
+    )
+
+    assert result[0] == 0
+    assert queue.jobs == [fallback_job]
+    assert [degraded_job for degraded_job, _log_path, _verification in queue.degraded] == [job]
+    assert progress_events[-1]["phase"] == "retry_pending"
+    assert progress_events[-1]["overall_percent"] == 50.0
+    assert progress_events[-1]["job_total"] == 2
+    assert progress_events[-1]["message"] == ""
+    assert not any(message.startswith("Completed:") for message in feedback_messages)
+
+
 def test_transcode_queue_records_aborted_jobs(tmp_path, monkeypatch):
     from core.pipeline import TranscodeJob
     from transcode.engine import TRANSCODE_ABORT_RETURN_CODE

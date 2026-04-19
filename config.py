@@ -53,6 +53,15 @@ class AppConfig:
             raise ValueError("output is required")
 
 
+@dataclass(frozen=True)
+class ResolvedTool:
+    path: str
+    source: str
+    error: str = ""
+    suggestion_path: str = ""
+    suggestion_source: str = ""
+
+
 def _normalize_pathlike(path: str | PathLike[str] | None) -> str:
     if not path:
         return ""
@@ -106,6 +115,117 @@ def _run_probe(executable: str | PathLike[str] | None, args: Iterable[str]) -> T
     return ok, reason
 
 
+def _path_lookup_allowed(allow_path_lookup: bool) -> bool:
+    return platform.system() != "Windows" or bool(allow_path_lookup)
+
+
+def _reason_or_default(reason: str, default: str = "validation failed") -> str:
+    text = str(reason or "").strip()
+    return text or default
+
+
+def _iter_unique_candidates(
+    candidates: Iterable[tuple[str, str]],
+) -> Iterable[tuple[str, str]]:
+    seen: set[str] = set()
+    for raw_path, source in candidates:
+        normalized = _normalize_pathlike(raw_path)
+        if not normalized:
+            continue
+        key = os.path.normcase(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield normalized, source
+
+
+def _configured_resolution(
+    configured_path: str | PathLike[str] | None,
+    *,
+    validator: ToolValidator,
+    tool_label: str,
+    allow_directory: bool = False,
+    directory_resolver: Callable[[str], str | None] | None = None,
+) -> ResolvedTool | None:
+    configured = _normalize_pathlike(configured_path)
+    if not configured:
+        return None
+
+    if _is_file(configured):
+        ok, reason = validator(configured)
+        if ok:
+            return ResolvedTool(path=configured, source="configured executable")
+        return ResolvedTool(
+            path="",
+            source="",
+            error=(
+                f"Configured {tool_label} executable failed validation: "
+                f"{_reason_or_default(reason)}"
+            ),
+        )
+
+    if allow_directory and os.path.isdir(configured):
+        resolved = directory_resolver(configured) if directory_resolver else None
+        if not resolved:
+            return ResolvedTool(
+                path="",
+                source="",
+                error=f"No {tool_label} executable found in the configured folder.",
+            )
+        ok, reason = validator(resolved)
+        if ok:
+            return ResolvedTool(path=resolved, source="configured folder")
+        return ResolvedTool(
+            path="",
+            source="",
+            error=(
+                f"Configured {tool_label} folder failed validation: "
+                f"{_reason_or_default(reason)}"
+            ),
+        )
+
+    return ResolvedTool(
+        path="",
+        source="",
+        error=f"Configured {tool_label} path does not exist.",
+    )
+
+
+def _detected_resolution(
+    candidates: Iterable[tuple[str, str]],
+    *,
+    validator: ToolValidator,
+) -> ResolvedTool:
+    invalid_reasons: list[str] = []
+    for candidate, source in _iter_unique_candidates(candidates):
+        if not _is_file(candidate):
+            continue
+        ok, reason = validator(candidate)
+        if ok:
+            return ResolvedTool(path=candidate, source=source)
+        invalid_reasons.append(f"{source}: {_reason_or_default(reason)}")
+
+    message = ""
+    if invalid_reasons:
+        message = "; ".join(invalid_reasons)
+    return ResolvedTool(path="", source="", error=message)
+
+
+def _attach_suggestion(
+    failure: ResolvedTool,
+    suggestion: ResolvedTool,
+) -> ResolvedTool:
+    if not suggestion.path:
+        return failure
+    return ResolvedTool(
+        path="",
+        source="",
+        error=failure.error,
+        suggestion_path=suggestion.path,
+        suggestion_source=suggestion.source,
+    )
+
+
 def _bundled_binary_candidates(filename: str) -> list[str]:
     candidates: list[str] = []
     if getattr(sys, "frozen", False):
@@ -134,39 +254,14 @@ def _bundled_binary_candidates(filename: str) -> list[str]:
     return resolved
 
 
-def auto_locate_ffmpeg() -> str:
-    """Find ffmpeg using common paths and PATH."""
-    for path in _bundled_binary_candidates("ffmpeg.exe" if os.name == "nt" else "ffmpeg"):
-        if os.path.isfile(path):
-            return path
-    candidates = [
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-        r"C:\ffmpeg\ffmpeg.exe",
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-    return shutil.which("ffmpeg") or ""
+def auto_locate_ffmpeg(*, allow_path_lookup: bool = False) -> str:
+    """Find a validated FFmpeg executable."""
+    return resolve_ffmpeg("", allow_path_lookup=allow_path_lookup).path
 
 
-def auto_locate_handbrake() -> str:
-    """Find HandBrakeCLI using common paths and PATH."""
-    for path in _bundled_binary_candidates(
-        "HandBrakeCLI.exe" if os.name == "nt" else "HandBrakeCLI"
-    ):
-        if os.path.isfile(path):
-            return path
-    candidates = [
-        r"C:\Program Files\HandBrake\HandBrakeCLI.exe",
-        r"C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe",
-        r"C:\HandBrake\HandBrakeCLI.exe",
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-    return shutil.which("HandBrakeCLI") or ""
+def auto_locate_handbrake(*, allow_path_lookup: bool = False) -> str:
+    """Find a validated HandBrakeCLI executable."""
+    return resolve_handbrake("", allow_path_lookup=allow_path_lookup).path
 
 
 def handbrake_gui_installed() -> bool:
@@ -215,6 +310,10 @@ def validate_ffmpeg(path: str | PathLike[str] | None) -> ToolValidationResult:
 
 
 def validate_handbrake(path: str | PathLike[str] | None) -> ToolValidationResult:
+    return _run_probe(path, ["--version"])
+
+
+def validate_vlc(path: str | PathLike[str] | None) -> ToolValidationResult:
     return _run_probe(path, ["--version"])
 
 
@@ -422,39 +521,66 @@ def resolve_tool(
     configured_path: str | PathLike[str] | None,
     common_paths: Iterable[str],
     env_tool_name: str,
-) -> str:
-    """Resolve an executable path in order: config, common paths, then PATH."""
-    configured = _normalize_pathlike(configured_path)
-    if _is_file(configured):
-        return configured
-    for path in common_paths:
-        if _is_file(path):
-            return _normalize_pathlike(path)
-    return shutil.which(env_tool_name) or configured
-
-
-def resolve_makemkvcon(configured_path: str | PathLike[str] | None) -> str:
-    fallbacks = [
-        r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
-        r"C:\Program Files\MakeMKV\makemkvcon.exe",
+    *,
+    allow_path_lookup: bool = False,
+) -> ResolvedTool:
+    """Resolve a validated executable path from configured/common/PATH candidates."""
+    configured_result = _configured_resolution(
+        configured_path,
+        validator=lambda path: (True, ""),
+        tool_label=env_tool_name,
+    )
+    detected_candidates = [
+        *[(path, "known location") for path in common_paths],
+        *_maybe_path_candidate(
+            env_tool_name,
+            allow_path_lookup=allow_path_lookup,
+        ),
     ]
-    return resolve_tool(configured_path, fallbacks, "makemkvcon")
+    detected_result = _detected_resolution(
+        detected_candidates,
+        validator=lambda path: (True, ""),
+    )
+    if configured_result is not None:
+        if configured_result.path:
+            return configured_result
+        return _attach_suggestion(configured_result, detected_result)
+    if detected_result.path:
+        return detected_result
+    return ResolvedTool(path="", source="", error=f"{env_tool_name} was not found.")
 
 
-def resolve_ffprobe(configured_path: str | PathLike[str] | None) -> tuple[str, str]:
-    """Resolve ffprobe. Accepts a direct exe path OR a directory (ffmpeg folder)."""
-    configured = _normalize_pathlike(configured_path)
-    if _is_file(configured):
-        return configured, "configured"
+def _ffmpeg_known_location_candidates() -> list[tuple[str, str]]:
+    return [
+        (r"C:\Program Files\ffmpeg\bin\ffmpeg.exe", "known location"),
+        (r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe", "known location"),
+        (r"C:\ffmpeg\bin\ffmpeg.exe", "known location"),
+        (r"C:\ffmpeg\ffmpeg.exe", "known location"),
+    ]
 
-    found = _resolve_ffprobe_from_dir(configured)
-    if found:
-        return found, "configured folder"
 
-    for bundled in _bundled_binary_candidates("ffprobe.exe" if os.name == "nt" else "ffprobe"):
-        if os.path.isfile(bundled):
-            return bundled, "bundled"
+def _handbrake_known_location_candidates() -> list[tuple[str, str]]:
+    return [
+        (r"C:\Program Files\HandBrake\HandBrakeCLI.exe", "known location"),
+        (r"C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe", "known location"),
+        (r"C:\HandBrake\HandBrakeCLI.exe", "known location"),
+    ]
 
+
+def _makemkv_known_location_candidates() -> list[tuple[str, str]]:
+    install_dirs = [
+        r"C:\Program Files (x86)\MakeMKV",
+        r"C:\Program Files\MakeMKV",
+    ]
+    return [
+        (os.path.join(install_dir, executable_name), "known location")
+        for executable_name in _makemkv_executable_names()
+        for install_dir in install_dirs
+    ]
+
+
+def _ffprobe_known_location_candidates() -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
     for directory in (
         r"C:\Program Files\ffmpeg",
         r"C:\Program Files\ffmpeg\bin",
@@ -462,15 +588,260 @@ def resolve_ffprobe(configured_path: str | PathLike[str] | None) -> tuple[str, s
         r"C:\Program Files (x86)\ffmpeg\bin",
         r"C:\ffmpeg",
         r"C:\ffmpeg\bin",
+        r"C:\tools\ffmpeg",
     ):
         found = _resolve_ffprobe_from_dir(directory)
         if found:
-            return found, f"common path ({directory})"
+            candidates.append((found, "known location"))
+    return candidates
 
-    found = shutil.which("ffprobe")
-    if found:
-        return found, f"PATH ({found})"
-    return configured, "not found"
+
+def _vlc_known_location_candidates() -> list[tuple[str, str]]:
+    return [
+        (r"C:\Program Files\VideoLAN\VLC\vlc.exe", "known location"),
+        (r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe", "known location"),
+    ]
+
+
+def _windows_host_is_64bit() -> bool:
+    if platform.system() != "Windows":
+        return False
+    for raw_value in (
+        os.environ.get("PROCESSOR_ARCHITEW6432", ""),
+        os.environ.get("PROCESSOR_ARCHITECTURE", ""),
+        platform.machine(),
+    ):
+        value = str(raw_value or "").upper()
+        if value in {"AMD64", "ARM64", "IA64", "X86_64"}:
+            return True
+    return False
+
+
+def _makemkv_executable_names() -> list[str]:
+    if platform.system() != "Windows":
+        return ["makemkvcon"]
+    if _windows_host_is_64bit():
+        return ["makemkvcon64.exe", "makemkvcon.exe"]
+    return ["makemkvcon.exe"]
+
+
+def _resolve_makemkv_from_dir(dirpath: str | PathLike[str] | None) -> str | None:
+    normalized = _normalize_pathlike(dirpath)
+    if not normalized or not os.path.isdir(normalized):
+        return None
+    for executable_name in _makemkv_executable_names():
+        candidate = os.path.join(normalized, executable_name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _maybe_path_candidate(
+    env_tool_name: str,
+    *,
+    allow_path_lookup: bool,
+) -> list[tuple[str, str]]:
+    if not _path_lookup_allowed(allow_path_lookup):
+        return []
+    found = shutil.which(env_tool_name)
+    if not found:
+        return []
+    source = (
+        "PATH via advanced toggle"
+        if platform.system() == "Windows"
+        else "PATH"
+    )
+    return [(found, source)]
+
+
+def _maybe_path_candidates(
+    env_tool_names: Iterable[str],
+    *,
+    allow_path_lookup: bool,
+) -> list[tuple[str, str]]:
+    if not _path_lookup_allowed(allow_path_lookup):
+        return []
+    source = (
+        "PATH via advanced toggle"
+        if platform.system() == "Windows"
+        else "PATH"
+    )
+    return [
+        (found, source)
+        for tool_name in env_tool_names
+        for found in [shutil.which(tool_name)]
+        if found
+    ]
+
+
+def _resolve_required_tool(
+    configured_path: str | PathLike[str] | None,
+    *,
+    validator: ToolValidator,
+    tool_label: str,
+    detected_candidates: Iterable[tuple[str, str]],
+    allow_directory: bool = False,
+    directory_resolver: Callable[[str], str | None] | None = None,
+) -> ResolvedTool:
+    configured_result = _configured_resolution(
+        configured_path,
+        validator=validator,
+        tool_label=tool_label,
+        allow_directory=allow_directory,
+        directory_resolver=directory_resolver,
+    )
+    detected_result = _detected_resolution(
+        detected_candidates,
+        validator=validator,
+    )
+    if configured_result is not None:
+        if configured_result.path:
+            return configured_result
+        return _attach_suggestion(configured_result, detected_result)
+    if detected_result.path:
+        return detected_result
+    if detected_result.error:
+        return ResolvedTool(
+            path="",
+            source="",
+            error=detected_result.error,
+        )
+    return ResolvedTool(
+        path="",
+        source="",
+        error=f"{tool_label} executable not found.",
+    )
+
+
+def resolve_makemkvcon(
+    configured_path: str | PathLike[str] | None,
+    *,
+    allow_path_lookup: bool = False,
+) -> ResolvedTool:
+    detected_candidates: list[tuple[str, str]] = []
+    registry_candidate = _locate_makemkvcon_registry()
+    if registry_candidate:
+        detected_candidates.append((registry_candidate, "registry"))
+    detected_candidates.extend(_makemkv_known_location_candidates())
+    detected_candidates.extend(
+        _maybe_path_candidates(
+            [
+                os.path.splitext(executable_name)[0]
+                for executable_name in _makemkv_executable_names()
+            ],
+            allow_path_lookup=allow_path_lookup,
+        )
+    )
+    return _resolve_required_tool(
+        configured_path,
+        validator=validate_makemkvcon,
+        tool_label="MakeMKV",
+        detected_candidates=detected_candidates,
+    )
+
+
+def resolve_ffprobe(
+    configured_path: str | PathLike[str] | None,
+    *,
+    allow_path_lookup: bool = False,
+) -> ResolvedTool:
+    detected_candidates = [
+        *(
+            (bundled, "bundled")
+            for bundled in _bundled_binary_candidates(
+                "ffprobe.exe" if os.name == "nt" else "ffprobe"
+            )
+        ),
+    ]
+    registry_candidate = _locate_ffprobe_registry()
+    if registry_candidate:
+        detected_candidates.append((registry_candidate, "registry"))
+    detected_candidates.extend(_ffprobe_known_location_candidates())
+    detected_candidates.extend(
+        _maybe_path_candidate(
+            "ffprobe",
+            allow_path_lookup=allow_path_lookup,
+        )
+    )
+    return _resolve_required_tool(
+        configured_path,
+        validator=validate_ffprobe,
+        tool_label="ffprobe",
+        detected_candidates=detected_candidates,
+        allow_directory=True,
+        directory_resolver=_resolve_ffprobe_from_dir,
+    )
+
+
+def resolve_ffmpeg(
+    configured_path: str | PathLike[str] | None,
+    *,
+    allow_path_lookup: bool = False,
+) -> ResolvedTool:
+    detected_candidates = [
+        *(
+            (bundled, "bundled")
+            for bundled in _bundled_binary_candidates(
+                "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+            )
+        ),
+        *_ffmpeg_known_location_candidates(),
+        *_maybe_path_candidate(
+            "ffmpeg",
+            allow_path_lookup=allow_path_lookup,
+        ),
+    ]
+    return _resolve_required_tool(
+        configured_path,
+        validator=validate_ffmpeg,
+        tool_label="FFmpeg",
+        detected_candidates=detected_candidates,
+    )
+
+
+def resolve_handbrake(
+    configured_path: str | PathLike[str] | None,
+    *,
+    allow_path_lookup: bool = False,
+) -> ResolvedTool:
+    detected_candidates = [
+        *(
+            (bundled, "bundled")
+            for bundled in _bundled_binary_candidates(
+                "HandBrakeCLI.exe" if os.name == "nt" else "HandBrakeCLI"
+            )
+        ),
+        *_handbrake_known_location_candidates(),
+        *_maybe_path_candidate(
+            "HandBrakeCLI",
+            allow_path_lookup=allow_path_lookup,
+        ),
+    ]
+    return _resolve_required_tool(
+        configured_path,
+        validator=validate_handbrake,
+        tool_label="HandBrakeCLI",
+        detected_candidates=detected_candidates,
+    )
+
+
+def resolve_vlc(*, allow_path_lookup: bool = False) -> ResolvedTool:
+    detected_candidates = [
+        *_vlc_known_location_candidates(),
+        *_maybe_path_candidate(
+            "vlc",
+            allow_path_lookup=allow_path_lookup,
+        ),
+    ]
+    detected_result = _detected_resolution(
+        detected_candidates,
+        validator=validate_vlc,
+    )
+    if detected_result.path:
+        return detected_result
+    if detected_result.error:
+        return ResolvedTool(path="", source="", error=detected_result.error)
+    return ResolvedTool(path="", source="", error="VLC executable not found.")
 
 
 def _locate_makemkvcon_registry() -> str | None:
@@ -496,18 +867,28 @@ def _locate_makemkvcon_registry() -> str | None:
                                 continue
                             raw = str(value).strip().strip('"')
                             if raw.lower().endswith(".exe") and os.path.isfile(raw):
-                                return raw
-                            candidate = os.path.join(raw, "makemkvcon.exe")
-                            if os.path.isfile(candidate):
-                                return candidate
+                                base_name = os.path.basename(raw).lower()
+                                if base_name in {
+                                    name.lower()
+                                    for name in _makemkv_executable_names()
+                                }:
+                                    return raw
+                                found = _resolve_makemkv_from_dir(
+                                    os.path.dirname(raw)
+                                )
+                                if found:
+                                    return found
+                            found = _resolve_makemkv_from_dir(raw)
+                            if found:
+                                return found
                         except OSError:
                             continue
                     try:
                         uninstall, _ = winreg.QueryValueEx(key, "UninstallString")
                         install_dir = os.path.dirname(str(uninstall).strip().strip('"'))
-                        candidate = os.path.join(install_dir, "makemkvcon.exe")
-                        if os.path.isfile(candidate):
-                            return candidate
+                        found = _resolve_makemkv_from_dir(install_dir)
+                        if found:
+                            return found
                     except OSError:
                         pass
             except OSError:
@@ -518,7 +899,7 @@ def _locate_makemkvcon_registry() -> str | None:
 
 
 def _locate_ffprobe_registry() -> str | None:
-    """Check Windows registry and known package-manager paths for ffprobe."""
+    """Check Windows registry for an ffprobe installation directory."""
     if platform.system() != "Windows":
         return None
     try:
@@ -561,23 +942,19 @@ def _locate_ffprobe_registry() -> str | None:
                 continue
     except Exception as exc:
         logging.warning("_locate_ffprobe_registry failed: %s", exc)
-
-    choco = r"C:\tools\ffmpeg"
-    return _resolve_ffprobe_from_dir(choco)
+    return None
 
 
-def auto_locate_tools() -> tuple[str, str]:
-    """Find MakeMKV and ffprobe using Windows registry, common paths, and PATH."""
-    makemkvcon = _locate_makemkvcon_registry() or resolve_makemkvcon("")
-    if not makemkvcon or not os.path.isfile(makemkvcon):
-        makemkvcon = ""
-
-    ffprobe = _locate_ffprobe_registry()
-    if not ffprobe:
-        ffprobe, _ = resolve_ffprobe("")
-    if not ffprobe or not os.path.isfile(ffprobe):
-        ffprobe = ""
-
+def auto_locate_tools(*, allow_path_lookup: bool = False) -> tuple[str, str]:
+    """Find validated MakeMKV and ffprobe executables."""
+    makemkvcon = resolve_makemkvcon(
+        "",
+        allow_path_lookup=allow_path_lookup,
+    ).path
+    ffprobe = resolve_ffprobe(
+        "",
+        allow_path_lookup=allow_path_lookup,
+    ).path
     return makemkvcon, ffprobe
 
 
@@ -585,6 +962,7 @@ __all__ = [
     "AppConfig",
     "CONFIG_FILE",
     "DEFAULTS",
+    "ResolvedTool",
     "StartupConfigIssue",
     "StartupConfigResult",
     "auto_locate_ffmpeg",
@@ -593,8 +971,11 @@ __all__ = [
     "get_config_dir",
     "load_config",
     "load_startup_config",
+    "resolve_ffmpeg",
     "resolve_ffprobe",
+    "resolve_handbrake",
     "resolve_makemkvcon",
+    "resolve_vlc",
     "resolve_tool",
     "save_config",
     "should_keep_current_tool_path",
@@ -602,4 +983,5 @@ __all__ = [
     "validate_ffprobe",
     "validate_handbrake",
     "validate_makemkvcon",
+    "validate_vlc",
 ]

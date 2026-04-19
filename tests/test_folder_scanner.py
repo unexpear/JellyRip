@@ -117,7 +117,7 @@ def test_scan_folder_duration_sort_uses_ffprobe_metadata(monkeypatch, tmp_path: 
     )
     monkeypatch.setattr(
         "tools.folder_scanner._resolve_ffprobe_exe",
-        lambda _ffprobe_exe: "ffprobe",
+        lambda _ffprobe_exe, *, allow_path_lookup=False: "ffprobe",
     )
 
     results = scan_folder(
@@ -129,3 +129,18 @@ def test_scan_folder_duration_sort_uses_ffprobe_metadata(monkeypatch, tmp_path: 
 
     assert [entry["name"] for entry in results] == ["Long (2024).mkv", "Short (2024).mkv"]
     assert results[0]["duration_seconds"] == 360.0
+
+
+def test_scan_folder_creates_log_parent_directory(tmp_path: Path) -> None:
+    movie_file = tmp_path / "Movie Name (2024).mkv"
+    movie_file.write_bytes(b"x" * 1024)
+    log_path = tmp_path / "nested" / "logs" / "folder_scan_log.txt"
+
+    results = scan_folder(
+        str(tmp_path),
+        include_dirs=False,
+        log_path=str(log_path),
+    )
+
+    assert results
+    assert log_path.is_file()

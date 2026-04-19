@@ -41,6 +41,15 @@ class TVSessionSetup:
     keep_raw: bool
 
 
+@dataclass
+class DumpSessionSetup:
+    multi_disc: bool
+    disc_name: str
+    disc_count: int
+    custom_disc_names: str
+    batch_title: str
+
+
 # ---------------------------------------------------------------------------
 # Internal style constants
 # ---------------------------------------------------------------------------
@@ -156,6 +165,18 @@ def _metadata_provider_label(value: str) -> str:
     return _METADATA_PROVIDER_LABELS.get(str(value or "").strip().lower(), "TMDB")
 
 
+def _choice_label(
+    value: str,
+    labels: list[str],
+    values: list[str],
+) -> str:
+    token = str(value or "").strip().lower()
+    for label, raw_value in zip(labels, values):
+        if token == str(raw_value).strip().lower():
+            return label
+    return labels[0]
+
+
 # ---------------------------------------------------------------------------
 # Movie setup dialog
 # ---------------------------------------------------------------------------
@@ -257,15 +278,10 @@ def build_movie_setup_dialog(
     _section_header(win, "OPTIONS")
 
     replace_var = tk.BooleanVar(value=False)
-    keep_raw_var = tk.BooleanVar(value=False)
 
     r = _row(win)
     _check(r, "Replace existing file if destination already has content",
            replace_var).pack(side="left")
-
-    r = _row(win)
-    _check(r, "Keep raw rip after transcode",
-           keep_raw_var).pack(side="left")
 
     # ── Buttons ──────────────────────────────────────────────────────────────
     tk.Frame(win, bg=_BG3, height=1).pack(fill="x", padx=0, pady=(16, 0))
@@ -304,7 +320,9 @@ def build_movie_setup_dialog(
             metadata_provider=meta_source_var.get(),
             metadata_id=meta_id_var.get().strip(),
             replace_existing=replace_var.get(),
-            keep_raw=keep_raw_var.get(),
+            # Raw rips are always retained today; there is no implemented
+            # delete-after-transcode path for this dialog to control.
+            keep_raw=True,
             extras_mode="ask",
         )
         win.destroy()
@@ -350,9 +368,15 @@ def build_movie_setup_dialog(
 def build_tv_setup_dialog(
     parent: tk.Misc,
     default_title: str = "",
+    default_year: str = "",
     default_season: str = "1",
+    default_starting_disc: str = "1",
     default_metadata_provider: str = "TMDB",
     default_metadata_id: str = "",
+    default_episode_mapping: str = "auto",
+    default_multi_episode: str = "auto",
+    default_specials: str = "ask",
+    default_replace_existing: bool = False,
 ) -> TVSessionSetup | None:
     """Build and show the TV rip setup dialog. Returns result or None."""
 
@@ -381,9 +405,9 @@ def build_tv_setup_dialog(
     _section_header(win, "SHOW IDENTITY")
 
     title_var  = tk.StringVar(value=default_title)
-    year_var   = tk.StringVar()
+    year_var   = tk.StringVar(value=default_year)
     season_var = tk.StringVar(value=default_season)
-    disc_var   = tk.StringVar(value="1")
+    disc_var   = tk.StringVar(value=default_starting_disc)
 
     r = _row(win)
     _label_in_row(r, "Show title")
@@ -405,14 +429,18 @@ def build_tv_setup_dialog(
 
     r = _row(win)
     _label_in_row(r, "Starting disc #")
-    _entry(r, disc_var, width=6).pack(side="left")
+    disc_entry = _entry(r, disc_var, width=6)
+    disc_entry.pack(side="left")
     tk.Label(r, text="  (auto-increments for each disc)",
              bg=_BG2, fg=_FG_DIM, font=("Segoe UI", 9)).pack(side="left")
 
     # ── Episode mapping ───────────────────────────────────────────────────────
     _section_header(win, "EPISODE MAPPING")
 
-    ep_map_var = tk.StringVar(value="auto")
+    ep_map_value = str(default_episode_mapping or "").strip().lower()
+    if ep_map_value not in {"auto", "manual"}:
+        ep_map_value = "auto"
+    ep_map_var = tk.StringVar(value=ep_map_value)
 
     r = _row(win)
     for label, value in [("Auto-detect", "auto"), ("Manual map", "manual")]:
@@ -459,10 +487,21 @@ def build_tv_setup_dialog(
     # ── Options ──────────────────────────────────────────────────────────────
     _section_header(win, "OPTIONS")
 
-    multi_ep_var  = tk.StringVar(value="Auto-detect")
-    specials_var  = tk.StringVar(value="Ask per disc")
-    replace_var   = tk.BooleanVar(value=False)
-    keep_raw_var  = tk.BooleanVar(value=False)
+    multi_ep_var  = tk.StringVar(
+        value=_choice_label(
+            default_multi_episode,
+            _MULTI_EP_LABELS,
+            _MULTI_EP_VALUES,
+        )
+    )
+    specials_var  = tk.StringVar(
+        value=_choice_label(
+            default_specials,
+            _SPECIALS_LABELS,
+            _SPECIALS_VALUES,
+        )
+    )
+    replace_var   = tk.BooleanVar(value=bool(default_replace_existing))
 
     r = _row(win)
     _label_in_row(r, "Multi-ep titles")
@@ -475,10 +514,6 @@ def build_tv_setup_dialog(
     r = _row(win)
     _check(r, "Replace existing files if destination already has content",
            replace_var).pack(side="left")
-
-    r = _row(win)
-    _check(r, "Keep raw rip after transcode",
-           keep_raw_var).pack(side="left")
 
     def _label_to_value(label: str, labels: list[str], values: list[str]) -> str:
         try:
@@ -514,7 +549,11 @@ def build_tv_setup_dialog(
         season = int(season_raw)
 
         disc_raw = disc_var.get().strip()
-        starting_disc = int(disc_raw) if disc_raw.isdigit() else 1
+        if not disc_raw.isdigit() or int(disc_raw) < 1:
+            error_var.set("Starting disc # must be a whole number.")
+            disc_entry.focus_set()
+            return
+        starting_disc = int(disc_raw)
 
         result[0] = TVSessionSetup(
             title=title,
@@ -531,7 +570,9 @@ def build_tv_setup_dialog(
                 specials_var.get(), _SPECIALS_LABELS, _SPECIALS_VALUES
             ),
             replace_existing=replace_var.get(),
-            keep_raw=keep_raw_var.get(),
+            # Raw rips are always retained today; there is no implemented
+            # delete-after-transcode path for this dialog to control.
+            keep_raw=True,
         )
         win.destroy()
 
@@ -565,5 +606,195 @@ def build_tv_setup_dialog(
     win.geometry(f"+{px}+{py}")
 
     title_entry.focus_set()
+    win.wait_window()
+    return result[0]
+
+
+# ---------------------------------------------------------------------------
+# Dump setup dialog
+# ---------------------------------------------------------------------------
+
+def build_dump_setup_dialog(
+    parent: tk.Misc,
+    default_multi_disc: bool = False,
+    default_disc_name: str = "",
+    default_disc_count: str = "1",
+    default_custom_disc_names: str = "",
+    default_batch_title: str = "",
+) -> DumpSessionSetup | None:
+    """Build and show the dump-all setup dialog. Returns result or None."""
+
+    result: list[DumpSessionSetup | None] = [None]
+
+    win = tk.Toplevel(parent)
+    win.title("Dump All - Session Setup")
+    win.configure(bg=_BG2)
+    win.resizable(False, False)
+    win.grab_set()
+    win.focus_force()
+
+    tk.Label(
+        win, text="Step 1: Dump Session",
+        bg=_BG2, fg=_ACCENT,
+        font=("Segoe UI", 14, "bold"),
+    ).pack(pady=(18, 4), padx=20, anchor="w")
+    tk.Label(
+        win, text="Choose how this dump session should run.",
+        bg=_BG2, fg=_FG_DIM,
+        font=("Segoe UI", 10),
+    ).pack(padx=20, anchor="w")
+
+    _section_header(win, "DUMP MODE")
+
+    mode_var = tk.StringVar(value="multi" if default_multi_disc else "single")
+    disc_name_var = tk.StringVar(value=default_disc_name)
+    disc_count_var = tk.StringVar(value=default_disc_count)
+    custom_names_var = tk.StringVar(value=default_custom_disc_names)
+    batch_title_var = tk.StringVar(value=default_batch_title)
+
+    mode_row = _row(win)
+    for label, value in (
+        ("Single disc", "single"),
+        ("Multi-disc batch", "multi"),
+    ):
+        tk.Radiobutton(
+            mode_row,
+            text=label,
+            variable=mode_var,
+            value=value,
+            bg=_BG2,
+            fg=_FG,
+            selectcolor=_BG3,
+            activebackground=_BG2,
+            activeforeground=_FG,
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=(0, 16))
+
+    single_frame = tk.Frame(win, bg=_BG2)
+    multi_frame = tk.Frame(win, bg=_BG2)
+
+    single_row = _row(single_frame)
+    _label_in_row(single_row, "Disc name")
+    single_name_entry = _entry(single_row, disc_name_var, width=34)
+    single_name_entry.pack(side="left")
+    tk.Label(
+        single_frame,
+        text="   Leave blank to use an auto-generated timestamp name.",
+        bg=_BG2, fg=_FG_DIM,
+        font=("Segoe UI", 9, "italic"),
+        anchor="w",
+    ).pack(fill="x", padx=20)
+
+    multi_count_row = _row(multi_frame)
+    _label_in_row(multi_count_row, "Disc count")
+    _required_star(multi_count_row)
+    multi_count_entry = _entry(multi_count_row, disc_count_var, width=6)
+    multi_count_entry.pack(side="left")
+    tk.Label(
+        multi_count_row,
+        text="  (auto swap detection between discs)",
+        bg=_BG2, fg=_FG_DIM, font=("Segoe UI", 9),
+    ).pack(side="left")
+
+    multi_names_row = _row(multi_frame)
+    _label_in_row(multi_names_row, "Custom disc names")
+    _entry(multi_names_row, custom_names_var, width=34).pack(side="left")
+    tk.Label(
+        multi_frame,
+        text="   Optional: comma or ' - ' separated names in disc order.",
+        bg=_BG2, fg=_FG_DIM,
+        font=("Segoe UI", 9, "italic"),
+        anchor="w",
+    ).pack(fill="x", padx=20)
+
+    multi_batch_row = _row(multi_frame)
+    _label_in_row(multi_batch_row, "Batch folder name")
+    _entry(multi_batch_row, batch_title_var, width=34).pack(side="left")
+    tk.Label(
+        multi_frame,
+        text="   Leave blank to use an auto-generated batch folder name.",
+        bg=_BG2, fg=_FG_DIM,
+        font=("Segoe UI", 9, "italic"),
+        anchor="w",
+    ).pack(fill="x", padx=20)
+
+    def _refresh_mode(*_args):
+        single_frame.pack_forget()
+        multi_frame.pack_forget()
+        if mode_var.get() == "multi":
+            multi_frame.pack(fill="x", padx=0, pady=(0, 0))
+            multi_count_entry.focus_set()
+        else:
+            single_frame.pack(fill="x", padx=0, pady=(0, 0))
+            single_name_entry.focus_set()
+
+    mode_var.trace_add("write", _refresh_mode)
+    _refresh_mode()
+
+    tk.Frame(win, bg=_BG3, height=1).pack(fill="x", padx=0, pady=(16, 0))
+    btn_row = tk.Frame(win, bg=_BG2)
+    btn_row.pack(pady=14, padx=20)
+
+    error_var = tk.StringVar()
+    tk.Label(
+        win, textvariable=error_var,
+        bg=_BG2, fg="#f85149",
+        font=("Segoe UI", 9),
+    ).pack(padx=20, anchor="w")
+
+    def _submit():
+        is_multi = mode_var.get() == "multi"
+        if is_multi:
+            disc_count_raw = disc_count_var.get().strip()
+            if not disc_count_raw.isdigit():
+                error_var.set("Disc count must be a whole number.")
+                multi_count_entry.focus_set()
+                return
+            disc_count = max(1, int(disc_count_raw))
+        else:
+            disc_count = 1
+
+        result[0] = DumpSessionSetup(
+            multi_disc=is_multi,
+            disc_name=disc_name_var.get().strip(),
+            disc_count=disc_count,
+            custom_disc_names=custom_names_var.get().strip(),
+            batch_title=batch_title_var.get().strip(),
+        )
+        win.destroy()
+
+    def _cancel():
+        result[0] = None
+        win.destroy()
+
+    tk.Button(
+        btn_row, text="Cancel",
+        command=_cancel,
+        bg=_CANCEL_BG, fg=_FG_DIM,
+        font=("Segoe UI", 10),
+        width=10, relief="flat",
+    ).pack(side="left", padx=(0, 8))
+    tk.Button(
+        btn_row, text="Start  ->",
+        command=_submit,
+        bg=_GREEN, fg="white",
+        font=("Segoe UI", 11, "bold"),
+        width=14, relief="flat",
+    ).pack(side="left")
+
+    win.bind("<Return>", lambda _e: _submit())  # type: ignore[arg-type]
+    win.bind("<Escape>", lambda _e: _cancel())  # type: ignore[arg-type]
+    win.protocol("WM_DELETE_WINDOW", _cancel)
+
+    win.update_idletasks()
+    px = parent.winfo_x() + (parent.winfo_width()  - win.winfo_width())  // 2
+    py = parent.winfo_y() + (parent.winfo_height() - win.winfo_height()) // 2
+    win.geometry(f"+{px}+{py}")
+
+    if mode_var.get() == "multi":
+        multi_count_entry.focus_set()
+    else:
+        single_name_entry.focus_set()
+
     win.wait_window()
     return result[0]

@@ -77,6 +77,17 @@ def rip_all_titles(self, rip_path, on_progress, on_log):
         if attempt_num > 1:
             self._clean_new_mkv_files(rip_path, before, on_log)
             before = self._snapshot_mkv_files(rip_path)
+        probe_context = (
+            "starting all-title rip"
+            if attempt_num == 1
+            else f"reopening all-title rip (attempt {attempt_num})"
+        )
+        if not self._wait_for_drive_ready(on_log, context=probe_context):
+            on_log(
+                "Drive never became ready before starting MakeMKV. "
+                "Stopping rip without consuming another rip attempt."
+            )
+            return False
         on_log(
             f"Rip attempt {attempt_num}/{len(attempts)} "
             f"(flags: {' '.join(flags)})"
@@ -164,6 +175,17 @@ def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
                     f" for title {tid+1} "
                     f"(flags: {' '.join(flags)})"
                 )
+            probe_context = (
+                f"starting title {tid+1}"
+                if attempt_num == 1
+                else f"reopening title {tid+1}"
+            )
+            if not self._wait_for_drive_ready(on_log, context=probe_context):
+                on_log(
+                    f"Drive never became ready for title {tid+1}; "
+                    "skipping without consuming a rip attempt."
+                )
+                break
             cmd = (
                 [makemkvcon] + global_args +
                 ["mkv", disc_target, str(tid), rip_path] +

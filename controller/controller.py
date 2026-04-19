@@ -1,6 +1,5 @@
 
 """Controller layer implementation."""
-# pyright: reportUnusedImport=false, reportUnusedVariable=false
 import os
 import re
 import shutil
@@ -147,6 +146,262 @@ class RipperController(LegacyControllerMixin):
         classified: Sequence[ClassifiedTitle],
     ) -> ClassifiedTitle | None:
         return get_recommended_title(classified)
+
+    def _build_tv_setup_defaults(
+        self,
+        current_setup: Mapping[str, Any] | None = None,
+        session_meta: Mapping[str, Any] | None = None,
+        library_root: str | None = None,
+        library_state: Mapping[int, Sequence[int]] | None = None,
+    ) -> dict[str, Any]:
+        current = dict(current_setup or {})
+        session = dict(session_meta or {})
+        seasons = list((library_state or {}).keys())
+        library_title = os.path.basename(library_root) if library_root else ""
+        library_season = str(max(seasons)) if seasons else ""
+
+        def _lookup(source: Mapping[str, Any], *names: str) -> tuple[bool, Any]:
+            for name in names:
+                if name in source:
+                    return True, source.get(name)
+            return False, None
+
+        def _pick_string(*values: Any, fallback: str = "") -> str:
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+            return fallback
+
+        def _pick_bool(*pairs: tuple[bool, Any], fallback: bool = False) -> bool:
+            for present, value in pairs:
+                if present:
+                    return bool(value)
+            return fallback
+
+        return {
+            "default_title": _pick_string(
+                _lookup(current, "default_title", "title")[1],
+                _lookup(session, "title")[1],
+                library_title,
+            ),
+            "default_year": _pick_string(
+                _lookup(current, "default_year", "year")[1],
+                _lookup(session, "year")[1],
+            ),
+            "default_season": _pick_string(
+                _lookup(current, "default_season", "season")[1],
+                _lookup(session, "season")[1],
+                library_season,
+                fallback="1",
+            ),
+            "default_starting_disc": _pick_string(
+                _lookup(current, "default_starting_disc", "starting_disc")[1],
+                _lookup(session, "starting_disc", "disc_number")[1],
+                fallback="1",
+            ),
+            "default_metadata_provider": _pick_string(
+                _lookup(
+                    current,
+                    "default_metadata_provider",
+                    "metadata_provider",
+                )[1],
+                _lookup(session, "metadata_provider")[1],
+                fallback="TMDB",
+            ),
+            "default_metadata_id": _pick_string(
+                _lookup(current, "default_metadata_id", "metadata_id")[1],
+                _lookup(session, "metadata_id")[1],
+            ),
+            "default_episode_mapping": _pick_string(
+                _lookup(
+                    current,
+                    "default_episode_mapping",
+                    "episode_mapping",
+                )[1],
+                _lookup(session, "episode_mapping")[1],
+                fallback="auto",
+            ),
+            "default_multi_episode": _pick_string(
+                _lookup(current, "default_multi_episode", "multi_episode")[1],
+                _lookup(session, "multi_episode")[1],
+                fallback="auto",
+            ),
+            "default_specials": _pick_string(
+                _lookup(current, "default_specials", "specials")[1],
+                _lookup(session, "specials")[1],
+                fallback="ask",
+            ),
+            "default_replace_existing": _pick_bool(
+                _lookup(
+                    current,
+                    "default_replace_existing",
+                    "replace_existing",
+                ),
+                _lookup(session, "replace_existing"),
+            ),
+        }
+
+    @staticmethod
+    def _tv_setup_defaults_from_setup(setup: Any) -> dict[str, Any]:
+        season = safe_int(getattr(setup, "season", 1))
+        starting_disc = max(safe_int(getattr(setup, "starting_disc", 1)), 1)
+        episode_mapping = str(
+            getattr(setup, "episode_mapping", "auto") or "auto"
+        ).strip().lower()
+        if episode_mapping not in {"auto", "manual"}:
+            episode_mapping = "auto"
+
+        multi_episode = str(
+            getattr(setup, "multi_episode", "auto") or "auto"
+        ).strip().lower()
+        if multi_episode not in {"auto", "split", "merge"}:
+            multi_episode = "auto"
+
+        specials = str(
+            getattr(setup, "specials", "ask") or "ask"
+        ).strip().lower()
+        if specials not in {"ask", "season0", "skip"}:
+            specials = "ask"
+
+        return {
+            "default_title": str(getattr(setup, "title", "") or "").strip(),
+            "default_year": str(getattr(setup, "year", "") or "").strip(),
+            "default_season": str(season),
+            "default_starting_disc": str(starting_disc),
+            "default_metadata_provider": (
+                str(getattr(setup, "metadata_provider", "TMDB") or "TMDB").strip()
+                or "TMDB"
+            ),
+            "default_metadata_id": str(
+                getattr(setup, "metadata_id", "") or ""
+            ).strip(),
+            "default_episode_mapping": episode_mapping,
+            "default_multi_episode": multi_episode,
+            "default_specials": specials,
+            "default_replace_existing": bool(
+                getattr(setup, "replace_existing", False)
+            ),
+        }
+
+    @staticmethod
+    def _tv_choice_label(value: str, labels: Mapping[str, str], fallback: str) -> str:
+        return labels.get(str(value or "").strip().lower(), fallback)
+
+    def _build_manual_tv_review_details(
+        self,
+        *,
+        title: str,
+        season: int,
+        disc_number: int,
+        selected_ids: Sequence[int],
+        disc_titles: Sequence[DiscTitle],
+        tv_setup_defaults: Mapping[str, Any],
+    ) -> list[str]:
+        title_by_id = {
+            safe_int(item.get("id", -1)): item for item in disc_titles
+        }
+        selected_labels: list[str] = []
+        for selected_id in selected_ids[:4]:
+            item = title_by_id.get(int(selected_id), {})
+            raw_name = str(item.get("name", "") or "").strip()
+            if raw_name and not raw_name.lower().startswith("title "):
+                selected_labels.append(f"Title {int(selected_id) + 1}: {raw_name}")
+            else:
+                selected_labels.append(f"Title {int(selected_id) + 1}")
+        if len(selected_ids) > 4:
+            selected_labels.append(f"+{len(selected_ids) - 4} more")
+
+        year = str(tv_setup_defaults.get("default_year", "") or "").strip()
+        provider = str(
+            tv_setup_defaults.get("default_metadata_provider", "TMDB") or "TMDB"
+        ).strip() or "TMDB"
+        metadata_id = str(tv_setup_defaults.get("default_metadata_id", "") or "").strip()
+        episode_mapping = self._tv_choice_label(
+            str(tv_setup_defaults.get("default_episode_mapping", "auto") or "auto"),
+            {"auto": "Auto-detect", "manual": "Manual map"},
+            "Auto-detect",
+        )
+        multi_episode = self._tv_choice_label(
+            str(tv_setup_defaults.get("default_multi_episode", "auto") or "auto"),
+            {
+                "auto": "Auto-detect",
+                "split": "Split titles",
+                "merge": "Merge to one",
+            },
+            "Auto-detect",
+        )
+        specials = self._tv_choice_label(
+            str(tv_setup_defaults.get("default_specials", "ask") or "ask"),
+            {
+                "ask": "Ask per disc",
+                "season0": "Put in Season 00",
+                "skip": "Skip specials",
+            },
+            "Ask per disc",
+        )
+        show_identity = title if not year else f"{title} ({year})"
+        detail_lines = [
+            f"Show: {show_identity}",
+            f"Current disc #: {disc_number}",
+            f"Starting disc #: {tv_setup_defaults.get('default_starting_disc', '1')}",
+            f"Episode mapping: {episode_mapping}",
+            f"Multi-ep titles: {multi_episode}",
+            f"Specials / OVAs: {specials}",
+            (
+                f"Selected titles: {len(selected_ids)}"
+                + (
+                    f" [{', '.join(selected_labels)}]"
+                    if selected_labels else ""
+                )
+            ),
+            (
+                f"Naming plan: Season {season:02d} episode files; "
+                "episode numbers are confirmed after rip"
+            ),
+            (
+                "Replace existing: "
+                f"{'Yes' if bool(tv_setup_defaults.get('default_replace_existing', False)) else 'No'}"
+            ),
+        ]
+        if metadata_id:
+            detail_lines.insert(1, f"Metadata: {provider} {metadata_id}")
+        return detail_lines
+
+    def _show_manual_tv_output_plan(
+        self,
+        *,
+        title: str,
+        season: int,
+        disc_number: int,
+        dest_folder: str,
+        selected_ids: Sequence[int],
+        disc_titles: Sequence[DiscTitle],
+        tv_setup_defaults: Mapping[str, Any],
+    ) -> bool:
+        detail_lines = self._build_manual_tv_review_details(
+            title=title,
+            season=season,
+            disc_number=disc_number,
+            selected_ids=selected_ids,
+            disc_titles=disc_titles,
+            tv_setup_defaults=tv_setup_defaults,
+        )
+        return bool(
+            self.gui.show_output_plan_step(
+                dest_folder,
+                f"{title} - Season {season:02d} episode files",
+                {},
+                detail_lines=detail_lines,
+                header_text="Step 3: Review Output Plan",
+                subtitle_text=(
+                    "Review the TV season folder, preferences, and selected titles before ripping."
+                ),
+                confirm_text="Start Rip",
+            )
+        )
 
     def _open_manual_disc_picker(
         self,
@@ -525,12 +780,16 @@ class RipperController(LegacyControllerMixin):
         # Defaults — overwritten by the branch that applies.
         season = 0
         edition = ""
+        movie_replace_existing = False
+        tv_setup_defaults: dict[str, Any] = {}
 
         if is_tv:
-            tv_setup = self.gui.ask_tv_setup()
+            tv_setup_defaults = self._build_tv_setup_defaults()
+            tv_setup = self.gui.ask_tv_setup(**tv_setup_defaults)
             if self.engine.abort_event.is_set() or tv_setup is None:
                 self.log("Cancelled at library identity step.")
                 return
+            tv_setup_defaults = self._tv_setup_defaults_from_setup(tv_setup)
             title = tv_setup.title
             year = tv_setup.year or ""
             season = tv_setup.season
@@ -547,6 +806,7 @@ class RipperController(LegacyControllerMixin):
             year = movie_setup.year
             metadata_id = movie_setup.metadata_id or ""
             edition = movie_setup.edition or ""
+            movie_replace_existing = bool(movie_setup.replace_existing)
             self.log(f"Movie: {title} ({year})")
             if edition:
                 self.log(f"Edition: {edition}")
@@ -554,6 +814,8 @@ class RipperController(LegacyControllerMixin):
                 self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
         extras_assignment = None
+        split_main_and_extras = False
+        extras_rip_ids: list[int] = []
         selected_ids: list[int]
         selected_size: int
 
@@ -582,6 +844,18 @@ class RipperController(LegacyControllerMixin):
                 return
 
             all_rip_ids = content.main_title_ids + content.extra_title_ids
+            split_main_and_extras = (
+                not is_tv
+                and bool(content.main_title_ids)
+                and bool(content.extra_title_ids)
+            )
+            if split_main_and_extras:
+                extras_rip_ids = [
+                    int(title_id) for title_id in content.extra_title_ids
+                ]
+                self.log(
+                    "Smart movie split mode: ripping main feature before extras."
+                )
             self.log(
                 f"Content mapping: {len(content.main_title_ids)} main, "
                 f"{len(content.extra_title_ids)} extras, "
@@ -645,7 +919,11 @@ class RipperController(LegacyControllerMixin):
                 return
 
             # ── Rip ─────────────────────────────────────────────────────
-            selected_ids = all_rip_ids
+            selected_ids = (
+                list(content.main_title_ids)
+                if split_main_and_extras else
+                all_rip_ids
+            )
             selected_size = sum(
                 int(t.get("size_bytes", 0) or 0)
                 for t in disc_titles
@@ -738,6 +1016,10 @@ class RipperController(LegacyControllerMixin):
         result = self.engine.run_job(job)
         success = result.success
         failed_titles = result.errors
+        partial_rip = False
+        completed_title_ids = list(selected_ids)
+        extras_ok = True
+        extras_partial_path: str | None = None
         self._warn_degraded_rips()
         self.diagnostics.update_context(pipeline_step="post_rip_validation")
         success, mkv_files = self._normalize_rip_result(
@@ -745,26 +1027,48 @@ class RipperController(LegacyControllerMixin):
         )
 
         if not success:
-            self._state_fail("rip_failed")
-            diag_record("error", "rip_no_output_files",
-                        "Smart rip failed for %s (%s)" % (title, year),
-                        details={"selected_ids": list(selected_ids),
-                                 "failed_titles": list(failed_titles)})
-            self.report(f"Smart Rip failed for {title} ({year})")
-            self._mark_session_failed(
-                rip_path,
-                title=title,
-                year=year,
-                media_type=media_type,
-                selected_titles=list(selected_ids),
-                dest_folder=dest_folder,
-                failed_titles=list(failed_titles),
+            partial_rip, completed_title_ids, mkv_files, partial_expected = (
+                self._begin_partial_rip_session(
+                    rip_path,
+                    selected_ids,
+                    failed_titles,
+                    mkv_files,
+                    expected_size_by_title,
+                    label=f"Smart Rip {title} ({year})",
+                    title=title,
+                    year=year,
+                    media_type=media_type,
+                    dest_folder=dest_folder,
+                    required_title_ids=content.main_title_ids or None,
+                )
             )
-            self.flush_log()
-            return
+            if partial_rip:
+                success = True
+                expected_size_by_title = partial_expected or {}
+            else:
+                self._state_fail("rip_failed")
+                diag_record("error", "rip_no_output_files",
+                            "Smart rip failed for %s (%s)" % (title, year),
+                            details={"selected_ids": list(selected_ids),
+                                     "failed_titles": list(failed_titles)})
+                self.report(f"Smart Rip failed for {title} ({year})")
+                self._mark_session_failed(
+                    rip_path,
+                    title=title,
+                    year=year,
+                    media_type=media_type,
+                    selected_titles=list(selected_ids),
+                    dest_folder=dest_folder,
+                    failed_titles=list(failed_titles),
+                )
+                self.flush_log()
+                return
         self._state_transition(SessionState.RIPPED)
 
-        self.engine.update_temp_metadata(rip_path, status="ripped")
+        self.engine.update_temp_metadata(
+            rip_path,
+            status="partial" if partial_rip else "ripped",
+        )
 
         self._log_ripped_file_sizes(mkv_files)
         stabilized, timed_out = self._stabilize_ripped_files(
@@ -923,22 +1227,55 @@ class RipperController(LegacyControllerMixin):
             session_rip_path=rip_path,
             session_meta=None,
             selected_title_ids=move_selected_title_ids,
+            replace_existing=bool(
+                tv_setup_defaults.get("default_replace_existing", False)
+            ) if is_tv else movie_replace_existing,
         )
         if ok:
             self._state_transition(SessionState.MOVED)
 
             # Move extras to their classified Jellyfin subfolders
-            if extras_assignment and extras_assignment.assignments:
+            if (
+                extras_assignment
+                and extras_assignment.assignments
+                and not split_main_and_extras
+            ):
                 self._move_extras_to_categories(
                     titles_list, content, extras_assignment,
                     dest_folder, rip_path,
                 )
+            if split_main_and_extras and not partial_rip:
+                extras_ok, extras_partial_path = (
+                    self._run_smart_movie_extras_phase(
+                        temp_root=temp_root,
+                        disc_titles=disc_titles,
+                        title=title,
+                        year=year,
+                        media_type=media_type,
+                        dest_folder=dest_folder,
+                        content=content,
+                        extras_assignment=extras_assignment,
+                        extra_title_ids=extras_rip_ids,
+                    )
+                )
 
         if ok:
-            self._cleanup_success_session_metadata(rip_path)
-            shutil.rmtree(rip_path, ignore_errors=True)
-            if os.path.exists(rip_path):
-                self.log(f"Warning: could not delete {rip_path}")
+            if partial_rip:
+                self._preserve_partial_session(
+                    rip_path,
+                    title=title,
+                    year=year,
+                    media_type=media_type,
+                    selected_titles=list(selected_ids),
+                    completed_titles=list(completed_title_ids),
+                    failed_titles=list(failed_titles),
+                    dest_folder=dest_folder,
+                )
+            else:
+                self._cleanup_success_session_metadata(rip_path)
+                shutil.rmtree(rip_path, ignore_errors=True)
+                if os.path.exists(rip_path):
+                    self.log(f"Warning: could not delete {rip_path}")
         else:
             if self.sm.state != SessionState.FAILED:
                 self._state_fail("move_failed")
@@ -954,10 +1291,34 @@ class RipperController(LegacyControllerMixin):
         self.flush_log()
         self.gui.set_progress(0)
         if ok:
-            self.gui.show_info(
-                "Smart Rip Complete",
-                f"Files moved to:\n{dest_folder}"
-            )
+            if partial_rip:
+                self.gui.show_info(
+                    "Smart Rip Partial",
+                    "Successful files were moved.\n\n"
+                    f"Failed titles: {list(failed_titles)}\n"
+                    f"Moved to:\n{dest_folder}\n\n"
+                    f"Session preserved for resume at:\n{rip_path}"
+                )
+            elif not extras_ok:
+                message = (
+                    "Main movie moved successfully.\n\n"
+                    f"Saved to:\n{dest_folder}\n\n"
+                    "Extras did not complete."
+                )
+                if extras_partial_path:
+                    message += (
+                        "\n\nExtras session preserved at:\n"
+                        f"{extras_partial_path}"
+                    )
+                self.gui.show_info(
+                    "Smart Rip Partial",
+                    message,
+                )
+            else:
+                self.gui.show_info(
+                    "Smart Rip Complete",
+                    f"Files moved to:\n{dest_folder}"
+                )
         else:
             self.gui.show_error(
                 "Smart Rip Failed",
@@ -978,14 +1339,25 @@ class RipperController(LegacyControllerMixin):
         self._log_session_paths()
         temp_root = self.get_path("temp")
 
-        multi_disc = self.gui.ask_yesno(
-            "Dump multiple discs in one session?\n\n"
-            "Yes = multi-disc with auto swap detection\n"
-            "No = single-disc dump"
-        )
+        dump_setup = None
+        ask_dump_setup = getattr(self.gui, "ask_dump_setup", None)
+        if callable(ask_dump_setup):
+            dump_setup = ask_dump_setup()
+            if self.engine.abort_event.is_set() or dump_setup is None:
+                self.log("Dump setup cancelled before rip.")
+                return
+
+        if dump_setup is not None:
+            multi_disc = bool(getattr(dump_setup, "multi_disc", False))
+        else:
+            multi_disc = self.gui.ask_yesno(
+                "Dump multiple discs in one session?\n\n"
+                "Yes = multi-disc with auto swap detection\n"
+                "No = single-disc dump"
+            )
         if multi_disc:
             self.log("Multi-disc dump mode: you will be asked for custom disc names and batch folder name.")
-            self._run_dump_all_multi(temp_root)
+            self._run_dump_all_multi(temp_root, setup=dump_setup)
             return
 
         self.log("Single-disc dump mode: you will be asked for a disc name.")
@@ -1006,11 +1378,14 @@ class RipperController(LegacyControllerMixin):
 
         time.sleep(2)  # drive spin-up / mount stabilization
 
-        title = self.gui.ask_input(
-            "Disc Name", 
-            "Name for this disc (used in folder name).\n"
-            "Skip for auto-generated name (timestamp)."
-        )
+        if dump_setup is not None:
+            title = str(getattr(dump_setup, "disc_name", "") or "").strip()
+        else:
+            title = self.gui.ask_input(
+                "Disc Name",
+                "Name for this disc (used in folder name).\n"
+                "Skip for auto-generated name (timestamp)."
+            )
         if not title:
             title = self._fallback_title_from_mode()
             self.log(f"Using auto-generated disc name: {title}")
@@ -1432,7 +1807,11 @@ class RipperController(LegacyControllerMixin):
 
             self.log("Setup edit requested — re-enter multi-disc settings.")
 
-    def _run_dump_all_multi(self, temp_root: str) -> None:
+    def _run_dump_all_multi(
+        self,
+        temp_root: str,
+        setup: Any | None = None,
+    ) -> None:
         cfg = self.engine.cfg
 
         self.engine.reset_abort()
@@ -1443,11 +1822,20 @@ class RipperController(LegacyControllerMixin):
         if self.engine.abort_event.is_set():
             return
 
-        setup = self._collect_dump_all_multi_setup()
-        if setup is None:
-            self.log("Multi-disc dump cancelled during setup.")
-            return
-        total, per_disc_titles, batch_title = setup
+        if setup is not None:
+            total = max(1, safe_int(getattr(setup, "disc_count", 1)))
+            per_disc_titles = parse_ordered_titles(
+                getattr(setup, "custom_disc_names", "")
+            )
+            batch_title = str(
+                getattr(setup, "batch_title", "") or ""
+            ).strip() or self._fallback_title_from_mode()
+        else:
+            multi_setup = self._collect_dump_all_multi_setup()
+            if multi_setup is None:
+                self.log("Multi-disc dump cancelled during setup.")
+                return
+            total, per_disc_titles, batch_title = multi_setup
         if per_disc_titles:
             self.log(
                 f"Using custom disc titles for first "
@@ -1860,6 +2248,315 @@ class RipperController(LegacyControllerMixin):
             seen.add(norm_folder)
             self.engine.delete_temp_metadata(norm_folder, self.log)
 
+    def _run_smart_movie_extras_phase(
+        self,
+        *,
+        temp_root: str,
+        disc_titles: Sequence[DiscTitle],
+        title: str,
+        year: str,
+        media_type: str,
+        dest_folder: str,
+        content: "ContentSelection",
+        extras_assignment: Optional["ExtrasAssignment"],
+        extra_title_ids: Sequence[int],
+    ) -> tuple[bool, str | None]:
+        extra_ids = [int(title_id) for title_id in extra_title_ids]
+        if not extra_ids:
+            return True, None
+
+        extras_path = os.path.join(temp_root, make_rip_folder_name())
+        os.makedirs(extras_path, exist_ok=True)
+        self.engine.write_temp_metadata(
+            extras_path,
+            title,
+            1,
+            year=year,
+            media_type=media_type,
+            selected_titles=list(extra_ids),
+            dest_folder=dest_folder,
+        )
+
+        self.log(
+            f"Extras phase: ripping {len(extra_ids)} extra title(s) "
+            f"after main feature move."
+        )
+        self.gui.set_status("Ripping extras...")
+        pre_existing_mkvs = frozenset(
+            self._safe_glob(
+                os.path.join(extras_path, "**", "*.mkv"),
+                recursive=True,
+                context="Snapshotting pre-rip extras MKVs",
+            )
+        )
+
+        from engine.ripper_engine import Job
+
+        extras_job = Job(
+            source=",".join(str(title_id) for title_id in extra_ids),
+            output=extras_path,
+            profile="default",
+        )
+        result = self.engine.run_job(extras_job)
+        success = result.success
+        failed_titles = list(result.errors)
+        completed_title_ids = list(extra_ids)
+        partial_rip = False
+        expected_size_by_title: ExpectedSizeMap = {
+            int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+            for t in disc_titles
+            if int(t.get("id", -1)) in extra_ids
+        }
+
+        self._warn_degraded_rips()
+        success, mkv_files = self._normalize_rip_result(
+            extras_path,
+            success,
+            failed_titles,
+            pre_existing_mkvs,
+        )
+
+        if not success:
+            (
+                partial_rip,
+                completed_title_ids,
+                mkv_files,
+                partial_expected,
+            ) = self._begin_partial_rip_session(
+                extras_path,
+                extra_ids,
+                failed_titles,
+                mkv_files,
+                expected_size_by_title,
+                label=f"Smart Rip extras for {title} ({year})",
+                title=title,
+                year=year,
+                media_type=media_type,
+                dest_folder=dest_folder,
+            )
+            if partial_rip:
+                success = True
+                expected_size_by_title = partial_expected or {}
+            else:
+                self.report(
+                    f"Smart Rip extras failed after main movie was preserved "
+                    f"for {title} ({year})"
+                )
+                shutil.rmtree(extras_path, ignore_errors=True)
+                return False, None
+
+        self.engine.update_temp_metadata(
+            extras_path,
+            status="partial" if partial_rip else "ripped",
+            completed_titles=list(completed_title_ids),
+            failed_titles=[
+                int(title_id)
+                for title_id in failed_titles
+                if isinstance(title_id, (int, str))
+            ],
+        )
+
+        self._log_ripped_file_sizes(mkv_files)
+        stabilized, timed_out = self._stabilize_ripped_files(
+            mkv_files,
+            expected_size_by_title,
+        )
+        if not stabilized:
+            self.report(
+                f"Smart Rip extras stabilization failed for {title} ({year})"
+            )
+            self._preserve_partial_session(
+                extras_path,
+                title=title,
+                year=year,
+                media_type=media_type,
+                selected_titles=list(extra_ids),
+                completed_titles=list(completed_title_ids),
+                failed_titles=list(failed_titles),
+                dest_folder=dest_folder,
+            )
+            self.gui.show_error(
+                "Extras Incomplete",
+                (
+                    "Extras did not stabilize in time.\n\n"
+                    if timed_out else
+                    "Extras failed stabilization checks.\n\n"
+                ) +
+                "The main movie was preserved."
+            )
+            return False, extras_path
+
+        self._log_expected_vs_actual_summary(
+            mkv_files,
+            expected_size_by_title,
+        )
+        size_status, size_reason = self._verify_expected_sizes(
+            mkv_files,
+            expected_size_by_title,
+        )
+        if size_status == "hard_fail":
+            self.report(
+                f"Smart Rip extras failed size sanity check for {title} ({year})"
+            )
+            self._preserve_partial_session(
+                extras_path,
+                title=title,
+                year=year,
+                media_type=media_type,
+                selected_titles=list(extra_ids),
+                completed_titles=list(completed_title_ids),
+                failed_titles=list(failed_titles),
+                dest_folder=dest_folder,
+            )
+            self.gui.show_error(
+                "Extras Incomplete",
+                "Extras were ripped, but the size check failed.\n\n"
+                "The main movie was preserved.\n\n"
+                f"{size_reason}"
+            )
+            return False, extras_path
+        if size_status == "warn":
+            if not self.gui.ask_yesno(
+                "Rip size is below preferred threshold.\n\n"
+                f"{size_reason}\n\n"
+                "Continue anyway?"
+            ):
+                self.report(
+                    f"Smart Rip extras size warning declined for "
+                    f"{title} ({year})"
+                )
+                self.log("Cancelled extras phase due to size warning threshold.")
+                self._preserve_partial_session(
+                    extras_path,
+                    title=title,
+                    year=year,
+                    media_type=media_type,
+                    selected_titles=list(extra_ids),
+                    completed_titles=list(completed_title_ids),
+                    failed_titles=list(failed_titles),
+                    dest_folder=dest_folder,
+                )
+                return False, extras_path
+            self.report(
+                f"USER OVERRIDE - Smart Rip extras size warning for "
+                f"{title} ({year})"
+            )
+
+        self.gui.set_status("Analyzing extras...")
+        self.gui.start_indeterminate()
+        try:
+            titles_list: AnalyzedFiles = self.engine.analyze_files(
+                mkv_files,
+                self.log,
+            ) or []
+        finally:
+            self.gui.stop_indeterminate()
+            self.gui.set_progress(0)
+
+        if not titles_list:
+            self.report(
+                f"Smart Rip extras analysis failed for {title} ({year})"
+            )
+            self._preserve_partial_session(
+                extras_path,
+                title=title,
+                year=year,
+                media_type=media_type,
+                selected_titles=list(extra_ids),
+                completed_titles=list(completed_title_ids),
+                failed_titles=list(failed_titles),
+                dest_folder=dest_folder,
+            )
+            return False, extras_path
+
+        duration_by_id = {
+            int(t.get("id", -1)): float(t.get("duration_seconds", 0) or 0)
+            for t in disc_titles
+        }
+        size_by_id = {
+            int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
+            for t in disc_titles
+        }
+        expected_durations: dict[str, float] = {}
+        expected_sizes: dict[str, int] = {}
+        title_file_map = _normalize_title_file_map(self.engine.last_title_file_map)
+        for tid, files in title_file_map.items():
+            expected_duration = duration_by_id.get(int(tid), 0)
+            expected_size = size_by_id.get(int(tid), 0)
+            for file_path in files:
+                if expected_duration > 0:
+                    expected_durations[str(file_path)] = expected_duration
+                if expected_size > 0:
+                    expected_sizes[str(file_path)] = expected_size
+
+        if not self._verify_container_integrity(
+            mkv_files,
+            analyzed=titles_list,
+            expected_durations=expected_durations or None,
+            expected_sizes=expected_sizes or None,
+            title_file_map=title_file_map or None,
+        ):
+            self.report(
+                f"Smart Rip extras ffprobe integrity check failed for "
+                f"{title} ({year})"
+            )
+            self._preserve_partial_session(
+                extras_path,
+                title=title,
+                year=year,
+                media_type=media_type,
+                selected_titles=list(extra_ids),
+                completed_titles=list(completed_title_ids),
+                failed_titles=list(failed_titles),
+                dest_folder=dest_folder,
+            )
+            self.gui.show_error(
+                "Extras Incomplete",
+                "Extras failed the ffprobe integrity check.\n\n"
+                "The main movie was preserved."
+            )
+            return False, extras_path
+
+        self.engine.update_temp_metadata(
+            extras_path,
+            status="partial" if partial_rip else "ripped",
+            phase="moving",
+            completed_titles=list(completed_title_ids),
+            failed_titles=[
+                int(title_id)
+                for title_id in failed_titles
+                if isinstance(title_id, (int, str))
+            ],
+        )
+        if extras_assignment and extras_assignment.assignments:
+            self.gui.set_status("Moving extras...")
+            self._move_extras_to_categories(
+                titles_list,
+                content,
+                extras_assignment,
+                dest_folder,
+                extras_path,
+            )
+
+        if partial_rip:
+            self._preserve_partial_session(
+                extras_path,
+                title=title,
+                year=year,
+                media_type=media_type,
+                selected_titles=list(extra_ids),
+                completed_titles=list(completed_title_ids),
+                failed_titles=list(failed_titles),
+                dest_folder=dest_folder,
+            )
+            return False, extras_path
+
+        self._cleanup_success_session_metadata(extras_path)
+        shutil.rmtree(extras_path, ignore_errors=True)
+        if os.path.exists(extras_path):
+            self.log(f"Warning: could not delete {extras_path}")
+        return True, None
+
     def _offer_temp_manager(self, temp_root: str) -> None:
         old_folders = self.engine.find_old_temp_folders(temp_root)
         if not old_folders:
@@ -2052,8 +2749,10 @@ class RipperController(LegacyControllerMixin):
         title = ""
         metadata_id: str | None = None
         mid: str | None = None
+        movie_replace_existing = False
         library_root: str | None = None
         library_state: dict[int, list[int]] = {}
+        tv_setup_defaults: dict[str, Any] = {}
         series_root: str = temp_root
         dest_folder = ""
         extras_folder = ""
@@ -2071,6 +2770,12 @@ class RipperController(LegacyControllerMixin):
 
         resume_meta: dict[str, Any] = {}
         resume_path: str | None = None
+        use_tv_setup_dialog = is_tv and callable(
+            getattr(self.gui, "ask_tv_setup", None)
+        )
+        use_movie_setup_dialog = (not is_tv) and callable(
+            getattr(self.gui, "ask_movie_setup", None)
+        )
 
         if is_tv:
             # -------------------------------------------------------
@@ -2133,26 +2838,51 @@ class RipperController(LegacyControllerMixin):
                     self.log("No folder selected — starting fresh.")
                     library_root = None
 
-            title_input = self.gui.ask_input(
-                "Title", "Exact TV show title:",
-                default_value=(
-                    os.path.basename(library_root)
-                    if library_root
-                    else resume_meta.get("title", "")
+            if use_tv_setup_dialog:
+                tv_setup_defaults = self._build_tv_setup_defaults(
+                    current_setup=tv_setup_defaults,
+                    session_meta=resume_meta,
+                    library_root=library_root,
+                    library_state=library_state,
                 )
-            )
-            title = str(title_input or "")
-            if not title:
-                title = self._fallback_title_from_mode()
-                self.log(f"WARNING: No title — using: {title}")
-            self.log(f"Title: {title}")
+                tv_setup = self.gui.ask_tv_setup(**tv_setup_defaults)
+                if self.engine.abort_event.is_set() or tv_setup is None:
+                    self.log("Cancelled at TV library identity step.")
+                    return
+                tv_setup_defaults = self._tv_setup_defaults_from_setup(tv_setup)
+                title = str(tv_setup.title or "").strip()
+                if not title:
+                    title = self._fallback_title_from_mode()
+                    self.log(f"WARNING: No title - using: {title}")
+                year = str(tv_setup.year or "").strip() or year
+                season = int(tv_setup.season)
+                disc_number = max(int(tv_setup.starting_disc), 1) - 1
+                metadata_id = str(tv_setup.metadata_id or "").strip()
+                tv_setup_defaults["default_title"] = title
+                tv_setup_defaults["default_season"] = str(season)
+                tv_setup_defaults["default_metadata_id"] = metadata_id
+                self.log(f"TV: {title} Season {season}")
+            else:
+                title_input = self.gui.ask_input(
+                    "Title", "Exact TV show title:",
+                    default_value=(
+                        os.path.basename(library_root)
+                        if library_root
+                        else resume_meta.get("title", "")
+                    )
+                )
+                title = str(title_input or "")
+                if not title:
+                    title = self._fallback_title_from_mode()
+                    self.log(f"WARNING: No title - using: {title}")
+                self.log(f"Title: {title}")
 
-            metadata_input = self.gui.ask_input(
-                "Metadata ID",
-                "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
-                "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
-            )
-            metadata_id = str(metadata_input or "")
+                metadata_input = self.gui.ask_input(
+                    "Metadata ID",
+                    "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+                    "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+                )
+                metadata_id = str(metadata_input or "")
             if metadata_id:
                 self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
@@ -2189,37 +2919,38 @@ class RipperController(LegacyControllerMixin):
             selected_size = 0
 
             if is_tv:
-                # Build the season prompt — when in library mode, show
+                # Build the season prompt - when in library mode, show
                 # the user which seasons already exist and default to the
                 # season most likely to need more episodes (incomplete
                 # season with the highest number, or the next one after
                 # the highest complete season).
-                season_hint = ""
-                default_season = str(
-                    active_resume.get("season", "")
-                    if active_resume else ""
-                )
-                if library_state:
-                    season_hint = " (detected: " + ", ".join(
-                        f"S{s:02d}:{len(e)}ep"
-                        for s, e in sorted(library_state.items())
-                    ) + ")"
-                    if not default_season:
-                        # Suggest the highest season present (most likely
-                        # to be the one still being collected).
-                        default_season = str(max(library_state.keys()))
+                if not use_tv_setup_dialog:
+                    season_hint = ""
+                    default_season = str(
+                        active_resume.get("season", "")
+                        if active_resume else ""
+                    )
+                    if library_state:
+                        season_hint = " (detected: " + ", ".join(
+                            f"S{s:02d}:{len(e)}ep"
+                            for s, e in sorted(library_state.items())
+                        ) + ")"
+                        if not default_season:
+                            # Suggest the highest season present (most likely
+                            # to be the one still being collected).
+                            default_season = str(max(library_state.keys()))
 
-                season_input = self.gui.ask_input(
-                    "Season",
-                    f"Season number for disc {disc_number}:{season_hint}",
-                    default_value=default_season,
-                )
-                season_str = str(season_input or "")
-                season = int(season_str) if (
-                    season_str and season_str.isdigit()
-                ) else 0
-                if season == 0:
-                    self.log("WARNING: No season number — using 00")
+                    season_input = self.gui.ask_input(
+                        "Season",
+                        f"Season number for disc {disc_number}:{season_hint}",
+                        default_value=default_season,
+                    )
+                    season_str = str(season_input or "")
+                    season = int(season_str) if (
+                        season_str and season_str.isdigit()
+                    ) else 0
+                    if season == 0:
+                        self.log("WARNING: No season number - using 00")
 
                 season_temp: str = os.path.join(
                     series_root, f"Season {season:02d}"
@@ -2248,39 +2979,73 @@ class RipperController(LegacyControllerMixin):
                 )
 
             else:
-                title_input = self.gui.ask_input(
-                    "Title", f"Title for disc {disc_number}:",
-                    default_value=(active_resume or {}).get("title", "")
-                )
-                title = str(title_input or "")
-                if not title:
-                    auto_title_pending = True
-                    title = make_temp_title()
-                    self.log(
-                        "WARNING: No title entered — using fallback naming "
-                        "mode after scan when possible."
+                if use_movie_setup_dialog:
+                    movie_setup = self.gui.ask_movie_setup(
+                        default_title=((active_resume or {}).get("title", "") or title),
+                        default_year=str(
+                            (active_resume or {}).get("year", year)
+                        ),
+                        default_metadata_id=mid or "",
                     )
-                year_input = self.gui.ask_input(
-                    "Year", "Release year:",
-                    default_value=str(
-                        (active_resume or {}).get("year", year)
+                    if self.engine.abort_event.is_set() or movie_setup is None:
+                        self.log("Cancelled at movie library identity step.")
+                        break
+                    title = str(movie_setup.title or "").strip()
+                    if not title:
+                        auto_title_pending = True
+                        title = make_temp_title()
+                        self.log(
+                            "WARNING: No title entered - using fallback naming "
+                            "mode after scan when possible."
+                        )
+                    year = str(movie_setup.year or "").strip()
+                    if not year:
+                        year = "0000"
+                        self.log("WARNING: No year - using 0000")
+                    mid = str(movie_setup.metadata_id or "").strip()
+                    movie_replace_existing = bool(movie_setup.replace_existing)
+                    edition = str(movie_setup.edition or "").strip()
+                    if edition:
+                        self.log(f"Edition: {edition}")
+                else:
+                    title_input = self.gui.ask_input(
+                        "Title", f"Title for disc {disc_number}:",
+                        default_value=(active_resume or {}).get("title", "")
                     )
-                )
-                year = str(year_input or "")
-                if not year:
-                    year = "0000"
-                    self.log("WARNING: No year — using 0000")
-                mid_input = self.gui.ask_input(
-                    "Metadata ID",
-                    "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
-                    "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
-                )
-                mid = str(mid_input or "")
+                    title = str(title_input or "")
+                    if not title:
+                        auto_title_pending = True
+                        title = make_temp_title()
+                        self.log(
+                            "WARNING: No title entered - using fallback naming "
+                            "mode after scan when possible."
+                        )
+                    year_input = self.gui.ask_input(
+                        "Year", "Release year:",
+                        default_value=str(
+                            (active_resume or {}).get("year", year)
+                        )
+                    )
+                    year = str(year_input or "")
+                    if not year:
+                        year = "0000"
+                        self.log("WARNING: No year - using 0000")
+                    mid_input = self.gui.ask_input(
+                        "Metadata ID",
+                        "Optional: TMDB/IMDB/TVDB ID for Jellyfin matching\n"
+                        "(e.g. tmdb:12345  or  tt1234567  or  tvdb:79168):"
+                    )
+                    mid = str(mid_input or "")
                 if mid:
                     self.log(f"Metadata ID: {parse_metadata_id(mid)}")
                 movie_folder = os.path.join(
                     movie_root,
-                    build_movie_folder_name(clean_name(title), year, mid or ""),
+                    build_movie_folder_name(
+                        clean_name(title),
+                        year,
+                        mid or "",
+                        edition,
+                    ),
                 )
                 extras_folder = os.path.join(movie_folder, "Extras")
                 os.makedirs(movie_folder, exist_ok=True)
@@ -2310,6 +3075,41 @@ class RipperController(LegacyControllerMixin):
                 dest_folder=dest_folder,
                 phase="setup"
             )
+            if is_tv and use_tv_setup_dialog and tv_setup_defaults:
+                self.engine.update_temp_metadata(
+                    rip_path,
+                    metadata_provider=str(
+                        tv_setup_defaults.get(
+                            "default_metadata_provider",
+                            "TMDB",
+                        ) or "TMDB"
+                    ),
+                    metadata_id=str(
+                        tv_setup_defaults.get("default_metadata_id", "") or ""
+                    ),
+                    starting_disc=max(
+                        safe_int(tv_setup_defaults.get("default_starting_disc", 1)),
+                        1,
+                    ),
+                    episode_mapping=str(
+                        tv_setup_defaults.get(
+                            "default_episode_mapping",
+                            "auto",
+                        ) or "auto"
+                    ),
+                    multi_episode=str(
+                        tv_setup_defaults.get(
+                            "default_multi_episode",
+                            "auto",
+                        ) or "auto"
+                    ),
+                    specials=str(
+                        tv_setup_defaults.get("default_specials", "ask") or "ask"
+                    ),
+                    replace_existing=bool(
+                        tv_setup_defaults.get("default_replace_existing", False)
+                    ),
+                )
             self.log(f"Temp folder: {rip_path}")
 
             if self.engine.abort_event.is_set():
@@ -2358,7 +3158,10 @@ class RipperController(LegacyControllerMixin):
                     movie_folder = os.path.join(
                         movie_root,
                         build_movie_folder_name(
-                            clean_name(title), year, mid or "",
+                            clean_name(title),
+                            year,
+                            mid or "",
+                            edition,
                         ),
                     )
                     extras_folder = os.path.join(movie_folder, "Extras")
@@ -2556,6 +3359,21 @@ class RipperController(LegacyControllerMixin):
                     continue
                 manual_title_selection_used = True
 
+            tv_review_confirmed = False
+            if is_tv and use_tv_setup_dialog:
+                if not self._show_manual_tv_output_plan(
+                    title=title,
+                    season=season,
+                    disc_number=disc_number,
+                    dest_folder=dest_folder,
+                    selected_ids=selected_ids,
+                    disc_titles=disc_titles,
+                    tv_setup_defaults=tv_setup_defaults,
+                ):
+                    self.log("Cancelled at TV review step.")
+                    break
+                tv_review_confirmed = True
+
             expected_size_by_title: ExpectedSizeMap = {
                 int(t.get("id", -1)): int(t.get("size_bytes", 0) or 0)
                 for t in disc_titles
@@ -2574,7 +3392,7 @@ class RipperController(LegacyControllerMixin):
                 completed_titles=[],
             )
 
-            if cfg.get("opt_confirm_before_rip", True):
+            if cfg.get("opt_confirm_before_rip", True) and not tv_review_confirmed:
                 if not self.gui.ask_yesno(
                     f"Rip {len(selected_ids)} title(s) — "
                     f"~{selected_size / (1024**3):.1f} GB. Continue?"
@@ -2631,6 +3449,8 @@ class RipperController(LegacyControllerMixin):
             result = self.engine.run_job(job)
             success = result.success
             failed_titles = result.errors
+            partial_rip = False
+            completed_title_ids = list(selected_ids)
             self._warn_degraded_rips()
 
             if failed_titles:
@@ -2644,26 +3464,47 @@ class RipperController(LegacyControllerMixin):
             )
 
             if not success:
-                self._mark_session_failed(
-                    rip_path,
-                    title=title,
-                    year=year if not is_tv else None,
-                    media_type="tv" if is_tv else "movie",
-                    season=season if is_tv else None,
-                    selected_titles=list(selected_ids),
-                    dest_folder=dest_folder,
-                    failed_titles=list(failed_titles),
+                partial_rip, completed_title_ids, mkv_files, partial_expected = (
+                    self._begin_partial_rip_session(
+                        rip_path,
+                        selected_ids,
+                        failed_titles,
+                        mkv_files,
+                        expected_size_by_title,
+                        label=f"Disc {disc_number}",
+                        title=title,
+                        year=year if not is_tv else None,
+                        media_type="tv" if is_tv else "movie",
+                        season=season if is_tv else None,
+                        dest_folder=dest_folder,
+                    )
                 )
-                if self.engine.abort_event.is_set():
-                    break
-                self.log("Rip did not complete.")
-                self.flush_log()
-                if not self.gui.ask_yesno("Try another disc?"):
-                    break
-                continue
+                if partial_rip:
+                    success = True
+                    expected_size_by_title = partial_expected or {}
+                else:
+                    self._mark_session_failed(
+                        rip_path,
+                        title=title,
+                        year=year if not is_tv else None,
+                        media_type="tv" if is_tv else "movie",
+                        season=season if is_tv else None,
+                        selected_titles=list(selected_ids),
+                        dest_folder=dest_folder,
+                        failed_titles=list(failed_titles),
+                    )
+                    if self.engine.abort_event.is_set():
+                        break
+                    self.log("Rip did not complete.")
+                    self.flush_log()
+                    if not self.gui.ask_yesno("Try another disc?"):
+                        break
+                    continue
 
             self.engine.update_temp_metadata(
-                rip_path, status="ripped", phase="analyzing"
+                rip_path,
+                status="partial" if partial_rip else "ripped",
+                phase="analyzing",
             )
             self.log("Ripping complete.")
             self.gui.set_progress(0)
@@ -2817,7 +3658,7 @@ class RipperController(LegacyControllerMixin):
                 continue
 
             move_selected_title_ids = (
-                selected_ids
+                completed_title_ids if partial_rip else selected_ids
                 if (is_tv or not manual_title_selection_used)
                 else None
             )
@@ -2833,26 +3674,47 @@ class RipperController(LegacyControllerMixin):
                 session_rip_path=rip_path,
                 session_meta=active_resume,
                 selected_title_ids=move_selected_title_ids,
+                replace_existing=bool(
+                    tv_setup_defaults.get("default_replace_existing", False)
+                ) if is_tv else movie_replace_existing,
             )
 
             if move_ok:
-                self._cleanup_success_session_metadata(
-                    rip_path,
-                    resume_path if active_resume else None,
-                )
-                shutil.rmtree(rip_path, ignore_errors=True)
-                if os.path.exists(rip_path):
-                    self.log(f"Warning: could not delete {rip_path}")
-                # Also remove the original resume folder if it differs from
-                # the fresh rip folder (it was superseded by this session).
-                if (active_resume and resume_path
-                        and os.path.normpath(resume_path) !=
-                            os.path.normpath(rip_path)
-                        and os.path.isdir(resume_path)):
-                    shutil.rmtree(resume_path, ignore_errors=True)
-                self.log("Temp folder cleaned up.")
-                if cfg.get("opt_show_temp_manager", True):
-                    self._offer_temp_manager(temp_root)
+                if partial_rip:
+                    self._preserve_partial_session(
+                        rip_path,
+                        title=title,
+                        year=year if not is_tv else None,
+                        media_type="tv" if is_tv else "movie",
+                        season=season if is_tv else None,
+                        selected_titles=list(selected_ids),
+                        completed_titles=list(completed_title_ids),
+                        failed_titles=list(failed_titles),
+                        dest_folder=dest_folder,
+                    )
+                    if (active_resume and resume_path
+                            and os.path.normpath(resume_path) !=
+                                os.path.normpath(rip_path)
+                            and os.path.isdir(resume_path)):
+                        shutil.rmtree(resume_path, ignore_errors=True)
+                else:
+                    self._cleanup_success_session_metadata(
+                        rip_path,
+                        resume_path if active_resume else None,
+                    )
+                    shutil.rmtree(rip_path, ignore_errors=True)
+                    if os.path.exists(rip_path):
+                        self.log(f"Warning: could not delete {rip_path}")
+                    # Also remove the original resume folder if it differs from
+                    # the fresh rip folder (it was superseded by this session).
+                    if (active_resume and resume_path
+                            and os.path.normpath(resume_path) !=
+                                os.path.normpath(rip_path)
+                            and os.path.isdir(resume_path)):
+                        shutil.rmtree(resume_path, ignore_errors=True)
+                    self.log("Temp folder cleaned up.")
+                    if cfg.get("opt_show_temp_manager", True):
+                        self._offer_temp_manager(temp_root)
             else:
                 if self.engine.abort_event.is_set():
                     self.log(
@@ -2888,8 +3750,12 @@ class RipperController(LegacyControllerMixin):
         session_rip_path: str | None = None,
         session_meta: dict[str, Any] | None = None,
         selected_title_ids: list[int] | None = None,
-    ) -> bool:
+        replace_existing: bool = False,
+        ) -> bool:
         options: list[str] = []
+        replace_main_existing = bool(
+            replace_existing or (session_meta or {}).get("replace_existing", False)
+        )
         for i, (f, dur, mb) in enumerate(titles_list, 1):
             mins = int(dur // 60) if dur > 0 else "?"
             options.append(
@@ -3014,18 +3880,32 @@ class RipperController(LegacyControllerMixin):
                         collision_str = ", ".join(
                             f"E{ep:02d}" for ep in sorted(colliding)
                         )
-                        self.log(
-                            f"WARNING: Episode(s) {collision_str} already "
-                            f"exist in Season {season:02d}. "
-                            f"Existing files will NOT be overwritten "
-                            f"(unique_path will rename)."
-                        )
-                        if not self.gui.ask_yesno(
-                            f"Episode(s) {collision_str} already exist in "
-                            f"this season folder.\n\n"
-                            f"Continue anyway? "
-                            f"(Files will be renamed, not overwritten.)"
-                        ):
+                        if replace_main_existing:
+                            self.log(
+                                f"WARNING: Episode(s) {collision_str} already "
+                                f"exist in Season {season:02d}. "
+                                f"Existing files will be replaced."
+                            )
+                            prompt = (
+                                f"Episode(s) {collision_str} already exist in "
+                                f"this season folder.\n\n"
+                                "Continue and replace the existing episode "
+                                "file(s)?"
+                            )
+                        else:
+                            self.log(
+                                f"WARNING: Episode(s) {collision_str} already "
+                                f"exist in Season {season:02d}. "
+                                f"Existing files will NOT be overwritten "
+                                f"(unique_path will rename)."
+                            )
+                            prompt = (
+                                f"Episode(s) {collision_str} already exist in "
+                                f"this season folder.\n\n"
+                                f"Continue anyway? "
+                                f"(Files will be renamed, not overwritten.)"
+                            )
+                        if not self.gui.ask_yesno(prompt):
                             continue
 
                 break
@@ -3086,6 +3966,34 @@ class RipperController(LegacyControllerMixin):
                     return False
 
                 main_indices = [int(str(selected[0]).split(":")[0]) - 1]
+
+                existing_main_path = os.path.join(
+                    dest_folder,
+                    f"{clean_name(title)} ({year}).mkv",
+                )
+                if os.path.exists(existing_main_path):
+                    if replace_main_existing:
+                        self.log(
+                            "Configured to replace the existing main movie "
+                            "file."
+                        )
+                    else:
+                        replace_main_existing = self.gui.ask_yesno(
+                            "The destination already has a main movie file:\n\n"
+                            f"{existing_main_path}\n\n"
+                            "Replace it with the movie file you just selected?\n"
+                            "Choose No to keep both files and rename the new one."
+                        )
+                        if replace_main_existing:
+                            self.log(
+                                "User chose to replace the existing main movie "
+                                "file."
+                            )
+                        else:
+                            self.log(
+                                "Keeping the existing main movie file and "
+                                "renaming the new file if needed."
+                            )
             extra_indices, bonus_indices = self._ask_extras_selection(
                 titles_list, main_indices
             )
@@ -3128,6 +4036,7 @@ class RipperController(LegacyControllerMixin):
             on_log=lambda message: self.emit(Event("log", "", {"message": message})),  # type: ignore[arg-type]
             bonus_indices=bonus_indices,
             bonus_folder=bonus_folder,
+            replace_main_existing=replace_main_existing,
         )
         if success and moved_paths and expected_size_by_title:
             post_status, post_reason = self._verify_expected_sizes(

@@ -257,15 +257,10 @@ def build_movie_setup_dialog(
     _section_header(win, "OPTIONS")
 
     replace_var = tk.BooleanVar(value=False)
-    keep_raw_var = tk.BooleanVar(value=False)
 
     r = _row(win)
     _check(r, "Replace existing file if destination already has content",
            replace_var).pack(side="left")
-
-    r = _row(win)
-    _check(r, "Keep raw rip after transcode",
-           keep_raw_var).pack(side="left")
 
     # ── Buttons ──────────────────────────────────────────────────────────────
     tk.Frame(win, bg=_BG3, height=1).pack(fill="x", padx=0, pady=(16, 0))
@@ -304,7 +299,7 @@ def build_movie_setup_dialog(
             metadata_provider=meta_source_var.get(),
             metadata_id=meta_id_var.get().strip(),
             replace_existing=replace_var.get(),
-            keep_raw=keep_raw_var.get(),
+            keep_raw=True,
             extras_mode="ask",
         )
         win.destroy()
@@ -462,7 +457,7 @@ def build_tv_setup_dialog(
     multi_ep_var  = tk.StringVar(value="Auto-detect")
     specials_var  = tk.StringVar(value="Ask per disc")
     replace_var   = tk.BooleanVar(value=False)
-    keep_raw_var  = tk.BooleanVar(value=False)
+
 
     r = _row(win)
     _label_in_row(r, "Multi-ep titles")
@@ -475,10 +470,6 @@ def build_tv_setup_dialog(
     r = _row(win)
     _check(r, "Replace existing files if destination already has content",
            replace_var).pack(side="left")
-
-    r = _row(win)
-    _check(r, "Keep raw rip after transcode",
-           keep_raw_var).pack(side="left")
 
     def _label_to_value(label: str, labels: list[str], values: list[str]) -> str:
         try:
@@ -531,7 +522,7 @@ def build_tv_setup_dialog(
                 specials_var.get(), _SPECIALS_LABELS, _SPECIALS_VALUES
             ),
             replace_existing=replace_var.get(),
-            keep_raw=keep_raw_var.get(),
+            keep_raw=True,
         )
         win.destroy()
 

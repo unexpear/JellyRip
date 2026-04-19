@@ -105,6 +105,7 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_confirm_before_move": True,
     "opt_atomic_move": True,
     "opt_fsync": True,
+    "opt_allow_path_tool_resolution": False,
     "opt_show_temp_manager": True,
     "opt_auto_delete_temp": True,
     "opt_auto_delete_session_metadata": True,

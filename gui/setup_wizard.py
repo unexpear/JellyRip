@@ -674,6 +674,12 @@ def show_output_plan(
     base_folder: str,
     main_label: str,
     extras_map: dict[str, list[str]],
+    detail_lines: list[str] | None = None,
+    header_text: str = "Step 5: Output Plan",
+    subtitle_text: str = (
+        "This is exactly what JellyRip will create. No guessing, no surprises."
+    ),
+    confirm_text: str = "Start Rip",
 ) -> bool:
     """Show the planned output folder structure. Returns True to confirm, False to cancel."""
 
@@ -688,15 +694,28 @@ def show_output_plan(
 
     # Header
     tk.Label(
-        win, text="Step 5: Output Plan",
+        win, text=header_text,
         bg=_BG2, fg=_ACCENT,
         font=("Segoe UI", 14, "bold"),
     ).pack(pady=(18, 4), padx=20, anchor="w")
     tk.Label(
-        win, text="This is exactly what JellyRip will create. No guessing, no surprises.",
+        win, text=subtitle_text,
         bg=_BG2, fg=_FG_DIM,
         font=("Segoe UI", 10),
     ).pack(padx=20, anchor="w")
+
+    if detail_lines:
+        _section_header(win, "SESSION SUMMARY")
+        for line in detail_lines:
+            tk.Label(
+                win,
+                text=f"  {line}",
+                bg=_BG2,
+                fg=_FG,
+                font=("Segoe UI", 10),
+                justify="left",
+                anchor="w",
+            ).pack(fill="x", padx=20, pady=(2, 0))
 
     _section_header(win, "FOLDER STRUCTURE")
 
@@ -747,7 +766,7 @@ def show_output_plan(
         width=10, relief="flat",
     ).pack(side="left", padx=(0, 8))
     tk.Button(
-        btn_row, text="Start Rip",
+        btn_row, text=confirm_text,
         command=_confirm,
         bg=_GREEN, fg="white",
         font=("Segoe UI", 12, "bold"),

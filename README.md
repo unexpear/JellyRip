@@ -74,12 +74,21 @@ Settings are stored at `%APPDATA%\JellyRip\config.json` on Windows.
 You can configure:
 
 - MakeMKV and ffprobe paths
+- optional FFmpeg and HandBrakeCLI executable paths
 - temp, movie, and TV folders
 - retry behavior and quiet/stall warnings
 - file stabilization and validation thresholds
 - unattended prompt and disc-swap timeout behavior
 - update-signature settings
 - debug logging options
+
+Windows tool lookup is strict by default. JellyRip prefers explicit
+configured paths, bundled binaries, and known install locations.
+PATH-based lookup is disabled unless you enable
+`Allow PATH-based tool lookup (advanced, less predictable)` in
+**Settings -> Advanced**.
+
+App-directory `.env` files are no longer loaded at startup.
 
 ## Development
 

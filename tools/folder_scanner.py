@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Literal, TextIO, TypedDict
+
+from config import resolve_ffprobe
 
 
 ScanStatus = Literal["RAW DISC", "RAW RIP", "OK", "WEIRD"]
@@ -189,18 +190,15 @@ def _build_entry(
     return entry
 
 
-def _resolve_ffprobe_exe(ffprobe_exe: str | None) -> str | None:
-    normalized = str(ffprobe_exe or "").strip()
-    if normalized and os.path.isfile(normalized):
-        return normalized
-    if normalized and os.path.isdir(normalized):
-        for candidate in (
-            os.path.join(normalized, "ffprobe.exe"),
-            os.path.join(normalized, "bin", "ffprobe.exe"),
-        ):
-            if os.path.isfile(candidate):
-                return candidate
-    return shutil.which("ffprobe")
+def _resolve_ffprobe_exe(
+    ffprobe_exe: str | None,
+    *,
+    allow_path_lookup: bool = False,
+) -> str | None:
+    return resolve_ffprobe(
+        str(ffprobe_exe or "").strip(),
+        allow_path_lookup=allow_path_lookup,
+    ).path or None
 
 
 def _probe_duration_seconds(path: str, ffprobe_exe: str) -> float | None:
@@ -370,6 +368,7 @@ def scan_folder(
     recursive: bool = True,
     include_dirs: bool = True,
     ffprobe_exe: str | None = None,
+    allow_path_lookup: bool = False,
 ) -> list[FolderScanEntry]:
     """
     Scan a folder and return MKV-oriented entries with sorting/filtering.
@@ -482,6 +481,9 @@ def scan_folder(
 
     if log_path:
         try:
+            log_dir = os.path.dirname(os.path.abspath(log_path))
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
             logf = open(log_path, "w", encoding="utf-8")
             log(f"Folder scan started: {root_folder}")
             log(
@@ -498,7 +500,14 @@ def scan_folder(
             entries = [entry for entry in entries if entry["size"] >= min_size_bytes]
 
         if sort_mode in {"duration_desc", "duration_asc"}:
-            _apply_duration_metadata(entries, _resolve_ffprobe_exe(ffprobe_exe), log)
+            _apply_duration_metadata(
+                entries,
+                _resolve_ffprobe_exe(
+                    ffprobe_exe,
+                    allow_path_lookup=allow_path_lookup,
+                ),
+                log,
+            )
 
         entries = _sort_entries(entries, sort_mode)
         total = len(entries)

@@ -24,6 +24,8 @@ Actions
                   pixel format downgraded to yuv420p (8-bit SDR).
 ``"use_cpu"``   — rebuild the job with hw_accel forced to "cpu"
                   (libx265), keeping all other settings intact.
+``"audio_layout_mismatch"`` — rebuild the job with a stereo downmix,
+                  switching audio copy to AAC when a real encode is needed.
 
 The fallback job's output path gets a ``_sdr_fallback`` or
 ``_cpu_fallback`` suffix so it does not overwrite the original attempt.
@@ -36,7 +38,11 @@ import os
 from typing import Any
 
 from core.pipeline import TranscodeJob, choose_available_output_path
-from transcode.post_encode_verifier import VerificationOutcome, VerificationResult
+from transcode.post_encode_verifier import (
+    OutputContract,
+    VerificationOutcome,
+    VerificationResult,
+)
 from transcode.profiles import TranscodeProfile, normalize_profile_data
 
 _HDR_ERROR_KEYWORDS = ("hdr transfer", "color primaries", "color space")
@@ -124,6 +130,8 @@ def apply_fallback(
         return _build_cpu_fallback(job, profile_data)
     if action == "lower_crf":
         return _build_lower_crf_fallback(job, profile_data)
+    if action == "audio_layout_mismatch":
+        return _build_audio_layout_fallback(job, profile_data)
     return None
 
 
@@ -140,6 +148,22 @@ def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     cleaned.pop("expected", None)
     cleaned.pop("fallback_rules", None)
     return cleaned
+
+
+def _refresh_audio_layout_expected(
+    metadata: dict[str, Any],
+    *,
+    switched_from_copy: bool,
+) -> dict[str, Any] | None:
+    """Return a refreshed contract for the stereo retry, if one exists."""
+    expected = metadata.get("expected")
+    if not isinstance(expected, dict):
+        return None
+    contract = OutputContract.from_dict(expected)
+    contract.audio_layout = "stereo"
+    if switched_from_copy:
+        contract.audio_codec = "aac"
+    return contract.as_dict()
 
 
 def _build_sdr_fallback(job: TranscodeJob, profile_data: dict[str, Any]) -> TranscodeJob:
@@ -217,6 +241,48 @@ def _build_cpu_fallback(job: TranscodeJob, profile_data: dict[str, Any]) -> Tran
     metadata = _clean_metadata(dict(job.metadata or {}))
     metadata["fallback_from"] = job.output_path
     metadata["fallback_action"] = "use_cpu"
+
+    return TranscodeJob(
+        job.input_path, output_path, new_profile,
+        metadata=metadata, backend=job.backend,
+        backend_options=dict(job.backend_options or {}),
+    )
+
+
+def _build_audio_layout_fallback(
+    job: TranscodeJob,
+    profile_data: dict[str, Any],
+) -> TranscodeJob:
+    pd = copy.deepcopy(profile_data)
+    audio = pd.get("audio") or {}
+
+    # A channel-layout recovery must produce a real audio encode. If the
+    # original job was copying audio, switch to AAC so "-ac 2" can take effect.
+    audio_mode = str(audio.get("mode") or "copy").strip().lower()
+    if audio_mode == "copy":
+        audio["mode"] = "aac"
+
+    # Clear any explicit channel target that would override the downmix path.
+    audio["channels"] = None
+    audio["downmix"] = True
+    pd["audio"] = audio
+
+    normalized = normalize_profile_data(pd)
+    new_profile = TranscodeProfile(f"{job.profile.name}_stereo_fallback", normalized)
+
+    raw_path = _fallback_output_path(job.output_path, "stereo_fallback")
+    output_path = choose_available_output_path(raw_path, overwrite=False, auto_increment=True)
+
+    original_metadata = dict(job.metadata or {})
+    metadata = _clean_metadata(original_metadata)
+    refreshed_expected = _refresh_audio_layout_expected(
+        original_metadata,
+        switched_from_copy=(audio_mode == "copy"),
+    )
+    if refreshed_expected is not None:
+        metadata["expected"] = refreshed_expected
+    metadata["fallback_from"] = job.output_path
+    metadata["fallback_action"] = "audio_layout_mismatch"
 
     return TranscodeJob(
         job.input_path, output_path, new_profile,

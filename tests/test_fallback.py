@@ -3,9 +3,9 @@
 Coverage
 --------
 - find_applicable_rule: trigger matching for hdr_metadata and encoder_unavailable
-- apply_fallback: strip_hdr and use_cpu actions
+- apply_fallback: strip_hdr, use_cpu, lower_crf, and audio layout recovery
 - Output path suffix insertion
-- Metadata cleanup (expected / fallback_rules stripped from fallback job)
+- Metadata cleanup (fallback rules stripped; stereo retry refreshes expected)
 - Edge cases: no rules, no profile, unknown action, non-FAIL outcome
 """
 
@@ -14,11 +14,13 @@ from __future__ import annotations
 import pytest
 
 from core.pipeline import TranscodeJob
+from transcode.command_validator import validate_ffmpeg_command
 from transcode.fallback import (
     _fallback_output_path,
     apply_fallback,
     find_applicable_rule,
 )
+from transcode.ffmpeg_builder import FFmpegBuilder
 from transcode.post_encode_verifier import VerificationOutcome, VerificationResult
 from transcode.profiles import TranscodeProfile, normalize_profile_data
 
@@ -37,6 +39,10 @@ def _make_job(
     output_path: str = "output.mkv",
     hw_accel: str = "cpu",
     extra_params: str = "",
+    audio_mode: str = "copy",
+    audio_channels: int | None = None,
+    audio_downmix: bool = False,
+    audio_bitrate: int | None = None,
     metadata: dict | None = None,
 ) -> TranscodeJob:
     pd = normalize_profile_data({
@@ -45,7 +51,13 @@ def _make_job(
             "extra_video_params": extra_params or None,
             "pix_fmt": "yuv420p10le" if extra_params else None,
             "video_profile": "main10" if extra_params else None,
-        }
+        },
+        "audio": {
+            "mode": audio_mode,
+            "channels": audio_channels,
+            "downmix": audio_downmix,
+            "bitrate": audio_bitrate,
+        },
     })
     profile = TranscodeProfile("test", pd)
     return TranscodeJob(
@@ -336,17 +348,79 @@ def test_lower_crf_clears_expected_and_fallback_rules():
     assert "fallback_rules" not in fallback.metadata
 
 
+# ── apply_fallback: audio layout recovery ─────────────────────────────────────
+
+def test_audio_layout_mismatch_builds_stereo_retry_from_copy_audio():
+    job = _make_job(
+        metadata={
+            "expected": {
+                "video_codec": "hevc",
+                "audio_layout": "5.1(side)",
+                "audio_codec": None,
+            },
+            "fallback_rules": [
+                {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
+            ],
+        }
+    )
+    fallback = apply_fallback(
+        job, {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
+    )
+    assert fallback is not None
+    assert fallback.profile.get("audio", "mode") == "aac"
+    assert fallback.profile.get("audio", "channels") is None
+    assert fallback.profile.get("audio", "downmix") is True
+    assert "stereo_fallback" in fallback.output_path
+    assert fallback.metadata["expected"]["video_codec"] == "hevc"
+    assert fallback.metadata["expected"]["audio_layout"] == "stereo"
+    assert fallback.metadata["expected"]["audio_codec"] == "aac"
+    assert fallback.metadata["fallback_action"] == "audio_layout_mismatch"
+    assert fallback.metadata["fallback_from"] == job.output_path
+    assert "fallback_rules" not in fallback.metadata
+
+
+def test_audio_layout_mismatch_preserves_existing_transcode_codec():
+    job = _make_job(
+        audio_mode="ac3",
+        audio_channels=6,
+        audio_bitrate=640,
+        metadata={
+            "expected": {
+                "audio_layout": "5.1(side)",
+                "audio_codec": "ac3",
+            }
+        },
+    )
+    fallback = apply_fallback(
+        job, {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
+    )
+    assert fallback is not None
+    assert fallback.profile.get("audio", "mode") == "ac3"
+    assert fallback.profile.get("audio", "channels") is None
+    assert fallback.profile.get("audio", "downmix") is True
+    assert fallback.profile.get("audio", "bitrate") == 640
+    assert fallback.metadata["expected"]["audio_layout"] == "stereo"
+    assert fallback.metadata["expected"]["audio_codec"] == "ac3"
+
+
+def test_audio_layout_mismatch_builds_valid_stereo_encode_command():
+    job = _make_job(audio_mode="copy", audio_channels=6)
+    fallback = apply_fallback(
+        job, {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
+    )
+    assert fallback is not None
+    cmd = FFmpegBuilder(fallback.profile, fallback.input_path, fallback.output_path).build_command()
+    result = validate_ffmpeg_command(cmd)
+    assert result.ok, result.errors
+    assert "-c:a" in cmd
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "-ac" in cmd
+    assert cmd[cmd.index("-ac") + 1] == "2"
+
+
 # ── apply_fallback: unknown / classify-only actions ───────────────────────────
 
 def test_mux_failure_action_returns_none():
     """mux_failure has no recovery — apply_fallback returns None."""
     job = _make_job()
     assert apply_fallback(job, {"trigger": "mux_failure", "action": "mux_failure"}) is None
-
-
-def test_audio_layout_mismatch_action_returns_none():
-    """audio_layout_mismatch has no recovery — apply_fallback returns None."""
-    job = _make_job()
-    assert apply_fallback(
-        job, {"trigger": "audio_layout_mismatch", "action": "audio_layout_mismatch"}
-    ) is None

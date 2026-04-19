@@ -1,9 +1,12 @@
+import os
+
 from core.media_scan import (
     build_folder_scan_request,
     build_folder_scan_results_model,
     select_folder_scan_entries,
     select_folder_scan_paths,
 )
+from config import ResolvedTool
 from tools.folder_scanner import FolderScanEntry
 
 
@@ -37,7 +40,10 @@ def test_build_folder_scan_request_resolves_duration_scan_ffprobe(monkeypatch, t
 
     monkeypatch.setattr(
         "core.media_scan.resolve_ffprobe",
-        lambda configured_path: (str(ffprobe_path), "configured"),
+        lambda configured_path, *, allow_path_lookup=False: ResolvedTool(
+            path=str(ffprobe_path),
+            source="configured folder",
+        ),
     )
 
     request = build_folder_scan_request(
@@ -73,6 +79,20 @@ def test_build_folder_scan_request_skips_ffprobe_for_non_duration_modes(monkeypa
     assert request.ffprobe_exe is None
     assert request.recursive is True
     assert request.log_path == str(tmp_path / "home" / "folder_scan_log.txt")
+
+
+def test_build_folder_scan_log_path_follows_relative_main_log_path(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    request = build_folder_scan_request(
+        folder=str(tmp_path / "library"),
+        scan_options={"mode": "size_desc", "recursive": True},
+        main_log=os.path.join("logs", "rip_log.txt"),
+        ffprobe_path="",
+        include_dirs=False,
+    )
+
+    assert request.log_path == str(tmp_path / "logs" / "folder_scan_log.txt")
 
 
 def test_build_folder_scan_results_model_creates_rows_and_subtitle():

@@ -17,21 +17,21 @@ from shared.runtime import (
     configure_safe_int_debug,
     get_config_dir,
 )
-from controller.naming import (  # pyright: ignore[reportMissingImports]
+from controller.naming import (
     build_fallback_title,
     build_naming_preview_text,
     normalize_naming_mode,
     resolve_naming_mode,
 )
 
-from utils.helpers import (  # pyright: ignore[reportMissingImports]
+from utils.helpers import (
     clean_name,
     get_available_drives,
     is_network_path,
     make_rip_folder_name,
     make_temp_title,
 )
-from utils.parsing import (  # pyright: ignore[reportMissingImports]
+from utils.parsing import (
     parse_cli_args,
     parse_duration_to_seconds,
     parse_episode_names,
@@ -39,13 +39,13 @@ from utils.parsing import (  # pyright: ignore[reportMissingImports]
     parse_size_to_bytes,
     safe_int,
 )
-from utils.scoring import (  # pyright: ignore[reportMissingImports]
+from utils.scoring import (
     choose_best_title,
     format_audio_summary,
     score_title,
 )
-from utils.media import select_largest_file  # pyright: ignore[reportMissingImports]
-from config import (  # pyright: ignore[reportMissingImports]
+from utils.media import select_largest_file
+from config import (
     load_config,
     resolve_ffprobe,
     save_config,
@@ -56,11 +56,11 @@ from config import (  # pyright: ignore[reportMissingImports]
 # LAYER 1 — ENGINE
 # ==========================================
 
-from engine.ripper_engine import RipperEngine  # pyright: ignore[reportMissingImports]
+from engine.ripper_engine import RipperEngine
 
-from controller.controller import RipperController  # pyright: ignore[reportMissingImports]
+from controller.controller import RipperController
 
-from gui.main_window import JellyRipperGUI  # pyright: ignore[reportMissingImports]
+from gui.main_window import JellyRipperGUI
 
 __all__ = [
     "CONFIG_FILE",

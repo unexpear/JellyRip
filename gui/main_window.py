@@ -20,6 +20,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from shared.event import Event
 from ui.adapters import UIAdapter
+from ui.dialogs import ask_yes_no
+from ui.settings import summarize_profile
 
 
 if sys.platform == "win32":
@@ -107,12 +109,12 @@ from shared.runtime import (
 )
 
 from config import (
-    auto_locate_ffmpeg,
-    auto_locate_handbrake,
-    auto_locate_tools,
     handbrake_gui_installed,
     load_config,
+    resolve_ffmpeg,
     resolve_ffprobe,
+    resolve_handbrake,
+    resolve_makemkvcon,
     save_config,
     should_keep_current_tool_path,
     validate_ffmpeg,
@@ -147,8 +149,11 @@ from transcode.planner import (
     transcode_backend_label,
 )
 from transcode.encoder_probe import get_ffmpeg_version_info
+from transcode.profiles import PROFILE_SCHEMA
 from transcode.profiles import ProfileLoader
-from transcode.profiles import describe_profile
+from transcode.profiles import ProfileValidationError
+from transcode.profiles import TranscodeProfile
+from transcode.profiles import normalize_profile_data
 from transcode.queue_builder import (
     build_queue_jobs,
     build_recommendation_job,
@@ -161,6 +166,7 @@ from transcode.recommendations import (
     probe_media_for_recommendation,
 )
 from utils.helpers import (
+    MakeMKVDriveInfo,
     get_available_drives,
     is_network_path,
     make_rip_folder_name,
@@ -174,7 +180,9 @@ from utils.classifier import (
 )
 
 from gui.theme import build_app_theme
+from gui.secure_tk import SecureTk
 from gui.update_ui import check_for_updates, launch_downloaded_update
+from shared.windows_exec import get_explorer_executable, get_powershell_executable
 
 
 HANDBRAKE_PRESETS = [
@@ -208,7 +216,51 @@ def _build_transcode_plan(
     return build_transcode_plan(scan_root, selected_paths, output_root)
 
 
-class JellyRipperGUI(tk.Tk, UIAdapter):
+class JellyRipperGUI(SecureTk, UIAdapter):
+    @staticmethod
+    def _default_drive_info() -> MakeMKVDriveInfo:
+        return MakeMKVDriveInfo(
+            index=0,
+            state_code=0,
+            flags_code=999,
+            disc_type_code=0,
+            drive_name="Default Drive",
+            disc_name="",
+            device_path="disc:0",
+        )
+
+    @classmethod
+    def _coerce_drive_info(cls, drive) -> MakeMKVDriveInfo:
+        if isinstance(drive, MakeMKVDriveInfo):
+            return drive
+        try:
+            idx, name = drive
+            idx = int(idx)
+            return MakeMKVDriveInfo(
+                index=idx,
+                state_code=0,
+                flags_code=999,
+                disc_type_code=0,
+                drive_name=str(name),
+                disc_name="",
+                device_path=f"disc:{idx}",
+            )
+        except Exception:
+            return cls._default_drive_info()
+
+    @staticmethod
+    def _format_drive_label(drive: MakeMKVDriveInfo) -> str:
+        drive_name = drive.drive_name or "Unknown drive"
+        disc_name = drive.disc_name or "No disc"
+        device_path = drive.device_path or f"disc:{drive.index}"
+        state = f"{drive.usability_state} ({drive.state_code})"
+        return (
+            f"Drive {drive.index}: {drive_name} | "
+            f"Disc: {disc_name} | "
+            f"Path: {device_path} | "
+            f"State: {state}"
+        )
+
     def auto_detect_existing_folder_mode(self, folder_path):
         """
         Auto-detect mode for an existing folder:
@@ -770,7 +822,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         ).grid(row=0, column=0, sticky="w", padx=(0, 18))
 
         self.drive_var = tk.StringVar(value="Loading drives...")
-        self.drive_options = [(0, "Default Drive (disc:0)")]
+        self.drive_options = [self._default_drive_info()]
         self.drive_menu = ttk.Combobox(
             drive_frame,
             textvariable=self.drive_var,
@@ -880,13 +932,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         self._bottom_dock.pack(side="bottom", fill="x")
 
         self.content_frame = tk.Frame(self, bg=bg)
-        self.content_frame.pack(fill="both", expand=True, padx=36, pady=(12, 0))
+        self.content_frame.pack(fill="both", expand=True, padx=36, pady=(10, 0))
 
         self.log_panel = tk.Frame(self.content_frame, bg=bg)
         self.log_panel.pack(fill="both", expand=True)
 
         status_strip = tk.Frame(self.log_panel, bg=bg)
-        status_strip.pack(fill="x", pady=(0, 8))
+        status_strip.pack(fill="x", pady=(0, 6))
         for col in range(4):
             status_strip.grid_columnconfigure(col, weight=1, uniform="status")
         self.status_strip = status_strip
@@ -900,18 +952,18 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         )
         self.status_brand.grid(row=0, column=0, columnspan=3, sticky="ew", padx=(0, 12))
         self.status_brand_inner = tk.Frame(self.status_brand, bg=colors["header_bg"], bd=0)
-        self.status_brand_inner.pack(expand=True, pady=2)
+        self.status_brand_inner.pack(expand=True, pady=0)
         for text in ("Raw", "Jelly", "Ripper"):
             tk.Label(
                 self.status_brand_inner,
                 text=text,
                 bg=colors["header_bg"],
                 fg=colors["title"],
-                font=("Segoe UI", 28, "bold"),
+                font=("Segoe UI", 24, "bold"),
                 anchor="center",
                 justify="center",
-                padx=28,
-                pady=14,
+                padx=22,
+                pady=8,
                 bd=0,
             ).pack(side="left")
 
@@ -930,11 +982,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             textvariable=self.status_var,
             bg=colors["pill_idle_bg"],
             fg=colors["ready_text"],
-            font=("Segoe UI", 28, "italic"),
+            font=("Segoe UI", 22, "italic"),
             anchor="center",
             justify="center",
             padx=14,
-            pady=14,
+            pady=8,
             bd=0,
         )
         self.status_value_label.pack(fill="both", expand=True)
@@ -968,7 +1020,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             bg=colors["surface_alt"],
             fg=colors["text"],
             font=("Segoe UI", 15, "bold"),
-        ).pack(anchor="w", padx=18, pady=(12, 10))
+        ).pack(anchor="w", padx=18, pady=(10, 8))
 
         tk.Frame(log_card, bg=colors["panel_border"], height=1).pack(fill="x")
 
@@ -1057,15 +1109,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             activebackground=colors["abort"],
             activeforeground=colors["text"],
             disabledforeground=colors["text"],
-            font=("Segoe UI", 22, "bold"),
+            font=("Segoe UI", 18, "bold"),
             relief="flat",
             bd=0,
             padx=18,
-            pady=18,
+            pady=12,
             cursor="hand2",
             state="disabled",
         )
-        self.abort_btn.pack(fill="x", padx=36, pady=(14, 0))
+        self.abort_btn.pack(fill="x", padx=36, pady=(10, 0))
 
         safe_margin_px = int(self.cfg.get("opt_bottom_safe_margin_px", 72))
         self._bottom_safe_spacer = tk.Frame(self._bottom_dock, bg=bg, height=safe_margin_px)
@@ -1097,7 +1149,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             font=("Segoe UI", 10)
         ).pack(side="left", padx=(0, 8))
         self.drive_var     = tk.StringVar(value="Loading drives...")
-        self.drive_options = [(0, "Default Drive (disc:0)")]
+        self.drive_options = [self._default_drive_info()]
         self.drive_menu    = ttk.Combobox(
             drive_frame, textvariable=self.drive_var,
             values=["Loading drives..."],
@@ -1314,6 +1366,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             main_log=str(self.cfg.get("log_file", "") or ""),
             ffprobe_path=str(self.cfg.get("ffprobe_path", "") or ""),
             include_dirs=False,
+            allow_path_lookup=self._allow_path_tool_resolution(),
         )
 
         progress_win = tk.Toplevel(self)
@@ -1669,9 +1722,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         ).pack(side="right", padx=4)
 
     def _open_ffmpeg_recommendation_scan(self, scan_root, input_path):
-        ffprobe_exe = resolve_ffprobe(
-            os.path.normpath(self.cfg.get("ffprobe_path", ""))
-        )[0] or ""
+        ffprobe_exe = self._resolve_ffprobe_tool().path or ""
         if not ffprobe_exe or not os.path.isfile(ffprobe_exe):
             self.show_error(
                 "FFmpeg Recommendation",
@@ -1807,9 +1858,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             jobs=build_result.jobs,
             log_dir=log_dir,
             ffmpeg_exe=ffmpeg_exe,
-            ffprobe_exe=resolve_ffprobe(
-                os.path.normpath(self.cfg.get("ffprobe_path", ""))
-            )[0],
+            ffprobe_exe=self._resolve_ffprobe_tool().path,
             handbrake_exe=self._resolve_transcode_backend_path("handbrake")[0],
             ffmpeg_source_mode=ffmpeg_source_mode,
             temp_root=os.path.normpath(
@@ -2707,23 +2756,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 # metadata. Those tags (colorprim, transfer, colormatrix, hdr-opt)
                 # are file-specific — applying them to an SDR file would incorrectly
                 # tag its output as HDR.
-                _HDR_MARKERS = {"colorprim=", "transfer=", "colormatrix=", "hdr-opt="}
-                _extra = (profile_data.get("video") or {}).get("extra_video_params") or ""
-                if any(m in _extra for m in _HDR_MARKERS):
-                    if not messagebox.askyesno(
-                        "Source-specific HDR settings",
-                        "The 'Extra encoder params' field contains HDR color metadata "
-                        "(e.g. colorprim=bt2020, transfer=smpte2084) that was seeded "
-                        "from this specific file.\n\n"
-                        "Saving it as a reusable profile will embed those HDR tags "
-                        "into every file encoded with it — including SDR content.\n\n"
-                        "Use \u2018Apply Once\u2019 to keep it file-specific, or clear "
-                        "'Extra encoder params' before saving a general profile.\n\n"
-                        "Save with HDR metadata anyway?",
-                        icon="warning",
-                        parent=name_dlg,
-                    ):
-                        return
+                if not self._confirm_profile_hdr_metadata_save(
+                    profile_data,
+                    name_dlg,
+                ):
+                    return
                 try:
                     loader = self._get_transcode_profile_loader()
                     loader.add_profile(name, profile_data)
@@ -2762,52 +2799,377 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
     def _resolve_transcode_backend_path(self, backend):
         backend_key = str(backend or "").strip().lower()
         if backend_key == "handbrake":
-            cfg_key = "handbrake_path"
-            auto_locator = auto_locate_handbrake
-            validator = validate_handbrake
+            resolved = resolve_handbrake(
+                os.path.normpath(str(self.cfg.get("handbrake_path", "") or "")),
+                allow_path_lookup=self._allow_path_tool_resolution(),
+            )
+            backend_label = _transcode_backend_label("handbrake")
         else:
-            backend_key = "ffmpeg"
-            cfg_key = "ffmpeg_path"
-            auto_locator = auto_locate_ffmpeg
-            validator = validate_ffmpeg
+            resolved = resolve_ffmpeg(
+                os.path.normpath(str(self.cfg.get("ffmpeg_path", "") or "")),
+                allow_path_lookup=self._allow_path_tool_resolution(),
+            )
+            backend_label = _transcode_backend_label("ffmpeg")
 
-        backend_label = _transcode_backend_label(backend_key)
-        configured_path = str(self.cfg.get(cfg_key, "") or "").strip()
-        if configured_path:
-            configured_path = os.path.normpath(configured_path)
-            ok, reason = validator(configured_path)
-            if ok:
-                return configured_path, f"Using configured {backend_label}: {configured_path}"
+        if resolved.path:
+            return (
+                resolved.path,
+                f"Using {backend_label} ({resolved.source}): {resolved.path}",
+            )
 
-            auto_path = auto_locator()
-            if auto_path:
-                auto_path = os.path.normpath(auto_path)
-                auto_ok, _auto_reason = validator(auto_path)
-                if auto_ok:
-                    reason_text = reason or "validation failed"
-                    return (
-                        auto_path,
-                        f"Configured {backend_label} path failed ({reason_text}). "
-                        f"Using auto-detected {backend_label}: {auto_path}",
-                    )
+        if resolved.suggestion_path:
+            detail = resolved.error or (
+                f"Configured {backend_label} executable is unavailable."
+            )
+            detail += (
+                f"\n\nUsing {backend_label} ({resolved.suggestion_source}): "
+                f"{resolved.suggestion_path}"
+            )
+            return resolved.suggestion_path, detail
 
-            reason_text = reason or "validation failed"
-            return "", f"{backend_label} is not ready: {reason_text}"
+        detail = resolved.error or f"{backend_label} executable not found."
+        detail += "\n\nSet it in Settings > Paths."
+        return "", detail
 
-        auto_path = auto_locator()
-        if auto_path:
-            auto_path = os.path.normpath(auto_path)
-            ok, reason = validator(auto_path)
-            if ok:
-                return auto_path, f"Using auto-detected {backend_label}: {auto_path}"
-            if reason:
-                return "", f"Auto-detected {backend_label} failed validation: {reason}"
+    def _allow_path_tool_resolution(self) -> bool:
+        return (
+            sys.platform == "win32"
+            and bool(self.cfg.get("opt_allow_path_tool_resolution", False))
+        )
 
-        return "", f"{backend_label} executable not found. Set it in Settings > Paths."
+    def _resolve_ffprobe_tool(self):
+        return resolve_ffprobe(
+            os.path.normpath(str(self.cfg.get("ffprobe_path", "") or "")),
+            allow_path_lookup=self._allow_path_tool_resolution(),
+        )
 
     def _get_transcode_profile_loader(self):
         profile_path = os.path.join(get_config_dir(), TRANSCODE_PROFILE_FILENAME)
         return ProfileLoader(profile_path)
+
+    @staticmethod
+    def _format_expert_profile_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    @staticmethod
+    def _make_expert_var_handle(var, kind="value"):
+        return {"var": var, "kind": kind}
+
+    @staticmethod
+    def _expert_var_get(handle):
+        if isinstance(handle, dict):
+            return handle["var"].get()
+        return handle.get()
+
+    def _expert_var_set(self, handle, value):
+        if isinstance(handle, dict):
+            var = handle["var"]
+            if handle.get("kind") == "bool":
+                var.set(bool(value))
+            else:
+                var.set(self._format_expert_profile_value(value))
+            return
+        handle.set(self._format_expert_profile_value(value))
+
+    def _expert_var_matches(self, handle, expected_value):
+        if isinstance(handle, dict) and handle.get("kind") == "bool":
+            return bool(handle["var"].get()) == bool(expected_value)
+        current_value = self._expert_var_get(handle)
+        return (
+            str(current_value if current_value is not None else "").strip()
+            == self._format_expert_profile_value(expected_value)
+        )
+
+    @staticmethod
+    def _parse_expert_profile_value(field_name, raw_value, expected_type):
+        raw_text = str(raw_value if raw_value is not None else "").strip()
+        allowed_types = (
+            expected_type
+            if isinstance(expected_type, tuple) else
+            (expected_type,)
+        )
+        allows_none = type(None) in allowed_types
+        non_none_types = tuple(
+            field_type
+            for field_type in allowed_types
+            if field_type is not type(None)
+        )
+
+        if not raw_text:
+            if allows_none:
+                return None
+            if str in non_none_types:
+                raise ValueError(f"{field_name} cannot be blank.")
+            raise ValueError(f"{field_name} requires a value.")
+
+        if bool in non_none_types:
+            normalized = raw_text.lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError(
+                f"{field_name} must be true/false, yes/no, on/off, or 1/0."
+            )
+
+        if int in non_none_types and float in non_none_types:
+            try:
+                numeric = float(raw_text)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a number.") from exc
+            return int(numeric) if numeric.is_integer() else numeric
+
+        if int in non_none_types:
+            try:
+                return int(raw_text)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be an integer.") from exc
+
+        if float in non_none_types:
+            try:
+                return float(raw_text)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a number.") from exc
+
+        if str in non_none_types:
+            return raw_text
+
+        return raw_text
+
+    def _collect_expert_profile_data(
+        self,
+        base_profile_data,
+        expert_vars,
+        profile_name,
+    ):
+        profile_data = normalize_profile_data(base_profile_data or {})
+        for section_name, schema in PROFILE_SCHEMA.items():
+            section_vars = expert_vars.get(section_name, {})
+            for key, expected_type in schema.items():
+                var = section_vars.get(key)
+                if var is None:
+                    continue
+                field_name = f"{section_name}.{key}"
+                profile_data[section_name][key] = self._parse_expert_profile_value(
+                    field_name,
+                    self._expert_var_get(var),
+                    expected_type,
+                )
+        TranscodeProfile(profile_name, profile_data)
+        return profile_data
+
+    def _save_expert_profile_data(self, profile_name, profile_data):
+        loader = self._get_transcode_profile_loader()
+        target_name = str(profile_name or loader.default or "").strip()
+        if not target_name:
+            target_name = "Balanced (Recommended)"
+        normalized = normalize_profile_data(profile_data)
+        loader.profiles[target_name] = TranscodeProfile(target_name, normalized)
+        if not loader.default:
+            loader.default = target_name
+        loader.save()
+        return target_name
+
+    def _persist_settings_and_profile(
+        self,
+        staged_cfg,
+        *,
+        expert_profile_name=None,
+        expert_profile_data=None,
+    ):
+        saved_name = None
+        profile_loader = None
+        profile_snapshot = None
+
+        if expert_profile_data is not None:
+            profile_loader = self._get_transcode_profile_loader()
+            profile_snapshot = {
+                "profiles": {
+                    name: normalize_profile_data(profile.to_dict())
+                    for name, profile in profile_loader.profiles.items()
+                },
+                "default": profile_loader.default,
+            }
+            saved_name = self._save_expert_profile_data(
+                expert_profile_name,
+                expert_profile_data,
+            )
+
+        try:
+            save_config(staged_cfg)
+        except Exception:
+            if profile_loader is not None and profile_snapshot is not None:
+                try:
+                    profile_loader.profiles = {
+                        name: TranscodeProfile(name, profile_data)
+                        for name, profile_data in profile_snapshot["profiles"].items()
+                    }
+                    profile_loader.default = profile_snapshot["default"]
+                    profile_loader.save()
+                except Exception as rollback_exc:
+                    logger = getattr(getattr(self, "controller", None), "log", None)
+                    if callable(logger):
+                        logger(
+                            "Settings rollback failed after config save error: "
+                            f"{rollback_exc}"
+                        )
+            raise
+
+        return saved_name
+
+    def _create_expert_profile(self, profile_name, profile_data=None):
+        loader = self._get_transcode_profile_loader()
+        target_name = str(profile_name or "").strip()
+        if not target_name:
+            raise ProfileValidationError("Enter a profile name.")
+        if target_name in loader.profiles:
+            raise ProfileValidationError(
+                f"Profile already exists: {target_name}"
+            )
+        normalized = normalize_profile_data(profile_data or {})
+        loader.add_profile(target_name, normalized)
+        return target_name
+
+    def _duplicate_expert_profile(
+        self,
+        source_name,
+        new_name,
+        profile_data=None,
+    ):
+        loader = self._get_transcode_profile_loader()
+        source_profile_name = str(source_name or "").strip()
+        target_name = str(new_name or "").strip()
+        if not source_profile_name or source_profile_name not in loader.profiles:
+            raise ProfileValidationError(
+                f"Unknown transcode profile: {source_profile_name}"
+            )
+        if not target_name:
+            raise ProfileValidationError("Enter a profile name.")
+        if target_name in loader.profiles:
+            raise ProfileValidationError(
+                f"Profile already exists: {target_name}"
+            )
+        duplicated_data = normalize_profile_data(
+            profile_data or loader.get_profile(source_profile_name).to_dict()
+        )
+        loader.add_profile(target_name, duplicated_data)
+        return target_name
+
+    def _delete_expert_profile(self, profile_name):
+        loader = self._get_transcode_profile_loader()
+        target_name = str(profile_name or "").strip()
+        if not target_name or target_name not in loader.profiles:
+            raise ProfileValidationError(
+                f"Unknown transcode profile: {target_name}"
+            )
+        if len(loader.profiles) <= 1:
+            raise ProfileValidationError(
+                "At least one transcode profile must remain."
+            )
+        loader.delete_profile(target_name)
+        next_name = loader.default or next(iter(loader.profiles), None)
+        if not next_name:
+            raise ProfileValidationError("No transcode profiles are available.")
+        return next_name
+
+    def _set_default_expert_profile(self, profile_name):
+        loader = self._get_transcode_profile_loader()
+        target_name = str(profile_name or loader.default or "").strip()
+        if not target_name:
+            raise ProfileValidationError("No transcode profiles are available.")
+        if target_name not in loader.profiles:
+            raise ProfileValidationError(
+                f"Unknown transcode profile: {target_name}"
+            )
+        loader.set_default(target_name)
+        return target_name
+
+    def _load_expert_profile_snapshot(self, profile_name=None):
+        loader = self._get_transcode_profile_loader()
+        profile_names = list(loader.profiles)
+        default_name = loader.default or (
+            profile_names[0] if profile_names else None
+        )
+        selected_name = str(profile_name or "").strip() or default_name
+        if not selected_name:
+            raise ProfileValidationError("No transcode profiles are available.")
+        if selected_name not in loader.profiles:
+            raise ProfileValidationError(
+                f"Unknown transcode profile: {selected_name}"
+            )
+        profile = loader.get_profile(selected_name)
+        return {
+            "name": selected_name,
+            "default_name": default_name,
+            "names": profile_names,
+            "data": normalize_profile_data(profile.to_dict()),
+        }
+
+    def _confirm_profile_hdr_metadata_save(self, profile_data, parent):
+        hdr_markers = {"colorprim=", "transfer=", "colormatrix=", "hdr-opt="}
+        extra = (profile_data.get("video") or {}).get("extra_video_params") or ""
+        if not any(marker in extra for marker in hdr_markers):
+            return True
+        return ask_yes_no(
+            "Source-specific HDR settings",
+            "The 'Extra encoder params' field contains HDR color metadata "
+            "(e.g. colorprim=bt2020, transfer=smpte2084) that was seeded "
+            "from this specific file.\n\n"
+            "Saving it as a reusable profile will embed those HDR tags "
+            "into every file encoded with it, including SDR content.\n\n"
+            "Use 'Apply Once' to keep it file-specific, or clear "
+            "'Extra encoder params' before saving a general profile.\n\n"
+            "Save with HDR metadata anyway?",
+            icon="warning",
+            parent=parent,
+        )
+
+    def _confirm_discard_dirty_expert_changes(
+        self,
+        profile_data,
+        expert_vars,
+        prompt,
+        parent,
+    ):
+        if not expert_vars:
+            return True
+        if not self._expert_profile_form_is_dirty(profile_data, expert_vars):
+            return True
+        return ask_yes_no(
+            "Discard Expert Changes",
+            prompt,
+            parent=parent,
+        )
+
+    def _populate_expert_profile_vars(self, expert_vars, profile_data):
+        for section_name, schema in PROFILE_SCHEMA.items():
+            section_vars = expert_vars.get(section_name, {})
+            values = (profile_data or {}).get(section_name, {})
+            for key in schema:
+                var = section_vars.get(key)
+                if var is None:
+                    continue
+                self._expert_var_set(var, values.get(key))
+
+    def _expert_profile_form_is_dirty(self, profile_data, expert_vars):
+        expected = normalize_profile_data(profile_data or {})
+        for section_name, schema in PROFILE_SCHEMA.items():
+            section_vars = expert_vars.get(section_name, {})
+            values = expected.get(section_name, {})
+            for key in schema:
+                var = section_vars.get(key)
+                if var is None:
+                    continue
+                if not self._expert_var_matches(var, values.get(key)):
+                    return True
+        return False
+
+    def _summarize_expert_profile(self, profile_data):
+        return summarize_profile(normalize_profile_data(profile_data or {}))
 
     def _open_transcode_queue_builder(
         self,
@@ -3081,7 +3443,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 if selected_profile not in profile_names:
                     selected_profile = default_profile_name
                 try:
-                    profile_summary = describe_profile(
+                    profile_summary = summarize_profile(
                         profile_loader.get_profile(selected_profile)
                     )
                 except Exception:
@@ -3246,9 +3608,7 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 jobs=jobs,
                 log_dir=log_dir,
                 ffmpeg_exe=ffmpeg_path,
-                ffprobe_exe=resolve_ffprobe(
-                    os.path.normpath(self.cfg.get("ffprobe_path", ""))
-                )[0],
+                ffprobe_exe=self._resolve_ffprobe_tool().path,
                 handbrake_exe=handbrake_path,
                 ffmpeg_source_mode=ffmpeg_source_mode,
                 temp_root=os.path.normpath(
@@ -3578,20 +3938,26 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
     def _refresh_drives(self):
         def _load():
-            makemkvcon = os.path.normpath(
-                self.cfg.get("makemkvcon_path", "")
+            makemkvcon = resolve_makemkvcon(
+                os.path.normpath(self.cfg.get("makemkvcon_path", "")),
+                allow_path_lookup=self._allow_path_tool_resolution(),
             )
-            drives = get_available_drives(makemkvcon)
+            drives = get_available_drives(makemkvcon.path)
             self.after(0, lambda: self._update_drive_menu(drives))
         threading.Thread(target=_load, daemon=True).start()
 
     def _update_drive_menu(self, drives):
-        self.drive_options = drives
-        labels = [f"Drive {idx}: {name}" for idx, name in drives]
+        normalized_drives = [
+            self._coerce_drive_info(drive) for drive in (drives or [])
+        ]
+        if not normalized_drives:
+            normalized_drives = [self._default_drive_info()]
+        self.drive_options = normalized_drives
+        labels = [self._format_drive_label(drive) for drive in normalized_drives]
         self.drive_menu["values"] = labels
         current_idx = self.cfg.get("opt_drive_index", 0)
-        for i, (idx, name) in enumerate(drives):
-            if idx == current_idx:
+        for i, drive in enumerate(normalized_drives):
+            if drive.index == current_idx:
                 self.drive_var.set(labels[i])
                 break
         else:
@@ -3600,12 +3966,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
     def _on_drive_select(self, *args):
         selected = self.drive_var.get()
-        for idx, name in self.drive_options:
-            if f"Drive {idx}: {name}" == selected:
-                self.cfg["opt_drive_index"] = idx
-                self.engine.cfg["opt_drive_index"] = idx
+        for drive in self.drive_options:
+            label = self._format_drive_label(self._coerce_drive_info(drive))
+            if label == selected:
+                self.cfg["opt_drive_index"] = drive.index
+                self.engine.cfg["opt_drive_index"] = drive.index
                 save_config(self.cfg)
-                self.controller.log(f"Drive selected: {name}")
+                self.controller.log(f"Drive selected: {label}")
                 break
 
     def copy_log_to_clipboard(self):
@@ -3815,6 +4182,346 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 return False
         return result[0] if result[0] is not None else False
 
+    def _run_modal_dialog(self, show_dialog):
+        """Run a blocking Tk dialog on the main loop and return its result."""
+        if threading.current_thread() is threading.main_thread():
+            return show_dialog()
+
+        result = [None]
+        error = [None]
+        done = threading.Event()
+
+        def _show():
+            try:
+                result[0] = show_dialog()
+            except Exception as exc:  # pragma: no cover - defensive handoff
+                error[0] = exc
+            finally:
+                done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            pass
+
+        if error[0] is not None:
+            raise error[0]
+        return result[0]
+
+    def ask_duplicate_resolution(self, prompt,
+                                 retry_text="Swap and Retry",
+                                 bypass_text="Not a Dup",
+                                 stop_text="Stop"):
+        """
+        Three-way decision prompt for duplicate-disc handling.
+        Returns one of: 'retry', 'bypass', 'stop'.
+        """
+        return self._run_modal_dialog(
+            lambda: self._ask_duplicate_resolution_modal(
+                prompt,
+                retry_text=retry_text,
+                bypass_text=bypass_text,
+                stop_text=stop_text,
+            )
+        )
+
+    def _ask_duplicate_resolution_modal(self, prompt,
+                                        retry_text="Swap and Retry",
+                                        bypass_text="Not a Dup",
+                                        stop_text="Stop"):
+        """Main-thread-safe modal duplicate prompt using a nested Tk event loop."""
+        result = ["stop"]
+        win = tk.Toplevel(self)
+        win.title("Duplicate Disc Check")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=prompt,
+            bg="#161b22",
+            fg="#c9d1d9",
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 10),
+        ).pack(padx=18, pady=(18, 10))
+
+        btn_row = tk.Frame(win, bg="#161b22")
+        btn_row.pack(padx=18, pady=(0, 18))
+        finished = {"done": False}
+
+        def finish(value):
+            if finished["done"]:
+                return
+            finished["done"] = True
+            result[0] = value
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", lambda: finish("stop"))
+        win.bind("<Escape>", lambda _e: finish("stop"))
+        win.bind("<Return>", lambda _e: finish("retry"))
+
+        tk.Button(
+            btn_row,
+            text=retry_text,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("retry"),
+            relief="flat",
+            width=16,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=bypass_text,
+            bg="#1f6feb",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("bypass"),
+            relief="flat",
+            width=14,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=stop_text,
+            bg="#c94b4b",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("stop"),
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        if timeout_seconds is not None:
+            win.after(int(timeout_seconds * 1000), lambda: finish("stop"))
+
+        def _poll_abort():
+            if finished["done"]:
+                return
+            if self.engine.abort_event.is_set():
+                finish("stop")
+                return
+            try:
+                win.after(100, _poll_abort)
+            except tk.TclError:
+                return
+
+        win.after(100, _poll_abort)
+        win.wait_window()
+        return result[0]
+
+    def _ask_input_modal(self, label, prompt, default_value=""):
+        """Show a modal text prompt and return text, empty string, or None."""
+        result = [None]
+        win = tk.Toplevel(self)
+        win.title(label or "Input")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=prompt,
+            bg="#161b22",
+            fg="#c9d1d9",
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 10),
+        ).pack(padx=18, pady=(18, 10), anchor="w")
+
+        value_var = tk.StringVar(value=default_value or "")
+        entry = tk.Entry(
+            win,
+            textvariable=value_var,
+            bg="#0d1117",
+            fg="#c9d1d9",
+            insertbackground="white",
+            relief="flat",
+            font=("Segoe UI", 11),
+            width=44,
+        )
+        entry.pack(fill="x", padx=18, pady=(0, 14))
+
+        button_row = tk.Frame(win, bg="#161b22")
+        button_row.pack(padx=18, pady=(0, 18))
+        finished = {"done": False}
+
+        def finish(value):
+            if finished["done"]:
+                return
+            finished["done"] = True
+            result[0] = value
+            win.destroy()
+
+        def submit(*_args):
+            finish(value_var.get().strip())
+
+        def skip(*_args):
+            finish("")
+
+        win.protocol("WM_DELETE_WINDOW", skip)
+        win.bind("<Return>", submit)
+        win.bind("<Escape>", skip)
+
+        tk.Button(
+            button_row,
+            text="OK",
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=submit,
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="Skip",
+            bg="#30363d",
+            fg="#c9d1d9",
+            font=("Segoe UI", 10),
+            command=skip,
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        if timeout_seconds is not None:
+            win.after(int(timeout_seconds * 1000), lambda: finish(None))
+
+        def _poll_abort():
+            if finished["done"]:
+                return
+            if self.engine.abort_event.is_set():
+                finish(None)
+                return
+            try:
+                win.after(100, _poll_abort)
+            except tk.TclError:
+                return
+
+        win.after(100, _poll_abort)
+        if default_value:
+            entry.selection_range(0, "end")
+        entry.focus_set()
+        win.wait_window()
+        return result[0]
+
+    def ask_input(self, label, prompt,
+                  default_value=""):
+        """Show a modal input popup and wait for the entered value."""
+        lock = getattr(self, "_input_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+
+        with lock:
+            value = self._run_modal_dialog(
+                lambda: self._ask_input_modal(
+                    label,
+                    prompt,
+                    default_value=default_value,
+                )
+            )
+            if value:
+                self.append_log(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] "
+                    f"{label}: {value}"
+                )
+            elif value == "":
+                self.append_log(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] "
+                    f"{label}: (skipped)"
+                )
+            return value
+
+    def _ask_yesno_modal(self, prompt):
+        """Show a modal Yes/No popup and return the chosen boolean."""
+        result = [False]
+        win = tk.Toplevel(self)
+        win.title("Confirm")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=prompt,
+            bg="#161b22",
+            fg="#c9d1d9",
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 10),
+        ).pack(padx=18, pady=(18, 10), anchor="w")
+
+        button_row = tk.Frame(win, bg="#161b22")
+        button_row.pack(padx=18, pady=(0, 18))
+        finished = {"done": False}
+
+        def finish(answer):
+            if finished["done"]:
+                return
+            finished["done"] = True
+            result[0] = bool(answer)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        win.bind("<Escape>", lambda _e: finish(False))
+        win.bind("<Return>", lambda _e: finish(True))
+
+        tk.Button(
+            button_row,
+            text="Yes",
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish(True),
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            button_row,
+            text="No",
+            bg="#c94b4b",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish(False),
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        if timeout_seconds is not None:
+            win.after(int(timeout_seconds * 1000), lambda: finish(False))
+
+        def _poll_abort():
+            if finished["done"]:
+                return
+            if self.engine.abort_event.is_set():
+                finish(False)
+                return
+            try:
+                win.after(100, _poll_abort)
+            except tk.TclError:
+                return
+
+        win.after(100, _poll_abort)
+        win.wait_window()
+        return result[0]
+
+    def ask_yesno(self, prompt):
+        """Show a modal Yes/No popup and wait for the answer."""
+        return bool(
+            self._run_modal_dialog(
+                lambda: self._ask_yesno_modal(prompt)
+            )
+        )
+
     # ------------------------------------------------------------------
     # Session setup dialogs (worker-thread-safe)
     # ------------------------------------------------------------------
@@ -3855,9 +4562,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
     def ask_tv_setup(
         self,
         default_title: str = "",
+        default_year: str = "",
         default_season: str = "1",
+        default_starting_disc: str = "1",
         default_metadata_provider: str = "TMDB",
         default_metadata_id: str = "",
+        default_episode_mapping: str = "auto",
+        default_multi_episode: str = "auto",
+        default_specials: str = "ask",
+        default_replace_existing: bool = False,
     ):
         """Show the TV rip setup dialog and return a TVSessionSetup or None.
 
@@ -3873,9 +4586,46 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             result[0] = build_tv_setup_dialog(
                 self,
                 default_title=default_title,
+                default_year=default_year,
                 default_season=default_season,
+                default_starting_disc=default_starting_disc,
                 default_metadata_provider=default_metadata_provider,
                 default_metadata_id=default_metadata_id,
+                default_episode_mapping=default_episode_mapping,
+                default_multi_episode=default_multi_episode,
+                default_specials=default_specials,
+                default_replace_existing=default_replace_existing,
+            )
+            done.set()
+
+        self.after(0, _show)
+        while not done.wait(timeout=0.1):
+            if self.engine.abort_event.is_set():
+                return None
+        return result[0]
+
+    def ask_dump_setup(
+        self,
+        default_multi_disc: bool = False,
+        default_disc_name: str = "",
+        default_disc_count: str = "1",
+        default_custom_disc_names: str = "",
+        default_batch_title: str = "",
+    ):
+        """Show the dump session setup dialog and return a DumpSessionSetup or None."""
+        from gui.session_setup_dialog import build_dump_setup_dialog
+
+        result = [None]
+        done = threading.Event()
+
+        def _show():
+            result[0] = build_dump_setup_dialog(
+                self,
+                default_multi_disc=default_multi_disc,
+                default_disc_name=default_disc_name,
+                default_disc_count=default_disc_count,
+                default_custom_disc_names=default_custom_disc_names,
+                default_batch_title=default_batch_title,
             )
             done.set()
 
@@ -3940,7 +4690,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 return None
         return result[0]
 
-    def show_output_plan_step(self, base_folder, main_label, extras_map):
+    def show_output_plan_step(
+        self,
+        base_folder,
+        main_label,
+        extras_map,
+        detail_lines=None,
+        header_text="Step 5: Output Plan",
+        subtitle_text="This is exactly what JellyRip will create. No guessing, no surprises.",
+        confirm_text="Start Rip",
+    ):
         """Step 5: Output plan preview. Returns True to confirm, False to cancel."""
         from gui.setup_wizard import show_output_plan
 
@@ -3948,7 +4707,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         done = threading.Event()
 
         def _show():
-            result[0] = show_output_plan(self, base_folder, main_label, extras_map)
+            result[0] = show_output_plan(
+                self,
+                base_folder,
+                main_label,
+                extras_map,
+                detail_lines=detail_lines,
+                header_text=header_text,
+                subtitle_text=subtitle_text,
+                confirm_text=confirm_text,
+            )
             done.set()
 
         self.after(0, _show)
@@ -4256,6 +5024,112 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
         win.wait_window()
         return result[0]
 
+    def ask_duplicate_resolution(self, prompt,
+                                 retry_text="Swap and Retry",
+                                 bypass_text="Not a Dup",
+                                 stop_text="Stop"):
+        """
+        Three-way decision prompt for duplicate-disc handling.
+        Returns one of: 'retry', 'bypass', 'stop'.
+        """
+        return self._run_modal_dialog(
+            lambda: self._ask_duplicate_resolution_modal(
+                prompt,
+                retry_text=retry_text,
+                bypass_text=bypass_text,
+                stop_text=stop_text,
+            )
+        )
+
+    def _ask_duplicate_resolution_modal(self, prompt,
+                                        retry_text="Swap and Retry",
+                                        bypass_text="Not a Dup",
+                                        stop_text="Stop"):
+        """Main-thread-safe modal duplicate prompt using a nested Tk event loop."""
+        result = ["stop"]
+        win = tk.Toplevel(self)
+        win.title("Duplicate Disc Check")
+        win.configure(bg="#161b22")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text=prompt,
+            bg="#161b22",
+            fg="#c9d1d9",
+            justify="left",
+            wraplength=520,
+            font=("Segoe UI", 10),
+        ).pack(padx=18, pady=(18, 10))
+
+        btn_row = tk.Frame(win, bg="#161b22")
+        btn_row.pack(padx=18, pady=(0, 18))
+        finished = {"done": False}
+
+        def finish(value):
+            if finished["done"]:
+                return
+            finished["done"] = True
+            result[0] = value
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", lambda: finish("stop"))
+        win.bind("<Escape>", lambda _e: finish("stop"))
+        win.bind("<Return>", lambda _e: finish("retry"))
+
+        tk.Button(
+            btn_row,
+            text=retry_text,
+            bg="#238636",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("retry"),
+            relief="flat",
+            width=16,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=bypass_text,
+            bg="#1f6feb",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("bypass"),
+            relief="flat",
+            width=14,
+        ).pack(side="left", padx=4)
+        tk.Button(
+            btn_row,
+            text=stop_text,
+            bg="#c94b4b",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=lambda: finish("stop"),
+            relief="flat",
+            width=12,
+        ).pack(side="left", padx=4)
+
+        timeout_seconds = self._get_user_prompt_timeout_seconds()
+        if timeout_seconds is not None:
+            win.after(int(timeout_seconds * 1000), lambda: finish("stop"))
+
+        def _poll_abort():
+            if finished["done"]:
+                return
+            if self.engine.abort_event.is_set():
+                finish("stop")
+                return
+            try:
+                win.after(100, _poll_abort)
+            except tk.TclError:
+                return
+
+        win.after(100, _poll_abort)
+        win.wait_window()
+        return result[0]
+
     def _run_on_main(self, fn):
         """Execute callable on tkinter main loop and return its result."""
         if threading.current_thread() is threading.main_thread():
@@ -4326,7 +5200,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
         try:
             if sys.platform == "win32":
-                os.startfile(normalized)
+                target = normalized
+                if not os.path.isdir(normalized):
+                    target = os.path.dirname(normalized) or normalized
+                subprocess.Popen(
+                    [get_explorer_executable(), target],
+                    shell=False,
+                )
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", normalized])
             else:
@@ -4346,7 +5226,10 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 if os.path.isdir(normalized):
                     self._open_path_in_explorer(normalized)
                     return
-                subprocess.Popen(["explorer", f"/select,{target}"])
+                subprocess.Popen(
+                    [get_explorer_executable(), f"/select,{target}"],
+                    shell=False,
+                )
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", "-R", normalized])
             else:
@@ -5298,6 +6181,23 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
 
             notebook = ttk.Notebook(win, style="JellyRip.TNotebook")
             notebook.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+            cfg = self.cfg
+            vars_map = {}
+            expert_vars = {}
+            expert_profile_state = {
+                "name": None,
+                "data": None,
+            }
+            expert_status_var = tk.StringVar()
+            naming_mode_label_to_value = {
+                "Timestamp (default)": "timestamp",
+                "Auto title": "auto-title",
+                "Auto title + timestamp (safe)": "auto-title+timestamp",
+            }
+            naming_mode_value_to_label = {
+                value: label
+                for label, value in naming_mode_label_to_value.items()
+            }
 
             def make_scroll_tab(title):
                 tab = tk.Frame(notebook, bg="#0d1117")
@@ -5324,59 +6224,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 notebook.add(tab, text=title)
                 return scroll_frame
 
-            paths_tab = make_scroll_tab("Paths")
-            everyday_tab = make_scroll_tab("Everyday")
-            validation_tab = make_scroll_tab("Validation")
-            advanced_tab = make_scroll_tab("Advanced")
-            logs_tab = make_scroll_tab("Logs & Debug")
-            expert_tab = None
-            if expert_mode_var.get():
-                expert_tab = make_scroll_tab("Expert")
-            # --- Expert Tab (if enabled) ---
-            if expert_tab is not None:
-                section(expert_tab, "Transcode Profile (Expert)")
-                # Show all profile parameters for direct editing
-                from transcode.profiles import PROFILE_SCHEMA
-                expert_vars = {}
-                for section_name, keys in PROFILE_SCHEMA.items():
-                    section(expert_tab, section_name.capitalize())
-                    for key in keys:
-                        row = tk.Frame(expert_tab, bg="#0d1117")
-                        row.pack(fill="x", padx=24, pady=2)
-                        tk.Label(
-                            row, text=key, bg="#0d1117", fg="#c9d1d9",
-                            font=("Segoe UI", 10), width=18, anchor="w"
-                        ).pack(side="left")
-                        var = tk.StringVar()
-                        tk.Entry(
-                            row, textvariable=var,
-                            bg="#161b22", fg="#c9d1d9",
-                            font=("Segoe UI", 10), relief="flat", bd=3, width=24
-                        ).pack(side="left")
-                        expert_vars[f"{section_name}.{key}"] = var
-                # Optionally: add a button to apply expert profile changes
-                def apply_expert_profile():
-                    # This is a placeholder for applying expert profile changes
-                    # You would parse and validate the values, then update the profile
-                    self.controller.log("Expert profile changes applied (not yet implemented)")
-                tk.Button(
-                    expert_tab, text="Apply Expert Profile Changes",
-                    bg="#238636", fg="white", font=("Segoe UI", 10, "bold"),
-                    command=apply_expert_profile
-                ).pack(pady=12)
-
-            cfg      = self.cfg
-            vars_map = {}
-            naming_mode_label_to_value = {
-                "Timestamp (default)": "timestamp",
-                "Auto title": "auto-title",
-                "Auto title + timestamp (safe)": "auto-title+timestamp",
-            }
-            naming_mode_value_to_label = {
-                value: label
-                for label, value in naming_mode_label_to_value.items()
-            }
-
             def section(parent, text):
                 tk.Label(
                     parent, text=text,
@@ -5386,6 +6233,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 tk.Frame(
                     parent, bg="#21262d", height=1
                 ).pack(fill="x", padx=16, pady=(0, 6))
+
+            paths_tab = make_scroll_tab("Paths")
+            everyday_tab = make_scroll_tab("Everyday")
+            validation_tab = make_scroll_tab("Validation")
+            advanced_tab = make_scroll_tab("Advanced")
+            logs_tab = make_scroll_tab("Logs & Debug")
+            expert_tab = None
+            if expert_mode_var.get():
+                expert_tab = make_scroll_tab("Expert")
 
             def path_row(parent, key, label):
                 row = tk.Frame(parent, bg="#0d1117")
@@ -5554,6 +6410,535 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 vars_map[key] = ("choice_map", selected, label_to_value)
                 return selected
 
+            if expert_tab is not None:
+                section(expert_tab, "Transcode Profile (Expert)")
+                tk.Label(
+                    expert_tab,
+                    text=(
+                        "Pick a transcode profile to inspect or edit. Saving "
+                        "writes back to the selected profile."
+                    ),
+                    bg="#0d1117",
+                    fg="#8b949e",
+                    font=("Segoe UI", 9),
+                    wraplength=620,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", padx=16, pady=(0, 4))
+                expert_profile_name_var = tk.StringVar()
+                expert_summary_var = tk.StringVar()
+                expert_profile_combo = None
+
+                def _update_expert_status():
+                    profile_name = expert_profile_state.get("name")
+                    default_name = expert_profile_state.get("default_name")
+                    if not profile_name:
+                        return
+                    if default_name and profile_name == default_name:
+                        expert_status_var.set(
+                            f"Editing profile: {profile_name} (current default)"
+                        )
+                    elif default_name:
+                        expert_status_var.set(
+                            f"Editing profile: {profile_name} | "
+                            f"Current default: {default_name}"
+                        )
+                    else:
+                        expert_status_var.set(f"Editing profile: {profile_name}")
+
+                def _update_expert_summary():
+                    profile_data = expert_profile_state.get("data")
+                    if profile_data is None:
+                        expert_summary_var.set(
+                            "Profile summary unavailable."
+                        )
+                        return
+                    try:
+                        expert_summary_var.set(
+                            self._summarize_expert_profile(profile_data)
+                        )
+                    except Exception:
+                        expert_summary_var.set(
+                            "Profile summary unavailable."
+                        )
+
+                def _load_expert_profile(profile_name=None):
+                    snapshot = self._load_expert_profile_snapshot(profile_name)
+                    expert_profile_state.update(snapshot)
+                    expert_profile_name_var.set(snapshot["name"])
+                    if expert_profile_combo is not None:
+                        expert_profile_combo.configure(
+                            values=snapshot.get("names", [])
+                        )
+                    _update_expert_status()
+                    _update_expert_summary()
+                    return snapshot
+
+                try:
+                    _load_expert_profile()
+                except Exception as exc:
+                    expert_status_var.set(
+                        f"Could not load transcode profile: {exc}"
+                    )
+                    expert_summary_var.set("Profile summary unavailable.")
+
+                if expert_profile_state["data"] is not None:
+                    picker_row = tk.Frame(expert_tab, bg="#0d1117")
+                    picker_row.pack(fill="x", padx=16, pady=(0, 6))
+                    tk.Label(
+                        picker_row,
+                        text="Profile:",
+                        bg="#0d1117",
+                        fg="#c9d1d9",
+                        font=("Segoe UI", 10),
+                        width=12,
+                        anchor="w",
+                    ).pack(side="left")
+                    expert_profile_combo = ttk.Combobox(
+                        picker_row,
+                        textvariable=expert_profile_name_var,
+                        values=expert_profile_state.get("names", []),
+                        state="readonly",
+                        width=34,
+                    )
+                    expert_profile_combo.pack(side="left", fill="x", expand=True)
+
+                tk.Label(
+                    expert_tab,
+                    textvariable=expert_status_var,
+                    bg="#0d1117",
+                    fg="#58a6ff",
+                    font=("Segoe UI", 10, "bold"),
+                    wraplength=620,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", padx=16, pady=(0, 8))
+                tk.Label(
+                    expert_tab,
+                    textvariable=expert_summary_var,
+                    bg="#0d1117",
+                    fg="#8b949e",
+                    font=("Segoe UI", 9),
+                    wraplength=620,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", padx=16, pady=(0, 10))
+
+                if expert_profile_state["data"] is not None:
+                    expert_choice_values = {
+                        ("video", "codec"): ["h265", "h264", "copy"],
+                        ("video", "mode"): ["crf", "bitrate", "copy"],
+                        (
+                            "video",
+                            "preset",
+                        ): [
+                            "",
+                            "ultrafast",
+                            "superfast",
+                            "veryfast",
+                            "faster",
+                            "fast",
+                            "medium",
+                            "slow",
+                            "slower",
+                            "veryslow",
+                        ],
+                        (
+                            "video",
+                            "tune",
+                        ): [
+                            "",
+                            "film",
+                            "animation",
+                            "grain",
+                            "stillimage",
+                            "fastdecode",
+                            "zerolatency",
+                        ],
+                        (
+                            "video",
+                            "video_profile",
+                        ): ["", "main", "main10", "high", "high10", "baseline"],
+                        (
+                            "video",
+                            "pix_fmt",
+                        ): [
+                            "",
+                            "yuv420p",
+                            "yuv420p10le",
+                            "yuv422p10le",
+                            "yuv444p",
+                            "yuv444p10le",
+                        ],
+                        ("video", "hw_accel"): [
+                            "cpu",
+                            "auto_prefer",
+                            "nvenc",
+                            "qsv",
+                            "amf",
+                        ],
+                        ("audio", "mode"): [
+                            "copy",
+                            "aac",
+                            "ac3",
+                            "eac3",
+                            "mp3",
+                            "opus",
+                            "flac",
+                        ],
+                        ("audio", "tracks"): ["all", "main", "language"],
+                        ("audio", "channels"): ["", "1", "2", "6", "8"],
+                        ("audio", "sample_rate"): ["", "44100", "48000", "96000"],
+                        ("subtitles", "mode"): ["all", "forced", "language", "none"],
+                        ("output", "container"): ["mkv", "mp4", "mov"],
+                        ("metadata", "preserve"): ["", "true", "false"],
+                    }
+                    expert_bool_fields = {
+                        ("audio", "downmix"),
+                        ("subtitles", "burn"),
+                        ("output", "overwrite"),
+                        ("output", "auto_increment"),
+                        ("constraints", "skip_if_codec_matches"),
+                    }
+                    for section_name, keys in PROFILE_SCHEMA.items():
+                        section(expert_tab, section_name.capitalize())
+                        section_vars = {}
+                        expert_vars[section_name] = section_vars
+                        for key in keys:
+                            row = tk.Frame(expert_tab, bg="#0d1117")
+                            row.pack(fill="x", padx=24, pady=2)
+                            tk.Label(
+                                row, text=key, bg="#0d1117", fg="#c9d1d9",
+                                font=("Segoe UI", 10), width=18, anchor="w"
+                            ).pack(side="left")
+                            value = expert_profile_state["data"].get(
+                                section_name, {}
+                            ).get(key)
+                            field_name = (section_name, key)
+                            if field_name in expert_bool_fields:
+                                var = tk.BooleanVar(value=bool(value))
+                                tk.Checkbutton(
+                                    row,
+                                    variable=var,
+                                    bg="#0d1117",
+                                    activebackground="#0d1117",
+                                    selectcolor="#238636",
+                                ).pack(side="left")
+                                section_vars[key] = self._make_expert_var_handle(
+                                    var,
+                                    "bool",
+                                )
+                            elif field_name in expert_choice_values:
+                                var = tk.StringVar(
+                                    value=self._format_expert_profile_value(value)
+                                )
+                                ttk.Combobox(
+                                    row,
+                                    textvariable=var,
+                                    values=expert_choice_values[field_name],
+                                    state="readonly",
+                                    width=24,
+                                ).pack(side="left")
+                                section_vars[key] = self._make_expert_var_handle(
+                                    var
+                                )
+                            else:
+                                var = tk.StringVar(
+                                    value=self._format_expert_profile_value(value)
+                                )
+                                tk.Entry(
+                                    row, textvariable=var,
+                                    bg="#161b22", fg="#c9d1d9",
+                                    font=("Segoe UI", 10),
+                                    relief="flat", bd=3, width=24
+                                ).pack(side="left")
+                                section_vars[key] = self._make_expert_var_handle(
+                                    var
+                                )
+
+                    self._populate_expert_profile_vars(
+                        expert_vars,
+                        expert_profile_state["data"],
+                    )
+
+                    def _on_expert_profile_selected(_event=None):
+                        selected_name = expert_profile_name_var.get().strip()
+                        current_name = expert_profile_state.get("name")
+                        if not selected_name or selected_name == current_name:
+                            return
+                        if not self._confirm_discard_dirty_expert_changes(
+                            expert_profile_state.get("data"),
+                            expert_vars,
+                            (
+                                "Discard unsaved Expert profile edits and load "
+                                f"'{selected_name}'?"
+                            ),
+                            win,
+                        ):
+                            expert_profile_name_var.set(current_name or "")
+                            return
+                        try:
+                            snapshot = _load_expert_profile(selected_name)
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile load failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not load expert profile:\n{exc}",
+                                parent=win,
+                            )
+                            expert_profile_name_var.set(current_name or "")
+                            return
+                        self._populate_expert_profile_vars(
+                            expert_vars,
+                            snapshot["data"],
+                        )
+
+                    expert_profile_combo.bind(
+                        "<<ComboboxSelected>>",
+                        _on_expert_profile_selected,
+                    )
+
+                    def apply_expert_profile():
+                        try:
+                            profile_name = expert_profile_state["name"]
+                            profile_data = self._collect_expert_profile_data(
+                                expert_profile_state["data"],
+                                expert_vars,
+                                profile_name,
+                            )
+                            if not self._confirm_profile_hdr_metadata_save(
+                                profile_data,
+                                win,
+                            ):
+                                return
+                            saved_name = self._save_expert_profile_data(
+                                profile_name,
+                                profile_data,
+                            )
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile save failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not save expert profile:\n{exc}",
+                                parent=win,
+                            )
+                            return
+
+                        expert_profile_state["name"] = saved_name
+                        expert_profile_state["data"] = profile_data
+                        if not expert_profile_state.get("default_name"):
+                            expert_profile_state["default_name"] = saved_name
+                        expert_profile_name_var.set(saved_name)
+                        _update_expert_status()
+                        _update_expert_summary()
+                        self.controller.log(
+                            f"Expert profile saved: {saved_name}"
+                        )
+
+                    def set_default_expert_profile():
+                        try:
+                            default_name = self._set_default_expert_profile(
+                                expert_profile_state["name"]
+                            )
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile default update failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not set default profile:\n{exc}",
+                                parent=win,
+                            )
+                            return
+
+                        expert_profile_state["default_name"] = default_name
+                        _update_expert_status()
+                        self.controller.log(
+                            f"Expert profile set as default: {default_name}"
+                        )
+
+                    def _prompt_expert_profile_name(
+                        title,
+                        prompt,
+                        default_value="",
+                    ):
+                        value = self.ask_input(
+                            title,
+                            prompt,
+                            default_value=default_value,
+                        )
+                        name = str(value or "").strip()
+                        return name or None
+
+                    def create_expert_profile():
+                        if not self._confirm_discard_dirty_expert_changes(
+                            expert_profile_state.get("data"),
+                            expert_vars,
+                            "Discard unsaved Expert profile edits and create a new profile?",
+                            win,
+                        ):
+                            return
+                        profile_name = _prompt_expert_profile_name(
+                            "New Profile",
+                            "Enter a name for the new transcode profile:",
+                        )
+                        if not profile_name:
+                            return
+                        try:
+                            created_name = self._create_expert_profile(profile_name)
+                            snapshot = _load_expert_profile(created_name)
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile create failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not create profile:\n{exc}",
+                                parent=win,
+                            )
+                            return
+                        self._populate_expert_profile_vars(
+                            expert_vars,
+                            snapshot["data"],
+                        )
+                        self.controller.log(
+                            f"Expert profile created: {created_name}"
+                        )
+
+                    def duplicate_expert_profile():
+                        source_name = expert_profile_state.get("name")
+                        if not source_name:
+                            return
+                        new_name = _prompt_expert_profile_name(
+                            "Duplicate Profile",
+                            f"Enter a name for the duplicate of '{source_name}':",
+                            default_value=f"{source_name} Copy",
+                        )
+                        if not new_name:
+                            return
+                        try:
+                            profile_data = self._collect_expert_profile_data(
+                                expert_profile_state["data"],
+                                expert_vars,
+                                source_name,
+                            )
+                            if not self._confirm_profile_hdr_metadata_save(
+                                profile_data,
+                                win,
+                            ):
+                                return
+                            duplicated_name = self._duplicate_expert_profile(
+                                source_name,
+                                new_name,
+                                profile_data,
+                            )
+                            snapshot = _load_expert_profile(duplicated_name)
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile duplicate failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not duplicate profile:\n{exc}",
+                                parent=win,
+                            )
+                            return
+                        self._populate_expert_profile_vars(
+                            expert_vars,
+                            snapshot["data"],
+                        )
+                        self.controller.log(
+                            f"Expert profile duplicated: {duplicated_name}"
+                        )
+
+                    def delete_expert_profile():
+                        profile_name = expert_profile_state.get("name")
+                        if not profile_name:
+                            return
+                        if not self._confirm_discard_dirty_expert_changes(
+                            expert_profile_state.get("data"),
+                            expert_vars,
+                            (
+                                "Discard unsaved Expert profile edits and delete "
+                                f"'{profile_name}'?"
+                            ),
+                            win,
+                        ):
+                            return
+                        if not messagebox.askyesno(
+                            "Delete Expert Profile",
+                            f"Delete transcode profile '{profile_name}'?",
+                            parent=win,
+                        ):
+                            return
+                        try:
+                            next_name = self._delete_expert_profile(profile_name)
+                            snapshot = _load_expert_profile(next_name)
+                        except Exception as exc:
+                            self.controller.log(
+                                f"Expert profile delete failed: {exc}"
+                            )
+                            messagebox.showerror(
+                                "Expert Profile",
+                                f"Could not delete profile:\n{exc}",
+                                parent=win,
+                            )
+                            return
+                        self._populate_expert_profile_vars(
+                            expert_vars,
+                            snapshot["data"],
+                        )
+                        self.controller.log(
+                            f"Expert profile deleted: {profile_name}"
+                        )
+
+                    expert_btn_row = tk.Frame(expert_tab, bg="#0d1117")
+                    expert_btn_row.pack(fill="x", padx=16, pady=12)
+                    tk.Button(
+                        expert_btn_row,
+                        text="New",
+                        bg="#30363d",
+                        fg="#c9d1d9",
+                        font=("Segoe UI", 10, "bold"),
+                        command=create_expert_profile,
+                    ).pack(side="left")
+                    tk.Button(
+                        expert_btn_row,
+                        text="Duplicate",
+                        bg="#30363d",
+                        fg="#c9d1d9",
+                        font=("Segoe UI", 10, "bold"),
+                        command=duplicate_expert_profile,
+                    ).pack(side="left", padx=(8, 0))
+                    tk.Button(
+                        expert_btn_row,
+                        text="Delete",
+                        bg="#c94b4b",
+                        fg="white",
+                        font=("Segoe UI", 10, "bold"),
+                        command=delete_expert_profile,
+                    ).pack(side="left", padx=(8, 0))
+                    tk.Button(
+                        expert_btn_row,
+                        text="Apply Expert Profile Changes",
+                        bg="#238636",
+                        fg="white",
+                        font=("Segoe UI", 10, "bold"),
+                        command=apply_expert_profile,
+                    ).pack(side="left", padx=(16, 0))
+                    tk.Button(
+                        expert_btn_row,
+                        text="Set As Default",
+                        bg="#1f6feb",
+                        fg="white",
+                        font=("Segoe UI", 10, "bold"),
+                        command=set_default_expert_profile,
+                    ).pack(side="left", padx=(8, 0))
+
             section(paths_tab, "Apps")
             path_row(paths_tab, "makemkvcon_path", "MakeMKV app")
             path_row(paths_tab, "ffprobe_path",    "ffmpeg / ffprobe folder")
@@ -5564,23 +6949,44 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             _auto_status_var = tk.StringVar()
 
             def _do_auto_locate():
-                mkv, ffp = auto_locate_tools()
-                ffmpeg = auto_locate_ffmpeg()
-                handbrake = auto_locate_handbrake()
+                if "opt_allow_path_tool_resolution" in vars_map:
+                    allow_path_lookup = bool(
+                        vars_map["opt_allow_path_tool_resolution"][1].get()
+                    )
+                else:
+                    allow_path_lookup = self._allow_path_tool_resolution()
+                mkv_result = resolve_makemkvcon(
+                    "",
+                    allow_path_lookup=allow_path_lookup,
+                )
+                ffprobe_result = resolve_ffprobe(
+                    "",
+                    allow_path_lookup=allow_path_lookup,
+                )
+                ffmpeg_result = resolve_ffmpeg(
+                    "",
+                    allow_path_lookup=allow_path_lookup,
+                )
+                handbrake_result = resolve_handbrake(
+                    "",
+                    allow_path_lookup=allow_path_lookup,
+                )
                 results = []
                 notes = []
-                if mkv:
-                    vars_map["makemkvcon_path"][1].set(mkv)
-                    results.append("MakeMKV")
-                if ffp:
-                    vars_map["ffprobe_path"][1].set(ffp)
-                    results.append("FFprobe")
-                if ffmpeg:
-                    vars_map["ffmpeg_path"][1].set(ffmpeg)
-                    results.append("FFmpeg")
-                if handbrake:
-                    vars_map["handbrake_path"][1].set(handbrake)
-                    results.append("HandBrakeCLI")
+                if mkv_result.path:
+                    vars_map["makemkvcon_path"][1].set(mkv_result.path)
+                    results.append(f"MakeMKV ({mkv_result.source})")
+                if ffprobe_result.path:
+                    vars_map["ffprobe_path"][1].set(ffprobe_result.path)
+                    results.append(f"FFprobe ({ffprobe_result.source})")
+                if ffmpeg_result.path:
+                    vars_map["ffmpeg_path"][1].set(ffmpeg_result.path)
+                    results.append(f"FFmpeg ({ffmpeg_result.source})")
+                if handbrake_result.path:
+                    vars_map["handbrake_path"][1].set(handbrake_result.path)
+                    results.append(
+                        f"HandBrakeCLI ({handbrake_result.source})"
+                    )
                 elif handbrake_gui_installed():
                     notes.append(
                         "HandBrake GUI found but HandBrakeCLI is not installed "
@@ -5764,6 +7170,11 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             number_row(advanced_tab, "opt_hard_block_gb",
                        "Stop when free space is below (GB):", 20)
             section(advanced_tab, "FFmpeg")
+            toggle_row(
+                advanced_tab,
+                "opt_allow_path_tool_resolution",
+                "Allow PATH-based tool lookup (advanced, less predictable)",
+            )
             ffmpeg_source_mode_var = choice_map_row(
                 advanced_tab,
                 "opt_ffmpeg_source_mode",
@@ -5829,15 +7240,16 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             btn_row.pack(fill="x", padx=16, pady=12)
 
             def save():
-                # Save expert mode toggle
-                cfg['opt_expert_mode'] = expert_mode_var.get()
                 try:
+                    staged_cfg = dict(cfg)
+                    staged_cfg["opt_expert_mode"] = expert_mode_var.get()
                     tool_validators = {
                         "makemkvcon_path": validate_makemkvcon,
                         "ffprobe_path": validate_ffprobe,
                         "ffmpeg_path": validate_ffmpeg,
                         "handbrake_path": validate_handbrake,
                     }
+                    expert_profile_to_save = None
 
                     # Stage all changes before touching live config.
                     staged = {}
@@ -5893,14 +7305,35 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                                 selected, "timestamp"
                             )
 
-                    # Apply staged changes atomically.
-                    cfg.update(staged)
-                    self.engine.cfg = cfg
+                    if expert_vars and expert_profile_state["name"] is not None:
+                        expert_profile_to_save = self._collect_expert_profile_data(
+                            expert_profile_state["data"],
+                            expert_vars,
+                            expert_profile_state["name"],
+                        )
+                        if not self._confirm_profile_hdr_metadata_save(
+                            expert_profile_to_save,
+                            win,
+                        ):
+                            return
+
+                    staged_cfg.update(staged)
                     if rejected_fields:
                         names = ", ".join(rejected_fields)
                         self.controller.log(
                             f"Settings: invalid numeric input ignored for: {names}"
                         )
+                    saved_name = self._persist_settings_and_profile(
+                        staged_cfg,
+                        expert_profile_name=expert_profile_state["name"],
+                        expert_profile_data=expert_profile_to_save,
+                    )
+                    if saved_name is not None:
+                        expert_profile_state["name"] = saved_name
+                        expert_profile_state["data"] = expert_profile_to_save
+                    cfg.clear()
+                    cfg.update(staged_cfg)
+                    self.engine.cfg = cfg
                     configure_safe_int_debug(
                         cfg.get("opt_debug_safe_int", False),
                         self.controller.log
@@ -5909,7 +7342,6 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                         cfg.get("opt_debug_duration", False),
                         self.controller.log
                     )
-                    save_config(cfg)
                     self.controller.log("Settings saved.")
                 except Exception as e:
                     self.controller.log(f"Error saving settings: {e}")
@@ -5918,15 +7350,22 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                         f"Settings could not be saved:\n{e}",
                         parent=win,
                     )
-                finally:
-                    try:
-                        win.destroy()
-                    except Exception:
-                        pass
-                    self._settings_window = None
-                    done.set()
+                    return
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                self._settings_window = None
+                done.set()
 
             def cancel():
+                if not self._confirm_discard_dirty_expert_changes(
+                    expert_profile_state.get("data"),
+                    expert_vars,
+                    "Discard unsaved Expert profile edits and close Settings?",
+                    win,
+                ):
+                    return
                 try:
                     win.destroy()
                 except Exception:
@@ -6017,15 +7456,13 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 "[Windows.UI.Notifications.ToastNotificationManager]"
                 "::CreateToastNotifier('JellyRip.App.1').Show($n);"
             )
-            _ps = (
-                shutil.which("powershell")
-                or r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-            )
+            _ps = get_powershell_executable()
             subprocess.Popen(
                 [_ps, "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps,
                  title, message],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                shell=False,
                 **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
             )
         except Exception:
@@ -6139,15 +7576,15 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
                 "Use Smart Rip for this movie disc?\n\n"
                 "Yes = auto-pick main feature\n"
                 "No = manual title selection\n"
-                "Cancel = manual title selection",
+                "Cancel = stop",
                 parent=self,
             )
         )
         if choice is None:
             self.controller.log(
-                "Movie mode prompt closed — defaulting to manual selection."
+                "Movie mode prompt cancelled before scan."
             )
-            return self.controller.run_movie_disc
+            return None
         if choice:
             return self.controller.run_smart_rip
         return self.controller.run_movie_disc
@@ -6168,9 +7605,19 @@ class JellyRipperGUI(tk.Tk, UIAdapter):
             )
             return
 
-        src = getattr(self.engine, "_ffprobe_source", "")
-        if src:
-            self.controller.log(f"ffprobe resolved via: {src}")
+        makemkv_src = getattr(self.engine, "_makemkvcon_source", "")
+        makemkv_path = getattr(self.engine, "_resolved_makemkvcon", "")
+        if makemkv_src and makemkv_path:
+            self.controller.log(
+                f"MakeMKV resolved via {makemkv_src}: {makemkv_path}"
+            )
+
+        ffprobe_src = getattr(self.engine, "_ffprobe_source", "")
+        ffprobe_path = getattr(self.engine, "_resolved_ffprobe", "")
+        if ffprobe_src and ffprobe_path:
+            self.controller.log(
+                f"ffprobe resolved via {ffprobe_src}: {ffprobe_path}"
+            )
 
         temp_folder = os.path.normpath(
             self.cfg.get("temp_folder", DEFAULTS["temp_folder"])
