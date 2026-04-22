@@ -11,6 +11,8 @@ should be treated as non-final.
 ## Project Status
 
 - Current unstable line: `v1.0.18` (latest unstable pre-release)
+- MAIN release page: [v1.0.18](https://github.com/unexpear/JellyRip/releases/tag/v1.0.18)
+- AI release page: [pending]() (intentionally blank here)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
