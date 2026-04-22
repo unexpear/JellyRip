@@ -65,7 +65,7 @@ paths before the first rip.
 - **Movie Disc**: interactive movie ripping with metadata prompts
 - **Dump All**: raw dump mode for all titles
 - **Organize Existing MKVs**: move and sort already-ripped files
-- **Prep for and use FFmep or handbrake
+- **Prep for and use FFmep**: or handbrake
 
 ## Configuration
 
