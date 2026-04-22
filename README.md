@@ -61,11 +61,11 @@ paths before the first rip.
 
 ## Main Workflows
 
-- **TV Disc**: interactive disc ripping with episode-oriented organization
-- **Movie Disc**: interactive movie ripping with metadata prompts
-- **Dump All**: raw dump mode for all titles
-- **Organize Existing MKVs**: move and sort already-ripped files
-- **Prep for and use FFmep**: or handbrake
+- **TV Disc**: interactive disc ripping with episode-oriented organization(some testing)
+- **Movie Disc**: interactive movie ripping with metadata prompts(some testing)
+- **Dump All**: raw dump mode for all titles(some testing)
+- **Organize Existing MKVs**: move and sort already-ripped files( not tested )
+- **Prep for and use FFmep or handbrake**: simple transcoding( not tested )
 
 ## Configuration
 
