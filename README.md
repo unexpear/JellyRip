@@ -24,7 +24,7 @@ should be treated as non-final.
 - rips movie and TV discs with MakeMKV
 - validates outputs with ffprobe and file stabilization checks
 - organizes files into Jellyfin-style movie and TV folder structures
-- supports interactive, unattended, and smart-rip workflows
+- supports interactive, simi-unattended, and smart-rip workflows
 - keeps session logs and end-of-run warning summaries
 
 ## Quick Start
@@ -63,11 +63,9 @@ paths before the first rip.
 
 - **TV Disc**: interactive disc ripping with episode-oriented organization
 - **Movie Disc**: interactive movie ripping with metadata prompts
-- **Smart Rip**: auto-pick the best main feature
 - **Dump All**: raw dump mode for all titles
 - **Organize Existing MKVs**: move and sort already-ripped files
-- **Unattended Modes**: operator-assisted multi-disc flows with
-  blocking confirmations and safety checks
+- **Prep for and use FFmep or handbrake
 
 ## Configuration
 
