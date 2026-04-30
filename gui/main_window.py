@@ -7222,6 +7222,8 @@ class JellyRipperGUI(SecureTk, UIAdapter):
                 "Extra MakeMKV args (rip commands):"
             )
             section(logs_tab, "Log Storage")
+            toggle_row(logs_tab, "opt_save_logs",
+                       "Save logs to disk")
             number_row(
                 logs_tab,
                 "opt_log_cap_lines", "Max log lines kept in memory:", 300000
