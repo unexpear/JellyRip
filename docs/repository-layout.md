@@ -13,6 +13,7 @@ That is intentional for this project type because the main workflow is running a
 - `gui/` - tkinter interface
 - `utils/` - helper modules
 - `shared/` - shared runtime defaults and cross-module constants
+- `tools/` - developer utilities, including the UI sandbox launcher for hardware-free flow checks
 - `tests/` - automated regression coverage
 - `docs/` - repository and architecture documentation
 - `installer/` - installer definition assets

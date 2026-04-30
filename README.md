@@ -101,6 +101,7 @@ App-directory `.env` files are no longer loaded at startup.
 - [engine](engine) - MakeMKV, ffprobe, and file operations
 - [utils](utils) - helper modules
 - [shared](shared) - shared runtime defaults and constants
+- [tools/ui_sandbox_launcher.py](tools/ui_sandbox_launcher.py) - UI-only sandbox launcher for exercising flows without disc hardware or external tools
 - [tests](tests) - automated regression coverage
 - [docs/architecture.md](docs/architecture.md) - architecture overview
 - [docs/repository-layout.md](docs/repository-layout.md) - repository layout rationale
@@ -109,6 +110,12 @@ App-directory `.env` files are no longer loaded at startup.
 
 ```bash
 python -m pytest -q
+```
+
+For manual UI flow checks without MakeMKV, ffprobe, or disc hardware:
+
+```bash
+python tools/ui_sandbox_launcher.py
 ```
 
 Manual live-rip validation worksheet:
