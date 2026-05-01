@@ -37,6 +37,12 @@ Owner: GitHub `unexpear`. License: GPLv3.
 
 ## Working preferences
 - **Local writes are fine; no git updates without explicit go-ahead.** Don't commit, push, tag, or run `release.bat` unless I say so. Editing files locally is OK.
+- **No git worktrees.** Work directly in this directory. Do not create extra worktrees, and if a `.claude/worktrees/<name>` folder appears, remove it. From the repository root:
+  ```bash
+  git worktree remove --force .claude/worktrees/<name>
+  git branch -D claude/<name>
+  ```
+  If files are locked because another session has them open, close that session and remove any leftover folder with `Remove-Item -Recurse -Force .claude/worktrees/<name>` from PowerShell. `.claude/worktrees/` is in `.gitignore` so accidental appearances will not be committed.
 
 ## Current focus
 (empty — update as we work)
