@@ -24,7 +24,7 @@ should be treated as non-final.
 - rips movie and TV discs with MakeMKV
 - validates outputs with ffprobe and file stabilization checks
 - organizes files into Jellyfin-style movie and TV folder structures
-- supports interactive, simi-unattended, and smart-rip workflows
+- supports interactive, semi-unattended, and smart-rip workflows
 - keeps session logs and end-of-run warning summaries
 
 ## Quick Start
@@ -65,7 +65,7 @@ paths before the first rip.
 - **Movie Disc**: interactive movie ripping with metadata prompts(some testing)
 - **Dump All**: raw dump mode for all titles(some testing)
 - **Organize Existing MKVs**: move and sort already-ripped files( not tested )
-- **Prep for and use FFmep or handbrake**: simple transcoding( not tested )
+- **Prep for and use FFmpeg or handbrake**: simple transcoding( not tested )
 
 ## Configuration
 
