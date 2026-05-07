@@ -12,10 +12,10 @@ Close to stable, but still lightly tested.
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear-softwhere/JellyRipAI/releases/download/v1.0.19/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear-softwhere/JellyRipAI/releases/download/v1.0.19/JellyRipInstaller.exe)
-- Release page: [v1.0.19 release](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/v1.0.19)
-- All releases: [GitHub Releases](https://github.com/unexpear-softwhere/JellyRipAI/releases)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/ai-v1.0.19/JellyRipAI.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/ai-v1.0.19/JellyRipAIInstaller.exe)
+- Release page: [v1.0.19 release](https://github.com/unexpear/JellyRip/releases/tag/ai-v1.0.19)
+- All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
 
 ## What This Fork Adds
 
