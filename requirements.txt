@@ -1,12 +1,18 @@
-# JellyRip dependencies
+# JellyRip runtime dependencies
 # Install with: pip install -r requirements.txt
+#
+# For tests + building the bundle, use requirements-dev.txt instead
+# (it pulls these in transitively and adds pyinstaller / pytest /
+# pytest-qt).
 
-# No external runtime dependencies required
-# tkinter is included with Python on Windows
-# All imports are standard library:
-# - subprocess, os, glob, shutil, json, re, platform
-# - datetime, concurrent.futures, time, threading, queue
-# - tkinter (built-in)
+# ===== GUI =====
+# PySide6 is the Qt GUI toolkit.  Phase 3 retired the legacy tkinter
+# UI; PySide6 is the only shipped UI as of v1.0.0.  >=6.5 is required
+# for QtMultimedia features used by the MKV preview dialog
+# (gui_qt/preview_widget.py).
+PySide6>=6.5
 
-# For building the executable:
-# pip install pyinstaller
+# ===== Standard library only beyond PySide6 =====
+# Everything else JellyRip uses comes from the Python standard library
+# (subprocess, os, glob, shutil, json, re, platform, datetime,
+# concurrent.futures, time, threading, queue).

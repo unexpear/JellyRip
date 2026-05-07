@@ -6,7 +6,7 @@
 release.bat <version>
 ```
 
-Example: `release.bat 1.0.18`
+Example: `release.bat 1.0.19`
 
 ## Pipeline (8 steps, abort-on-fail)
 

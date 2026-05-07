@@ -60,12 +60,18 @@ from engine.ripper_engine import RipperEngine
 
 from controller.controller import RipperController
 
-from gui.main_window import JellyRipperGUI
+# JellyRipperGUI (the tkinter main-window class) was retired in
+# Phase 3h (2026-05-04). The PySide6 UI lives in ``gui_qt/``. New code
+# should import directly from ``gui_qt.app`` (e.g. ``run_qt_app``)
+# rather than going through this compatibility shim.
+#
+# The legacy attribute name is no longer re-exported.  If any
+# consumer outside this repo still referenced ``JellyRip.JellyRipperGUI``
+# they need to migrate to the Qt path.
 
 __all__ = [
     "CONFIG_FILE",
     "DEFAULTS",
-    "JellyRipperGUI",
     "RIP_ATTEMPT_FLAGS",
     "RipperController",
     "RipperEngine",
@@ -105,7 +111,8 @@ __all__ = [
 # -----------------------------------------------------------------------------
 # Main entrypoint: main.py
 # Legacy compatibility entrypoint: JellyRip.py
-# Main GUI entrypoint: gui/main_window.py
+# Main GUI entrypoint: gui_qt/main_window.py (Qt) — retired tkinter
+# implementation lived at gui/main_window.py until Phase 3h, 2026-05-04
 # Workflow/controller logic: controller/controller.py
 # Disc + file operations engine: engine/ripper_engine.py
 # Config load/save and defaults bridge: config.py

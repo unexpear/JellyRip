@@ -1,118 +1,98 @@
-"""Main entrypoint for the split package layout."""
+"""Main entrypoint for the split package layout.
+
+**Multi-instance / multi-drive support (added 2026-05-05):**
+
+Run a separate instance per optical drive by passing
+``--profile NAME``::
+
+    JellyRip.exe --profile drive-a
+    JellyRip.exe --profile drive-b
+
+Each profile gets its own config dir, log file, and Windows
+taskbar identity — the two windows don't fight over state, and
+each can target a different ``opt_drive_index`` so both rip in
+parallel.  Without ``--profile`` the install behaves exactly like
+before (default config dir, single instance).
+"""
 
 import os
 import sys
 from pathlib import Path
 
-from config import load_startup_config
-from gui.secure_tk import SecureTk
-from shared.runtime import get_config_dir
 
-JellyRipperGUI = None
+def _bootstrap_profile_from_argv() -> None:
+    """Pull ``--profile NAME`` (or ``--profile=NAME``) out of
+    ``sys.argv`` and stash it in the env var that ``shared.runtime``
+    reads.  Runs BEFORE anything else imports ``shared.runtime`` so
+    the per-profile config dir takes effect on first read.
+    """
+    argv = sys.argv
+    consumed: list[int] = []
+    profile = ""
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--profile":
+            if i + 1 < len(argv):
+                profile = argv[i + 1].strip()
+                consumed.extend((i, i + 1))
+                i += 2
+                continue
+            consumed.append(i)
+            i += 1
+            continue
+        if arg.startswith("--profile="):
+            profile = arg.split("=", 1)[1].strip()
+            consumed.append(i)
+            i += 1
+            continue
+        i += 1
+    if consumed:
+        sys.argv = [a for idx, a in enumerate(argv) if idx not in set(consumed)]
+    if profile:
+        os.environ["JELLYRIP_PROFILE"] = profile
+
+
+_bootstrap_profile_from_argv()
+
+
+from config import load_startup_config
+from shared.runtime import (
+    get_active_profile,
+    get_config_dir,
+    get_profile_aumid,
+    get_profile_window_title,
+)
 
 
 class _NullStartupWindow:
+    """No-op startup-status holder — fallback when the Qt splash
+    can't be built.
+
+    Originally introduced in the 2026-05-04 v1-blocker fix: the
+    previous tkinter ``_StartupWindow`` imported
+    ``gui.secure_tk.SecureTk`` at module load time, which forced a
+    tkinter import on every ``main.py`` run and broke the bundled
+    ``.exe`` on the Qt path.
+
+    Today the no-op is the safety net: ``_create_startup_window``
+    tries to build a ``gui_qt.splash.JellyRipSplash`` first, and
+    only returns ``_NullStartupWindow`` if that raises (no display,
+    Qt failing to load, etc.).  The splash itself is a UX nicety —
+    the app must still start without it.
+
+    See ``docs/handoffs/phase-3h-tkinter-retirement.md`` for the
+    history and ``gui_qt/splash.py`` for the real splash.
+    """
+
     def set_status(self, _message: str) -> None:
         return None
 
     def close(self) -> None:
         return None
 
-
-class _StartupWindow:
-    def __init__(self) -> None:
-        self._root = None
-        self._status_var = None
-
-        try:
-            import tkinter as tk
-        except Exception:
-            return
-
-        root = None
-        try:
-            root = SecureTk()
-            root.title("Jellyfin Raw Ripper")
-            root.configure(bg="#0d1117")
-            root.resizable(False, False)
-            root.protocol("WM_DELETE_WINDOW", lambda: None)
-
-            width = 420
-            height = 140
-            frame = tk.Frame(root, bg="#0d1117", padx=22, pady=18)
-            frame.pack(fill="both", expand=True)
-
-            title = tk.Label(
-                frame,
-                text="Jellyfin Raw Ripper",
-                bg="#0d1117",
-                fg="#58a6ff",
-                font=("Segoe UI", 16, "bold"),
-                anchor="w",
-            )
-            title.pack(fill="x")
-
-            subtitle = tk.Label(
-                frame,
-                text="Starting up",
-                bg="#0d1117",
-                fg="#f5f9ff",
-                font=("Segoe UI", 10),
-                anchor="w",
-                pady=6,
-            )
-            subtitle.pack(fill="x")
-
-            self._status_var = tk.StringVar(value="Preparing startup...")
-            status = tk.Label(
-                frame,
-                textvariable=self._status_var,
-                bg="#0d1117",
-                fg="#a8b7ca",
-                font=("Segoe UI", 9),
-                anchor="w",
-            )
-            status.pack(fill="x")
-
-            root.update_idletasks()
-            screen_width = max(1, int(root.winfo_screenwidth()))
-            screen_height = max(1, int(root.winfo_screenheight()))
-            pos_x = max(0, (screen_width - width) // 2)
-            pos_y = max(0, (screen_height - height) // 2)
-            root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
-            root.update()
-            self._root = root
-        except Exception:
-            if root is not None:
-                try:
-                    root.destroy()
-                except Exception:
-                    pass
-            self._root = None
-            self._status_var = None
-
-    def set_status(self, message: str) -> None:
-        root = self._root
-        status_var = self._status_var
-        if root is None or status_var is None:
-            return
-        try:
-            status_var.set(str(message).strip() or "Loading...")
-            root.update_idletasks()
-            root.update()
-        except Exception:
-            pass
-
-    def close(self) -> None:
-        root = self._root
-        self._root = None
-        self._status_var = None
-        if root is None:
-            return
-        try:
-            root.destroy()
-        except Exception:
-            pass
+    def finish_for(self, _window: "object") -> None:
+        return None
 
 
 def _bootstrap_tk_paths() -> None:
@@ -159,8 +139,10 @@ def _set_windows_app_user_model_id() -> None:
     import logging
 
     try:
+        # Use the profile-aware AUMID so two instances pinned to
+        # different drives appear as separate apps on the taskbar.
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "JellyRip.App.1"
+            get_profile_aumid()
         )
     except Exception as e:
         logging.warning("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
@@ -171,19 +153,53 @@ def _prepare_startup_environment() -> None:
     get_config_dir()
 
 
-def _resolve_gui_class():
-    global JellyRipperGUI
-    if JellyRipperGUI is None:
-        from gui.main_window import JellyRipperGUI as _JellyRipperGUI
+def _read_show_splash_pref() -> bool:
+    """Cheap config peek — reads just ``opt_show_splash`` from
+    config.json without going through the full validating loader.
 
-        JellyRipperGUI = _JellyRipperGUI
-    return JellyRipperGUI
+    Used by ``_create_startup_window`` because the splash needs to
+    decide whether to render BEFORE ``load_startup_config`` runs.
+    Defaults to True on any failure (no config yet on first run,
+    JSON parse error, etc.) — splash on is the documented default.
+    """
+    try:
+        from shared.runtime import get_config_dir
+        config_path = get_config_dir() / "config.json"
+        if not config_path.is_file():
+            return True
+        import json
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return bool(data.get("opt_show_splash", True))
+    except Exception:
+        return True
 
 
 def _create_startup_window():
+    """Build the splash screen.
+
+    Tries the Qt-native ``JellyRipSplash`` first; falls back to the
+    ``_NullStartupWindow`` no-op if the user disabled the splash via
+    the Appearance tab, or if anything goes wrong (PySide6 failing
+    to load, no display surface, etc.).  The splash is cosmetic —
+    startup must still succeed without it.
+    """
+    import logging
+
+    if not _read_show_splash_pref():
+        return _NullStartupWindow()
+
     try:
-        return _StartupWindow()
-    except Exception:
+        from gui_qt.splash import JellyRipSplash
+        from shared.runtime import __version__ as _version
+    except Exception as e:
+        logging.warning("Splash unavailable, falling back to no-op: %s", e)
+        return _NullStartupWindow()
+
+    try:
+        return JellyRipSplash(version=_version)
+    except Exception as e:
+        logging.warning("Splash construction failed: %s", e)
         return _NullStartupWindow()
 
 
@@ -195,34 +211,24 @@ def main() -> None:
     try:
         startup_window.set_status("Loading settings...")
         startup = load_startup_config()
+
+        # PySide6 is the only UI path as of 2026-05-04.  The
+        # ``opt_use_pyside6`` feature flag was removed in this
+        # commit; tkinter UI files in ``gui/`` will be deleted in
+        # the Phase 3h retirement pass (see
+        # ``docs/handoffs/phase-3h-tkinter-retirement.md``).  Until
+        # that pass runs, the tkinter files stay on disk as
+        # fallback safety, but ``main.py`` no longer reaches them.
         startup_window.set_status("Loading interface...")
-        gui_class = _resolve_gui_class()
-        startup_window.set_status("Opening app...")
-        startup_window.close()
-        startup_window = _NullStartupWindow()
-        app = gui_class(
-            startup.config,
-            startup_context={
-                "issues": [issue.message for issue in startup.issues],
-                "open_settings": startup.open_settings,
-            },
-        )
+        from gui_qt.app import run_qt_app
+        # Keep the splash visible through ``run_qt_app``'s window
+        # construction.  ``run_qt_app`` calls
+        # ``startup_window.finish_for(window)`` right after
+        # ``window.show()``, so the splash fades cleanly into the
+        # real UI without a visible gap.
+        raise SystemExit(run_qt_app(startup.config, splash=startup_window))
     finally:
         startup_window.close()
-
-    try:
-        app.mainloop()
-    except KeyboardInterrupt:
-        engine = getattr(app, "engine", None)
-        abort = getattr(engine, "abort", None)
-        if callable(abort):
-            abort()
-        try:
-            app.destroy()
-        except Exception:
-            pass
-        print("console interrupt", file=sys.stderr)
-        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
@@ -232,13 +238,17 @@ if __name__ == "__main__":
 # -----------------------------------------------------------------------------
 # Project file map (quick navigation when chat history is unavailable)
 # -----------------------------------------------------------------------------
-# Main GUI entrypoint: gui/main_window.py
+# Main GUI entrypoint: gui_qt/app.py (run_qt_app)
+# Startup splash (Qt-native): gui_qt/splash.py (JellyRipSplash)
+# GUI window + screens: gui_qt/ (main_window, setup_wizard, settings, etc.)
 # Workflow/controller logic: controller/controller.py
 # Disc + file operations engine: engine/ripper_engine.py
 # Config load/save and defaults bridge: config.py
 # Shared defaults/runtime primitives: shared/runtime.py
+# Shared dataclasses (wizard + session setup): shared/wizard_types.py + shared/session_setup_types.py
 # Utility exports: utils/__init__.py
 # Session state machine: utils/state_machine.py
 # Fallback policy gateway: utils/fallback.py
 # File selection helpers: utils/media.py
 # Behavioral tests: tests/test_behavior_guards.py
+# tkinter `gui/` files retire in Phase 3h — see docs/handoffs/phase-3h-tkinter-retirement.md

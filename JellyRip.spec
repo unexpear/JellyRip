@@ -170,22 +170,86 @@ def _find_bundle_file(filename: str) -> str:
     raise SystemExit(search_hint)
 
 
+def _collect_gui_qt_qss() -> list[tuple[str, str]]:
+    """Bundle the 6 generated QSS files under ``gui_qt/qss/`` so the
+    runtime ``gui_qt.theme.load_theme`` can find them post-bundle.
+
+    Phase 3a-themes generates the QSS files via
+    ``tools/build_qss.py``; they live alongside the source and need
+    to ship in the bundle's ``gui_qt/qss/`` data directory.
+
+    Empty placeholder ``.qss`` files are filtered out by
+    ``gui_qt.theme._is_real_theme_file`` at runtime — but we bundle
+    them anyway so the directory layout matches dev-time.
+    """
+    qss_dir = PROJECT_ROOT / "gui_qt" / "qss"
+    out: list[tuple[str, str]] = []
+    if not qss_dir.is_dir():
+        return out
+    for path in sorted(qss_dir.glob("*.qss")):
+        out.append((str(path), "gui_qt/qss"))
+    return out
+
+
+# Submodules of ``gui_qt`` that the shell + handlers import lazily
+# (inside method bodies / via deferred imports).  PyInstaller's
+# static analyzer doesn't always pick these up — list them
+# explicitly so they always end up in the bundle.
+GUI_QT_HIDDEN_IMPORTS: list[str] = [
+    "gui_qt",
+    "gui_qt.app",
+    "gui_qt.theme",
+    "gui_qt.themes",
+    "gui_qt.main_window",
+    "gui_qt.formatters",
+    "gui_qt.log_pane",
+    "gui_qt.splash",
+    "gui_qt.status_bar",
+    "gui_qt.thread_safety",
+    "gui_qt.tray_icon",
+    "gui_qt.workflow_launchers",
+    "gui_qt.utility_handlers",
+    "gui_qt.drive_handler",
+    "gui_qt.preview_widget",
+    "gui_qt.setup_wizard",
+    "gui_qt.dialogs",
+    "gui_qt.dialogs.ask",
+    "gui_qt.dialogs.disc_tree",
+    "gui_qt.dialogs.duplicate_resolution",
+    "gui_qt.dialogs.info",
+    "gui_qt.dialogs.list_picker",
+    "gui_qt.dialogs.session_setup",
+    "gui_qt.dialogs.space_override",
+    "gui_qt.dialogs.temp_manager",
+    "gui_qt.settings",
+    "gui_qt.settings.dialog",
+    "gui_qt.settings.tab_appearance",
+    "gui_qt.settings.tab_everyday",
+    "gui_qt.settings.tab_paths",
+    "gui_qt.settings.tab_reliability",
+]
+
+# PySide6 modules the migration uses.  PySide6 6.0+ ships its own
+# PyInstaller hooks that auto-collect most of QtCore/QtGui/QtWidgets,
+# but listing them as hidden imports adds a safety net (especially
+# for QtMultimedia, which is opt-in and used only by the preview
+# widget — easy for the static analyzer to miss if the import is
+# inside ``gui_qt/preview_widget.py`` only).
+PYSIDE6_HIDDEN_IMPORTS: list[str] = [
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+]
+
+
+GUI_QT_DATAS = _collect_gui_qt_qss()
+
+
 APP_VERSION = _read_app_version()
 APP_VERSION_INFO = _build_version_info(APP_VERSION)
-PYTHON_BASE = Path(getattr(sys, "base_prefix", "") or "")
-PYTHON_DLLS = PYTHON_BASE / "DLLs"
-PYTHON_TCL_ROOT = PYTHON_BASE / "tcl"
-TCL_BUILD_DIR = PYTHON_TCL_ROOT / "tcl8.6"
-TK_BUILD_DIR = PYTHON_TCL_ROOT / "tk8.6"
-TK_DATAS = _collect_tree(TCL_BUILD_DIR, "_tcl_data")
-TK_DATAS += _collect_tree(TK_BUILD_DIR, "_tk_data")
-TK_BINARIES = []
-for dll_name in ("_tkinter.pyd", "tcl86t.dll", "tk86t.dll"):
-    dll_path = PYTHON_DLLS / dll_name
-    if dll_path.is_file():
-        TK_BINARIES.append((str(dll_path), "."))
 FFMPEG_BINARIES = [(_find_bundle_file(name), ".") for name in FFMPEG_FILENAMES]
-FFMPEG_BINARIES = [*TK_BINARIES, *FFMPEG_BINARIES]
 FFMPEG_NOTICE_DATAS = [
     (_find_bundle_file(name), "licenses/ffmpeg") for name in FFMPEG_NOTICE_FILENAMES
 ]
@@ -195,22 +259,22 @@ a = Analysis(
     pathex=[str(PROJECT_ROOT)],
     binaries=FFMPEG_BINARIES,
     datas=[
-        *TK_DATAS,
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
         *FFMPEG_NOTICE_DATAS,
+        # Phase 3a-themes — ship the 6 generated QSS theme files.
+        *GUI_QT_DATAS,
     ],
     hiddenimports=[
-        "tkinter",
-        "tkinter.ttk",
-        "tkinter.messagebox",
-        "tkinter.filedialog",
-        "tkinter.simpledialog",
-        "_tkinter",
+        # Phase 3h close-out (2026-05-05) — tkinter retired entirely.
+        # Qt is the only UI; the gui/ directory and the runtime
+        # hook are gone.
+        *GUI_QT_HIDDEN_IMPORTS,
+        *PYSIDE6_HIDDEN_IMPORTS,
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[str(PROJECT_ROOT / "pyinstaller_tk_runtime_hook.py")],
+    runtime_hooks=[],
     excludes=[],
     noarchive=False,
     optimize=0,

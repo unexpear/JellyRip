@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JellyRip — Phase 3a Theme Preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="themes.jsx?v=hc2"></script>
+<script type="text/babel" src="qt-mock.jsx?v=hc2"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useMemo } = React;
+const THEMES = window.JR_THEMES;
+const { contrastRatio, wcagRating } = window.JR_WCAG;
+
+// Build the QSS string the same way the Phase 3a port will. Tokens
+// match 1:1 — what you preview here is what lands in gui_qt/qss/<id>.qss.
+function buildQss(theme) {
+  const t = theme.tokens;
+  return `/* ${theme.id}.qss  —  ${theme.name}
+ * ${theme.subtitle}
+ * Generated from JellyRip Phase 3a theme preview (MAIN).
+ * Tokens map 1:1 to the React preview at /Theme Preview.html
+ */
+
+QMainWindow, QDialog, QWidget {
+    background-color: ${t.bg};
+    color: ${t.fg};
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 10pt;
+}
+
+/* Header label  ("JellyRip" app title) */
+QLabel#header_title {
+    background-color: ${t.card};
+    color: ${t.accent};
+    font-size: 22pt;
+    font-weight: 700;
+    padding: 12px 0;
+}
+
+/* Drive label / status / generic muted text */
+QLabel { color: ${t.fg}; }
+QLabel[muted="true"] { color: ${t.muted}; }
+QLabel#status_label { color: ${t.accent}; font-style: italic; }
+
+/* Mode buttons — five action variants by [role] */
+QPushButton {
+    background-color: ${t.input};
+    color: ${t.muted};
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+}
+QPushButton:hover { background-color: ${t.hover}; color: ${t.fg}; }
+
+QPushButton[role="go"] {
+    background-color: ${t.go};
+    color: ${t.goFg};
+    font-weight: 600;
+    padding: 14px 22px;
+}
+QPushButton[role="info"] {
+    background-color: ${t.info};
+    color: ${t.infoFg};
+    font-weight: 600;
+    padding: 14px 22px;
+}
+QPushButton[role="alt"] {
+    background-color: ${t.alt};
+    color: ${t.altFg};
+    font-weight: 600;
+    padding: 14px 22px;
+}
+QPushButton[role="warn"] {
+    background-color: ${t.warn};
+    color: ${t.warnFg};
+    font-weight: 600;
+    padding: 14px 22px;
+}
+QPushButton[role="danger"] {
+    background-color: ${t.danger};
+    color: ${t.dangerFg};
+    font-weight: 700;
+}
+
+/* QComboBox / QLineEdit */
+QLineEdit, QComboBox {
+    background-color: ${t.input};
+    color: ${t.fg};
+    border: 1px solid ${t.border};
+    border-radius: 4px;
+    padding: 5px 8px;
+    selection-background-color: ${t.selection};
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid ${t.accent};
+}
+
+/* Live Log — QTextEdit */
+QTextEdit#log_text {
+    background-color: ${t.logBg};
+    color: ${t.fg};
+    border: 1px solid ${t.border};
+    border-radius: 3px;
+    font-family: "Consolas", monospace;
+    font-size: 10pt;
+}
+
+/* QProgressBar */
+QProgressBar {
+    background-color: ${t.input};
+    border: 1px solid ${t.border};
+    border-radius: 4px;
+    text-align: center;
+    color: ${t.fg};
+}
+QProgressBar::chunk { background-color: ${t.accent}; }
+`;
+}
+
+function highlightQss(s) {
+  return s
+    .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="qss-comment">$1</span>')
+    .replace(/^([A-Z#][A-Za-z0-9_]+(?:::?[a-zA-Z\-]+)?(?:\[[^\]]+\])?(?:,\s*[A-Z#][A-Za-z0-9_]+(?:::?[a-zA-Z\-]+)?(?:\[[^\]]+\])?)*\s*\{)/gm, '<span class="qss-selector">$1</span>')
+    .replace(/(^\s+)([a-z\-]+)(:)/gm, '$1<span class="qss-prop">$2</span>$3')
+    .replace(/(:\s*)([^;]+)(;)/g, '$1<span class="qss-val">$2</span>$3');
+}
+
+function ContrastCell({ label, fg, bg }) {
+  const ratio = contrastRatio(fg, bg);
+  const rating = wcagRating(ratio);
+  const ratingKey = rating.label.replace(/\s/g, "");
+  return (
+    <div className="contrast-cell">
+      <div className="contrast-sample" style={{ background: bg, color: fg }}>
+        {label}
+      </div>
+      <div className="contrast-meta">
+        <span className="contrast-meta-label">{fg.toUpperCase()} on {bg.toUpperCase()}</span>
+      </div>
+      <div className="contrast-meta">
+        <span className={"contrast-meta-rating rating-" + ratingKey}>{rating.label}</span>
+        <span>{ratio.toFixed(2)} : 1</span>
+      </div>
+    </div>
+  );
+}
+
+function ThemeCard({ theme, active, onClick }) {
+  const t = theme.tokens;
+  const r = contrastRatio(t.fg, t.bg);
+  const rating = wcagRating(r);
+  return (
+    <button
+      className={"theme-card" + (active ? " active" : "")}
+      onClick={onClick}
+    >
+      <div className="theme-swatches">
+        <span style={{ background: t.bg }} />
+        <span style={{ background: t.accent }} />
+        <span style={{ background: t.go }} />
+        <span style={{ background: t.fg }} />
+      </div>
+      <div className="theme-card-meta">
+        <div className="theme-card-name">{theme.name}</div>
+        <div className="theme-card-sub">{theme.subtitle}</div>
+      </div>
+      <div className={"theme-card-rating rating-" + rating.label.replace(/\s/g, "")}>
+        {r.toFixed(1)}
+      </div>
+    </button>
+  );
+}
+
+function App() {
+  const [activeId, setActiveId] = useState("dark_github");
+  const [showQss, setShowQss] = useState(false);
+
+  const theme = useMemo(() => THEMES.find(t => t.id === activeId), [activeId]);
+
+  const t = theme.tokens;
+  const bodyContrast = contrastRatio(t.fg, t.bg);
+  const goContrast = contrastRatio(t.goFg, t.go);
+
+  const contrastCells = [
+    { label: "Body text",       fg: t.fg,       bg: t.bg },
+    { label: "Muted text",      fg: t.muted,    bg: t.bg },
+    { label: "Card text",       fg: t.fg,       bg: t.card },
+    { label: "Header title",    fg: t.accent,   bg: t.card },
+    { label: "Status text",     fg: t.accent,   bg: t.bg },
+    { label: "Rip Disc (go)",   fg: t.goFg,     bg: t.go },
+    { label: "Dump (info)",     fg: t.infoFg,   bg: t.info },
+    { label: "Organize (alt)",  fg: t.altFg,    bg: t.alt },
+    { label: "Prep (warn)",     fg: t.warnFg,   bg: t.warn },
+    { label: "Stop (danger)",   fg: t.dangerFg, bg: t.danger },
+    { label: "Log prompt",      fg: t.promptFg, bg: t.logBg },
+    { label: "Log answer",      fg: t.answerFg, bg: t.logBg },
+    { label: "Input field",     fg: t.fg,       bg: t.input },
+    { label: "Border on bg",    fg: t.border,   bg: t.bg },
+  ];
+
+  return (
+    <div className="app">
+      <aside className="app-sidebar">
+        <div className="app-brand">
+          <span className="app-brand-name">JellyRip</span>
+          <span className="app-brand-tag">phase 3a</span>
+        </div>
+        <p className="app-brand-sub">Six candidate QSS themes for the MAIN PySide6 port. Same layout as today's tkinter app — only the palette swaps.</p>
+
+        <div className="app-section-label">Themes</div>
+        <div className="theme-list">
+          {THEMES.map(th => (
+            <ThemeCard
+              key={th.id}
+              theme={th}
+              active={th.id === activeId}
+              onClick={() => setActiveId(th.id)}
+            />
+          ))}
+        </div>
+
+        <div className="app-section-label">View</div>
+        <div className="app-toggles">
+          <label className="app-toggle">
+            <span>Show generated .qss</span>
+            <input type="checkbox" checked={showQss} onChange={e => setShowQss(e.target.checked)} />
+          </label>
+        </div>
+
+        <div className="app-foot">
+          Tokens map 1:1 to PySide6 QSS. The .qss panel below is what
+          will land in <code>gui_qt/qss/&lt;id&gt;.qss</code> on MAIN.
+        </div>
+      </aside>
+
+      <main className="app-main">
+        <header className="canvas-head">
+          <div>
+            <h1>Theme preview — pick what ships in Phase 3a</h1>
+            <p>Same layout as today's tkinter MAIN — header, drive row, two button rows, utility row, progress, status, live log, input bar. Only the palette changes between themes. WCAG contrast is computed live on every fg/bg pair below.</p>
+          </div>
+          <div className="canvas-head-meta">{theme.id}.qss</div>
+        </header>
+
+        <section className="theme-summary">
+          <div>
+            <div className="theme-summary-name">{theme.name}</div>
+            <div className="theme-summary-notes">{theme.notes}</div>
+          </div>
+          <div className="theme-summary-contrasts">
+            <div className="contrast-pill">
+              <div className="contrast-pill-label">Body</div>
+              <div className="contrast-pill-ratio">{bodyContrast.toFixed(2)}</div>
+              <div className="contrast-pill-label">{wcagRating(bodyContrast).label}</div>
+            </div>
+            <div className="contrast-pill">
+              <div className="contrast-pill-label">Go CTA</div>
+              <div className="contrast-pill-ratio">{goContrast.toFixed(2)}</div>
+              <div className="contrast-pill-label">{wcagRating(goContrast).label}</div>
+            </div>
+          </div>
+        </section>
+
+        <JellyRipMock theme={theme} />
+
+        <section className="contrast-inspector">
+          <h2>Contrast inspector</h2>
+          <p>Every foreground/background pair the theme produces. Anything below 4.5:1 fails AA for body text — flag those before approving.</p>
+          <div className="contrast-grid">
+            {contrastCells.map((c, i) => <ContrastCell key={i} {...c} />)}
+          </div>
+        </section>
+
+        {showQss && (
+          <section className="qss-preview">
+            <h2>{theme.id}.qss</h2>
+            <p>This is the file Claude Code will write to <code>gui_qt/qss/{theme.id}.qss</code>. Tokens are 1:1 with the preview above.</p>
+            <pre dangerouslySetInnerHTML={{ __html: highlightQss(buildQss(theme)) }} />
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -26,10 +26,41 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.18"
+__version__ = "1.0.19"
+APP_DISPLAY_NAME = "JellyRip"
+"""Canonical user-facing product name for the MAIN branch.
+
+Replaces the prior inconsistency where dialogs, the title bar, and the
+header label rendered the product as three different names ("JellyRip",
+"Jellyfin Raw Ripper", "Raw Jelly Ripper"). All user-visible strings now
+substitute this constant via f-string. AI BRANCH has its own value of
+this constant ("JellyRip AI") in its copy of `shared/runtime.py`.
+
+Pinned by `tests/test_app_display_name.py` — that test guards the value
+and asserts no legacy variants remain in `gui/main_window.py` or
+`main.py` source.
+"""
 
 ConfigScalar: TypeAlias = str | int | bool | float
 LogFn: TypeAlias = Callable[[str], None]
+
+
+_PROFILE_ENV_VAR = "JELLYRIP_PROFILE"
+_PROFILE_NAME_RE = __import__("re").compile(r"[^A-Za-z0-9_\-]")
+
+
+def _sanitize_profile_name(name: str) -> str:
+    """Strip filesystem-unsafe characters from a profile name.  See
+    AI BRANCH's equivalent for the design rationale."""
+    cleaned = _PROFILE_NAME_RE.sub("_", str(name or "").strip())
+    return cleaned.strip("_")
+
+
+def get_active_profile() -> str:
+    """Active profile name (empty = default install).  Selected via
+    ``JELLYRIP_PROFILE`` env var, which ``main.py`` sets from the
+    ``--profile NAME`` CLI flag before any imports."""
+    return _sanitize_profile_name(os.environ.get(_PROFILE_ENV_VAR, ""))
 
 
 def _config_dir_path() -> str:
@@ -42,7 +73,11 @@ def _config_dir_path() -> str:
         base = os.environ.get(
             "XDG_CONFIG_HOME", os.path.expanduser("~/.config")
         )
-    return os.path.join(base, "JellyRip")
+    root = os.path.join(base, "JellyRip")
+    profile = get_active_profile()
+    if profile:
+        return os.path.join(root, "profiles", profile)
+    return root
 
 
 def get_config_dir(create: bool = True) -> str:
@@ -50,6 +85,29 @@ def get_config_dir(create: bool = True) -> str:
     if create:
         os.makedirs(config_dir, exist_ok=True)
     return config_dir
+
+
+def get_profile_aumid(base: str = "JellyRip.App.1") -> str:
+    """AUMID extended with the active profile so Windows treats
+    each profile as a separate app on the taskbar."""
+    profile = get_active_profile()
+    return f"{base}.{profile}" if profile else base
+
+
+def get_profile_window_title(base: str = APP_DISPLAY_NAME) -> str:
+    """Window-title string with the active profile suffixed."""
+    profile = get_active_profile()
+    return f"{base} — {profile}" if profile else base
+
+
+def get_profile_log_file_default() -> str:
+    """Default log-file path that's distinct per profile so two
+    instances don't trample each other."""
+    profile = get_active_profile()
+    base = os.path.expanduser("~/Downloads/rip_log")
+    if profile:
+        return f"{base}_{profile}.txt"
+    return f"{base}.txt"
 
 
 CONFIG_FILE = os.path.join(_config_dir_path(), "config.json")
@@ -77,7 +135,7 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "temp_folder": _DEFAULT_TEMP,
     "tv_folder": _DEFAULT_TV,
     "movies_folder": _DEFAULT_MOVIES,
-    "log_file": os.path.expanduser("~/Downloads/rip_log.txt"),
+    "log_file": get_profile_log_file_default(),
     "opt_save_logs": True,
     "opt_drive_index": 0,
     "opt_safe_mode": True,
@@ -120,8 +178,28 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_debug_state_json": False,
     "opt_strict_mode": False,
     "opt_session_failure_report": True,
+    "opt_plain_english_profile_summary": False,
+    # PySide6 migration scaffolding (Phase 3a, 2026-05-03).
+    # When True, main.py launches the QApplication path in
+    # gui_qt/app.py instead of the tkinter JellyRipperGUI.  Default
+    # False so the existing tkinter UI is unchanged for users who
+    # haven't opted in to the in-progress migration.  See
+    # docs/migration-roadmap.md and docs/pyside6-migration-plan.md.
+    "opt_use_pyside6": False,
+    # Selected QSS theme name (without .qss extension).  Available
+    # themes live under gui_qt/qss/.  Sub-phase 3d will add an
+    # in-app picker; for now users edit config.json directly.
+    "opt_pyside6_theme": "dark_github",
     "opt_log_cap_lines": 300000,
     "opt_log_trim_lines": 200000,
+    # Appearance-tab toggles (Phase A, 2026-05-04).  All default
+    # True so existing config.json files see no behavior change;
+    # see docs/handoffs/appearance-tab-spec.md for the rationale.
+    "opt_log_color_levels": True,    # auto-color warn/error in the live log
+    "opt_log_glyph_prefix": True,    # prepend ⚠/✗ to warn/error log lines
+    "opt_drive_state_glyph": True,   # prefix ◉/⊚/◌ before disc name in drive picker
+    "opt_tray_icon_enabled": True,   # system-tray companion for long rips
+    "opt_show_splash": True,         # startup splash screen (next-launch only)
     "opt_smart_rip_mode": False,
     "opt_smart_min_minutes": 20,
     "opt_naming_mode": "timestamp",
