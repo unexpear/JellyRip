@@ -60,12 +60,25 @@ bundle them.
 
 ## AI-assisted development
 
-A substantial portion of the v1.0.x development — including the
-PySide6 migration, the smoke-session hardening of the cancel /
-robot-mode / validate-tools pathways, and the `--profile`
-multi-instance feature — was paired with **[Claude Code](https://claude.com/claude-code)**
-(Anthropic).  Commits in the project history show
-`Co-Authored-By: Claude Opus 4.7 …` where this happened.
+A substantial portion of the v1.0.x development was paired with
+multiple AI coding assistants over the project's lifespan.  Each
+contributed to different stretches of the work:
+
+* **[Claude Code](https://claude.com/claude-code)** (Anthropic) —
+  the PySide6 migration, the smoke-session hardening of the
+  cancel / robot-mode / validate-tools pathways, the `--profile`
+  multi-instance feature, the settings tabs (Paths / Everyday /
+  Reliability), and the v1.0.19 release prep.  Commits show
+  `Co-Authored-By: Claude Opus 4.7 …` where this happened.
+* **[Codex](https://github.com/openai/codex)** (OpenAI) — earlier
+  development passes; local `.codex_backup/` snapshots of those
+  sessions are gitignored.
+* **[Grok](https://x.ai/)** (xAI) — additional pairing during
+  development.
+
+The maintainer reviewed and accepted every change before it
+landed; the AI assistants were collaborators, not autonomous
+authors.
 
 ## License
 
