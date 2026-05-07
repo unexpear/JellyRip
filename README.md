@@ -10,9 +10,9 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.18` (latest unstable pre-release)
-- MAIN release page: [v1.0.18](https://github.com/unexpear/JellyRip/releases/tag/v1.0.18)
-- AI release page: [ai-v1.0.18](https://github.com/unexpear/JellyRip/releases/tag/ai-v1.0.18)
+- Current unstable line: `v1.0.19` (latest unstable pre-release)
+- MAIN release page: [v1.0.19](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19)
+- AI release page: [ai-v1.0.19](https://github.com/unexpear/JellyRip/releases/tag/ai-v1.0.19) (`ai` branch — same repo, `ai-v*` tag lane)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -31,9 +31,9 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.18` unstable pre-release)
+(recommended, currently `v1.0.19` unstable pre-release)
 
-1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.18).
+1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
   first (common PyInstaller false positive).
@@ -47,6 +47,10 @@ cd JellyRip
 pip install -r requirements.txt
 python main.py
 ```
+
+`requirements.txt` pulls PySide6 (the Qt GUI toolkit). For tests and
+release builds also install `requirements-dev.txt`, which adds
+`pyinstaller`, `pytest`, and `pytest-qt`.
 
 First launch tip: open **Settings** and confirm MakeMKV and ffprobe
 paths before the first rip.
@@ -66,6 +70,15 @@ paths before the first rip.
 - **Dump All**: raw dump mode for all titles(some testing)
 - **Organize Existing MKVs**: move and sort already-ripped files( not tested )
 - **Prep for and use FFmpeg or handbrake**: simple transcoding( not tested )
+
+## User Interface
+
+JellyRip ships a PySide6 (Qt) desktop UI. The Qt path is the only
+shipped path as of v1.0.0; the legacy tkinter UI was retired during
+the Phase 3 migration. Six themes ship out of the box
+(`dark_github`, `light_inverted`, `dracula_light`, `hc_dark`, `slate`,
+`frost`) and can be switched live from **Settings -> Themes**. The
+disc tree supports right-click MKV preview using QtMultimedia.
 
 ## Configuration
 
@@ -96,7 +109,8 @@ App-directory `.env` files are no longer loaded at startup.
 
 - [main.py](main.py) - primary entrypoint
 - [JellyRip.py](JellyRip.py) - compatibility entrypoint and project map
-- [gui](gui) - tkinter UI layer
+- [gui_qt](gui_qt) - PySide6 (Qt) UI layer (themes, dialogs, preview)
+- [gui_qt/qss](gui_qt/qss) - generated theme stylesheets (six themes)
 - [controller](controller) - workflow orchestration
 - [engine](engine) - MakeMKV, ffprobe, and file operations
 - [utils](utils) - helper modules
@@ -165,7 +179,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.18
+release.bat 1.0.19
 ```
 
 This runs tests, checks version consistency, builds both executables,
@@ -177,8 +191,11 @@ branch other than `main`. Never create a release without assets.
 
 - Issues: [GitHub Issues](https://github.com/unexpear/JellyRip/issues)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Release post text: [release_notes.txt](release_notes.txt)
-- Readable release notes: [release_notes.md](release_notes.md)
+- Release post text (MAIN): [release_notes.txt](release_notes.txt)
+- Readable release notes (MAIN): [release_notes.md](release_notes.md)
+- Release post text (AI fork): [release_notes_ai.txt](release_notes_ai.txt)
+- Readable release notes (AI fork): [release_notes_ai.md](release_notes_ai.md)
+- AI BRANCH PySide6 port plan: [docs/handoffs/phase-4-ai-branch-port.md](docs/handoffs/phase-4-ai-branch-port.md)
 - Tester worksheet: [TESTERS.md](TESTERS.md)
 
 If Windows Defender flags the executable, whitelist the download folder

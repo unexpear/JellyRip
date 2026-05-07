@@ -2,6 +2,139 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.19] - 2026-05-04
+
+The Qt-only release. This closes out the multi-month PySide6
+migration: the legacy tkinter UI has been retired across the live
+import surface and the Qt path is now the only path. Minor-version
+bump from 1.0.x signals the UI rewrite as a milestone change.
+
+### Added
+
+- PySide6 (Qt) desktop UI as the default and only shipped UI
+  (`gui_qt/` package).
+- Six built-in themes — `dark_github`, `light_inverted`,
+  `dracula_light`, `hc_dark`, `slate`, `frost` — generated from a
+  shared token table (`gui_qt/themes.py`) by `tools/build_qss.py`,
+  switchable live from **Settings -> Themes**.
+- Right-click MKV preview in the disc tree, backed by QtMultimedia
+  (`gui_qt/preview_widget.py`), with transport controls and a
+  scrubbable position slider.
+- Setup wizard fully reimplemented in Qt across all four steps
+  (scan results, content mapping, extras classification, output plan).
+- Thread-safe GUI marshaling layer (`gui_qt/thread_safety.py`) so
+  worker threads can post status, progress, and dialog calls back to
+  the main thread without race conditions.
+- Drive scanning runs on a worker thread and populates the drive
+  combo via the same marshaling layer (`gui_qt/drive_handler.py`).
+- pytest-qt regression coverage for every Qt module, gated behind
+  `pytest.importorskip("pytestqt")` so non-GUI environments still
+  run the rest of the suite cleanly.
+- `requirements-dev.txt` pinning `pyinstaller>=6`, `PySide6>=6.5`,
+  `pytest>=7`, and `pytest-qt>=4`.
+- Phase-3g audit (`tests/test_phase_3g_audit.py`) acting as a
+  regression guard against tkinter re-introduction.
+
+### Changed
+
+- `JellyRip.spec` now bundles PySide6 (including QtMultimedia and
+  QtMultimediaWidgets), the six generated QSS files, and 22
+  `gui_qt` submodule hidden imports. tkinter / Tcl-Tk bundling is
+  removed.
+- `requirements.txt` lists PySide6 as a runtime dependency.
+- The `opt_use_pyside6` feature flag has been removed; Qt is the
+  only UI path. `opt_pyside6_theme` controls the active theme.
+- `docs/release-process.md` documents the manual smoke checklist
+  for the v1 acceptance gate.
+
+### Removed
+
+- The tkinter UI (`gui/main_window.py`, `gui/setup_wizard.py`,
+  `gui/session_setup_dialog.py`, `gui/secure_tk.py`,
+  `gui/theme.py`).
+- Tkinter-coupled tests (`tests/test_label_color_and_libredrive.py`,
+  `tests/test_main_window_formatters.py`) and the
+  `_FakeTkBase` / `test_gui_import` scaffolding inside
+  `tests/test_imports.py`.
+- The `pyinstaller_tk_runtime_hook.py` runtime hook.
+
+### Migration notes
+
+- Existing config files keep the same shape. The `opt_use_pyside6`
+  key, if present, is silently ignored on first launch.
+- Custom QSS overrides should target the objectNames documented in
+  `gui_qt/qss/` rather than baking color values into Python.
+
+### Smoke-session polish (added 2026-05-04 evening)
+
+The following landed in the same release line as the Qt-only
+milestone, after a real-disc smoke session uncovered remaining
+v1-blockers and UX gaps. AI BRANCH absorbs all of these during
+Phase 4 (see
+`docs/handoffs/phase-4-ai-branch-port.md`).
+
+- **MakeMKV `-r` (robot mode) flag** is now passed on every
+  `makemkvcon` invocation (preview, all-titles rip, selected-titles
+  rip), so the engine sees the machine-readable `PRGV:` / `PRGT:` /
+  `MSG:` lines it needs to parse for live progress. Without it, a
+  rip that was actually running looked hung in the GUI for 20–60
+  minutes. AST-based regression tests in
+  `tests/test_rip_robot_mode.py`.
+- **`engine.run_job(on_log=, on_progress=)`** keyword arguments
+  forward GUI hooks into the rip subprocess. Previously `run_job`
+  swallowed every callback into a local list, so the live log and
+  progress bar stayed silent for the whole rip. Pinned by
+  `tests/test_run_job_callbacks.py`.
+- **Session-state-machine cancel class fixed.** A user-cancelled
+  session no longer reports "completed successfully" in the done
+  dialog. New `SessionStateMachine.cancel(reason)` plus
+  `was_cancelled` flag, and `write_session_summary` precedence
+  walks `was_cancelled → COMPLETED → FAILED → INIT`. Pinned by
+  28 regression tests in `tests/test_state_machine.py` and
+  `tests/test_controller_cancel_class.py`.
+- **Right-click MKV preview wired.** The disc-tree dialog now
+  sets `setContextMenuPolicy(CustomContextMenu)` and connects
+  `customContextMenuRequested` to `_on_tree_context_menu`. Pre-fix
+  the handler was defined but never called. Pinned by signal-level
+  regression tests.
+- **`WorkflowLauncher` runs `engine.validate_tools()` pre-flight**
+  on every disc-touching workflow click. A missing or moved
+  `makemkvcon` / `ffprobe` now surfaces the friendly "Required
+  Tool Not Found" dialog with the path-suggestion text instead of
+  a cryptic `[Errno 2]` log line. Pinned by 8 tests under
+  "Tool-path pre-flight" in
+  `tests/test_pyside6_workflow_launchers.py`.
+- **QSS theme loader robustness.** `gui_qt.theme.load_theme` now
+  catches `OSError` and `UnicodeDecodeError` and raises
+  `FileNotFoundError` with the available-themes hint, so a corrupt
+  or locked `.qss` file can no longer crash startup before the
+  main window appears. Pinned by `tests/test_failure_modes_section_8.py`.
+- **UX upgrades.** Tray icon for long rips, splash screen during
+  startup, toolbar replacing utility chip row, log-line severity
+  glyphs (`⚠ warn`, `✗ error`), drive-state glyphs (`◉ / ⊚ / ◌`),
+  byte-progress format on the progress bar, real `QTreeWidget` for
+  the OutputPlan step (was a `QPlainTextEdit` placeholder). Symbol
+  conventions documented in `docs/symbol-library.md`.
+- **Pure-preview Appearance settings tab.** Theme picker now
+  previews on click, applies on OK, reverts on Cancel. No Apply
+  button. Five new cfg keys for log-pane density, drive-glyph
+  display, severity-glyph display, status-bar density, and
+  toolbar density.
+- **UX copy sweep.** 12 user-facing strings rewrote for clarity
+  (workflow seed lines, status messages, dialog prompts,
+  pluralization for `N title(s)` → `N title`/`N titles`). UTF-8
+  em-dash mojibake (`â€"`) cleared throughout
+  `engine/ripper_engine.py` and `controller/controller.py`.
+- **Preview "already running" status-bar surface.** When a user
+  rapidly re-clicks Preview during a busy preview, the "Wait for
+  it to finish" message now also shows in the status bar where
+  impatient re-clickers actually look.
+
+Final smoke-session state: 1,608 tests green / 11 skipped / 0
+failed. Real-disc rip of *The Aristocats* Blu-ray (78 min)
+succeeded end-to-end with all UX upgrades visible and working.
+Full trace at `docs/smoke-report-2026-05-04.md`.
+
 ## [1.0.18] - 2026-04-19
 
 ### Changed

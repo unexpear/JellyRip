@@ -1,29 +1,43 @@
-## JellyRip v1.0.18 Release Notes (UNSTABLE)
+## JellyRip v1.0.19 Release Notes (UNSTABLE)
 
+The Qt-only milestone — closes the multi-month PySide6 migration.
 Release channel: unstable pre-release.
-Close to stable, but still lightly tested.
 
 ### Download
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.18/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.18/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.18
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.19/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.19/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.19
 - All releases: https://github.com/unexpear/JellyRip/releases
 
-### What's New in 1.0.18
+### What's New in 1.0.19
 
-Transcode path recovery
-- Transcode prep now falls back to the valid detected FFmpeg or HandBrakeCLI path when a saved configured path no longer resolves.
-- That restores the expected upgrade behavior where bundled binaries and known install locations still work without forcing an immediate settings repair.
+Qt-only UI
+- The legacy tkinter UI is retired across the live import surface; PySide6 (Qt) is now the only shipped path.
+- Six switchable themes ship out of the box (dark_github, light_inverted, dracula_light, hc_dark, slate, frost). Switch live from Settings -> Themes with pure-preview semantics — click to preview, OK to apply, Cancel to revert.
+- Right-click MKV preview before commit, backed by QtMultimedia. Catch wrong-title-selected before 30+ GB writes to disk.
+- Setup wizard fully reimplemented in Qt across all four steps (scan results, content mapping, extras classification, output plan with a real tree widget).
 
-Manual movie edition handling
-- Manual movie-disc runs now carry the selected edition into controller state and destination folder naming.
-- Alternate cuts no longer collapse into the base movie folder during the manual flow.
+Live progress that actually moves
+- MakeMKV runs with -r (robot mode) on every invocation, so the engine sees the machine-readable progress events it needs to parse. Previously a rip that was actually running could look hung in the GUI for 20–60 minutes.
+- The engine's run_job now forwards GUI hooks (on_log, on_progress) all the way down to the rip subprocess, so the live log and progress bar stay updated for the whole rip.
 
-Save and update robustness
-- Settings saves now avoid partial config commits when the paired expert-profile write fails.
-- The signed-update block path now shows the intended GUI error instead of throwing a callback arity exception.
-- Verification fallback retries no longer announce a rejected transcode as completed before the retry starts.
+Friendlier error surfaces
+- Workflow buttons now run a tool-path pre-flight before launching. A missing or moved makemkvcon / ffprobe produces a clear "Required Tool Not Found" dialog with the path-suggestion text instead of a cryptic [Errno 2] No such file or directory.
+- A user-cancelled session no longer reports "completed successfully" in the done dialog. The session state machine has a real cancel class with a was_cancelled flag.
+- A corrupt or locked QSS theme file can no longer crash startup — the loader normalizes read errors to FileNotFoundError with the available-themes hint.
+- The "Preview already running" message now also surfaces in the status bar where impatient re-clickers actually look.
 
-Release hygiene
-- Release metadata now aligns on the 1.0.18 line across the app, installer, docs, tester worksheet, and release notes.
-- MAIN builds continue to stage `JellyRip.exe`, `JellyRipInstaller.exe`, bundled FFmpeg binaries, and notice files under `dist/main`.
+UX polish
+- Tray icon for long rips with notifications when a session finishes.
+- Splash screen during the ~1s startup window.
+- Toolbar replaces the old utility chip row.
+- Log lines now carry severity glyphs (warn, error) and drive states show their own glyphs (mounted, empty, unknown). Conventions documented in docs/symbol-library.md.
+- Byte-progress format on the progress bar.
+
+Quality bar
+- 1,608 tests green / 11 skipped / 0 failed.
+- Real-disc rip of The Aristocats Blu-ray (78 min) succeeded end-to-end during the v1 acceptance smoke (full trace at docs/smoke-report-2026-05-04.md).
+
+Migration notes
+- Existing config files port forward unchanged. The opt_use_pyside6 key, if present, is silently ignored on first launch.
+- Custom QSS overrides should target the objectNames documented in gui_qt/qss/ rather than baking color values into Python.
