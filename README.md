@@ -12,7 +12,7 @@ should be treated as non-final.
 
 - Current unstable line: `v1.0.19` (latest unstable pre-release)
 - MAIN release page: [v1.0.19](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19)
-- AI release page: [ai-v1.0.19](https://github.com/unexpear/JellyRip/releases/tag/ai-v1.0.19) (`ai` branch — same repo, `ai-v*` tag lane)
+- AI release page: [ai-v1.0.19](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.19) (fork — separate repo, `ai-v*` tag prefix)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
