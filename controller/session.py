@@ -93,6 +93,16 @@ class SessionHelpers:
             return
         sm = getattr(self.controller, "sm", None)
         if sm is not None:
+            # Cancellation takes precedence over every other state.
+            # ``was_cancelled`` is set by ``_state_cancelled`` at
+            # known cancel-return points.  We MUST check this before
+            # any other state branch, otherwise a cancel that left
+            # the SM at FAILED would be reported as a generic
+            # "Session failed".  Pinned by
+            # ``test_controller_cancel_class.py``.
+            if getattr(sm, "was_cancelled", False):
+                self.log("Session summary: Cancelled by user.")
+                return
             if sm.state == SessionState.COMPLETED:
                 if self.controller.session_report:
                     self.log("Session summary: Completed with warnings.")
@@ -109,6 +119,22 @@ class SessionHelpers:
                 return
             if sm.state == SessionState.FAILED and not self.controller.session_report:
                 self.log("Session summary: Session failed.")
+                return
+            # Defensive safety net for the SM-leak class: if the SM
+            # never advanced past INIT and there are no warnings,
+            # the session ended without doing any work.  Without
+            # this branch the function falls through to "All discs
+            # completed successfully" — the false-success bug the
+            # smoke bot caught 2026-05-04.  See
+            # docs/handoffs/sm-cancel-leak-fix.md.
+            if (
+                sm.state == SessionState.INIT
+                and not self.controller.session_report
+            ):
+                self.log(
+                    "Session summary: Session ended without "
+                    "ripping any discs."
+                )
                 return
         if not self.controller.session_report:
             self.log(

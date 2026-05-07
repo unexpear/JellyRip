@@ -30,6 +30,7 @@ from controller.rip_validation import (
 )
 from controller.session_recovery import (
     map_title_ids_to_analyzed_indices,
+    mark_session_aborted,
     mark_session_failed,
     restore_selected_titles,
 )
@@ -72,6 +73,7 @@ class LegacyControllerMixin:
     session_paths: PathOverrides | None
     _preview_lock: threading.Lock
     _wiped_session_paths: set[str]
+    _current_rip_path: str | None
     session_report: list[str]
     sm: SessionStateMachine
 
@@ -170,9 +172,13 @@ class LegacyControllerMixin:
             f"{label}: keeping successful output(s) and preserving session as partial; "
             f"failed titles = {failed_list}"
         )
+        _nf = len(valid_files)
+        _nt = len(successful_title_ids)
         self.log(
-            f"Continuing with {len(valid_files)} validated file(s) from "
-            f"{len(successful_title_ids)} successful title(s)."
+            f"Continuing with {_nf} validated "
+            f"{'file' if _nf == 1 else 'files'} from "
+            f"{_nt} successful "
+            f"{'title' if _nt == 1 else 'titles'}."
         )
         self.engine.update_temp_metadata(
             rip_path,
@@ -248,6 +254,35 @@ class LegacyControllerMixin:
                 "STATE_JSON: " + json.dumps(
                     {
                         "event": "fail",
+                        "reason": reason,
+                        "state": self.sm.state.name,
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+            )
+
+    def _state_cancelled(self, reason: str) -> None:
+        """Mark the session as cancelled by the user.
+
+        Sibling to ``_state_fail`` but distinguishable in the
+        summary — ``write_session_summary`` checks
+        ``sm.was_cancelled`` first and emits "Cancelled by user"
+        rather than "Session failed" or (the v1 bug)
+        "All discs completed successfully".
+
+        Use this at every cancel-return / cancel-break point in the
+        workflow code (TV setup cancel, movie setup cancel,
+        disc-tree dismiss, output-plan dismiss, etc.).  Calling
+        ``_state_fail`` instead would still avoid the false-success
+        bug, but the user would see "Session failed" — wrong tone
+        for a deliberate dismiss.
+        """
+        self.sm.cancel(reason)
+        if self.engine.cfg.get("opt_debug_state_json", False):
+            self.log(
+                "STATE_JSON: " + json.dumps(
+                    {
+                        "event": "cancel",
                         "reason": reason,
                         "state": self.sm.state.name,
                         "time": datetime.now().isoformat(timespec="seconds"),
@@ -374,9 +409,9 @@ class LegacyControllerMixin:
             return resolved
 
         if not self.gui.ask_yesno(
-            "Use custom folders for this run?\n\n"
-            "Yes = browse/select per-mode paths\n"
-            "No = use saved defaults"
+            "Use a custom output folder for this run?\n\n"
+            "Yes — browse and pick paths for this rip.\n"
+            "No — use the folders you set in Settings."
         ):
             return resolved
 
@@ -771,6 +806,56 @@ class LegacyControllerMixin:
             metadata=metadata,
         )
 
+    def _mark_session_aborted(self, rip_path: str, **metadata: Any) -> None:
+        """Wire ``mark_session_aborted`` from session_recovery into
+        the controller's wiped-session set + log.  Called on each
+        workflow's abort-return path so aborted sessions don't leak
+        into the resume picker."""
+        mark_session_aborted(
+            self.engine,
+            rip_path,
+            wiped_session_paths=self._wiped_session_paths,
+            log_fn=self.log,
+            metadata=metadata,
+        )
+
+    def _finalize_abort_cleanup_if_needed(self) -> None:
+        """Workflow abort-cleanup hook.
+
+        Called from each rip-producing workflow's outer ``finally``
+        block.  If the abort flag is set AND a rip session was
+        opened (``_current_rip_path`` populated by
+        ``write_temp_metadata``) AND the session hasn't already
+        reached a terminal state (complete / failed / aborted),
+        marks it aborted and wipes partial outputs.
+
+        Idempotent — the wiped-paths set guards against double-wipe
+        if multiple finallies fire (e.g., nested workflow calls).
+        Resets ``_current_rip_path`` after handling so the next run
+        starts clean.
+        """
+        rip_path = self._current_rip_path
+        if not rip_path:
+            return
+        try:
+            if not self.engine.abort_event.is_set():
+                return
+            if rip_path in self._wiped_session_paths:
+                return
+            meta = self.engine.read_temp_metadata(rip_path)
+            if meta is None:
+                return
+            phase = meta.get("phase")
+            if phase in {"complete", "organized", "failed", "aborted"}:
+                # Already in a terminal state — don't overwrite
+                # with "aborted".  e.g., a flow that called
+                # _mark_session_failed before the user clicked Stop
+                # should keep its "failed" record.
+                return
+            self._mark_session_aborted(rip_path)
+        finally:
+            self._current_rip_path = None
+
     def _safe_glob(
         self,
         pattern: str,
@@ -821,7 +906,16 @@ class LegacyControllerMixin:
             lock_acquired = False
             try:
                 if not self._preview_lock.acquire(blocking=False):
+                    # Surface in BOTH the log and status bar — repeat
+                    # right-clickers tend to miss new log lines but
+                    # always glance at the status bar.
                     self.log("Preview already running. Wait for it to finish.")
+                    try:
+                        self.gui.set_status(
+                            "Preview already running — wait for it to finish."
+                        )
+                    except Exception:
+                        pass
                     return
                 lock_acquired = True
 
@@ -850,9 +944,19 @@ class LegacyControllerMixin:
                     time.sleep(0.25)
                 if not files:
                     if not preview_ok:
-                        self.log("Preview failed: rip process did not complete.")
+                        self.log(
+                            "Preview didn't finish — MakeMKV stopped before "
+                            "writing the sample.  This usually means the disc "
+                            "needs more time to spin up; try again in a moment."
+                        )
                     else:
-                        self.log("Preview failed: no preview file found.")
+                        self.log(
+                            "Preview ran but no file was produced.  Possible "
+                            "causes: copy protection blocking short reads, "
+                            "or a damaged sector early in the title.  "
+                            "Try ripping the full title — those usually work "
+                            "even when previews don't."
+                        )
                     return
 
                 latest = select_largest_file(files)

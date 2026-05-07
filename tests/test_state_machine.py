@@ -221,3 +221,119 @@ def test_legal_transitions_table_matches_implementation():
         for dst in dsts
     }
     assert actual == set(LEGAL_TRANSITIONS)
+
+
+# ---------------------------------------------------------------------------
+# cancel() — added 2026-05-04 to fix the SM-leak class.
+#
+# Pre-fix: cancel-return paths in ``_run_disc_inner`` left the SM at
+# INIT, ``sm.complete()`` then forced it to COMPLETED, and the
+# session summary falsely claimed "All discs completed successfully".
+# The fix: introduce ``cancel()`` which sets state=FAILED **and**
+# ``was_cancelled=True`` so the summary writer can distinguish.
+# ---------------------------------------------------------------------------
+
+
+def test_initial_state_is_not_cancelled():
+    sm = SessionStateMachine()
+    assert sm.was_cancelled is False
+    assert sm.is_cancelled() is False
+
+
+def test_initial_fail_reason_is_none():
+    sm = SessionStateMachine()
+    assert sm.fail_reason is None
+
+
+@pytest.mark.parametrize("src", ALL_STATES)
+def test_cancel_sets_state_to_failed_from_any_state(src):
+    sm = _machine_at(src)
+    sm.cancel("user_cancelled_setup")
+    assert sm.state is SessionState.FAILED
+
+
+@pytest.mark.parametrize("src", ALL_STATES)
+def test_cancel_sets_was_cancelled_flag(src):
+    sm = _machine_at(src)
+    sm.cancel()
+    assert sm.was_cancelled is True
+    assert sm.is_cancelled() is True
+
+
+def test_cancel_records_reason():
+    sm = SessionStateMachine()
+    sm.cancel("user_cancelled_movie_setup")
+    assert sm.fail_reason == "user_cancelled_movie_setup"
+
+
+def test_cancel_with_no_reason_uses_default():
+    sm = SessionStateMachine()
+    sm.cancel()
+    assert sm.fail_reason == "user_cancelled"
+
+
+def test_fail_does_not_set_was_cancelled():
+    """``fail()`` is for real errors.  ``was_cancelled`` must
+    stay False — pinned because the summary writer
+    distinguishes the two."""
+    sm = SessionStateMachine()
+    sm.fail("makemkvcon_exited_1")
+    assert sm.state is SessionState.FAILED
+    assert sm.was_cancelled is False
+    assert sm.is_cancelled() is False
+    assert sm.fail_reason == "makemkvcon_exited_1"
+
+
+def test_cancel_then_complete_stays_failed_and_cancelled():
+    """``complete()`` is a no-op once FAILED — including FAILED
+    via cancel.  The cancel flag must persist."""
+    sm = SessionStateMachine()
+    sm.cancel("user_cancelled_disc_tree")
+    sm.complete()
+    assert sm.state is SessionState.FAILED
+    assert sm.was_cancelled is True
+
+
+def test_complete_after_cancel_does_not_clear_cancel_flag():
+    """Defensive: even if a future caller forgets to skip
+    ``complete()`` after cancel, the cancel flag survives so the
+    summary still reads the right branch."""
+    sm = SessionStateMachine()
+    sm.cancel("user_cancelled_setup")
+    sm.complete()  # no-op — already FAILED
+    assert sm.is_cancelled() is True
+
+
+def test_fail_after_cancel_keeps_cancel_flag():
+    """Once user-cancelled, subsequent ``fail()`` calls (e.g.,
+    cleanup errors) must not retroactively reclassify the
+    session as a real failure.  The user-intent signal wins."""
+    sm = SessionStateMachine()
+    sm.cancel("user_cancelled_setup")
+    sm.fail("cleanup_failed")
+    assert sm.is_cancelled() is True
+
+
+def test_cancel_emits_debug_log():
+    messages: list[str] = []
+    sm = SessionStateMachine(debug=True, logger=messages.append)
+    sm.cancel("user_cancelled_movie_setup")
+    assert messages == ["[STATE] CANCEL: user_cancelled_movie_setup"]
+
+
+def test_cancel_without_debug_emits_nothing():
+    messages: list[str] = []
+    sm = SessionStateMachine(debug=False, logger=messages.append)
+    sm.cancel("anything")
+    assert messages == []
+
+
+def test_is_cancelled_is_false_for_clean_completed():
+    sm = _machine_at(SessionState.COMPLETED)
+    assert sm.is_cancelled() is False
+
+
+def test_is_cancelled_is_false_for_real_failure():
+    sm = SessionStateMachine()
+    sm.fail("makemkvcon_crash")
+    assert sm.is_cancelled() is False

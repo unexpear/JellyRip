@@ -226,7 +226,7 @@ def test_retry_rip_once_after_size_failure_retries_and_revalidates(tmp_path):
     assert context.engine.metadata_updates == [
         (str(tmp_path), {"status": "ripped"})
     ]
-    assert context.gui.statuses == ["Ripping... (this may take 20-60 min)"]
+    assert context.gui.statuses == ["Ripping disc — typically 20–60 min for a Blu-ray."]
     assert context.gui.progress_values == [50.0]
     assert context.warned is True
     assert len(context.logged_sizes) == 1

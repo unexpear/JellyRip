@@ -28,7 +28,7 @@ import pytest
 from utils.classifier import ClassifiedTitle
 from utils.state_machine import SessionState
 
-from gui.session_setup_dialog import MovieSessionSetup
+from shared.session_setup_types import MovieSessionSetup
 
 # Reuse the helpers/fixtures established in test_behavior_guards.py — no
 # need to duplicate _controller_with_engine, DummyGUI, _engine_cfg.
@@ -65,7 +65,7 @@ def _wire_smart_rip_movie_happy_path(
     in test_behavior_guards.py, factored so individual tests can override
     one fake (e.g., to fail stabilization) and exercise that branch.
     """
-    from gui.setup_wizard import ContentSelection
+    from shared.wizard_types import ContentSelection
 
     temp_root = tmp_path / "temp"
     movies_root = tmp_path / "movies"

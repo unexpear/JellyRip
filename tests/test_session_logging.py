@@ -47,10 +47,21 @@ def test_save_logs_default_is_enabled() -> None:
 
 
 def test_settings_exposes_save_logs_toggle() -> None:
-    source = Path("gui/main_window.py").read_text(encoding="utf-8")
+    """Phase 3h note: pre-2026-05-04 this test asserted the toggle
+    text appeared in ``gui/main_window.py``'s tkinter settings
+    dialog.  That dialog was retired alongside the rest of
+    ``gui/``.  The PySide6 settings dialog ships only the
+    Appearance tab today (see ``gui_qt/settings/tab_appearance.py``);
+    the Logs / Everyday tab with this toggle is pending — see
+    ``docs/handoffs/phase-3d-port-settings-tabs.md``.
 
-    assert 'toggle_row(logs_tab, "opt_save_logs"' in source
-    assert "Save logs to disk" in source
+    For now we pin the contract that matters at the cfg layer:
+    the ``opt_save_logs`` key exists in DEFAULTS with the right
+    default.  When the Logs / Everyday tab lands, this test will
+    grow a widget-level assertion against it.
+    """
+    assert "opt_save_logs" in DEFAULTS
+    assert DEFAULTS["opt_save_logs"] is True
 
 
 def test_flush_log_writes_when_log_saving_enabled() -> None:

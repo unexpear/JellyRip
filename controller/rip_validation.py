@@ -430,7 +430,7 @@ def retry_rip_once_after_size_failure(
             except Exception as exc:
                 context.log(f"os.remove failed: {exc}")
 
-    context.gui.set_status("Ripping... (this may take 20-60 min)")
+    context.gui.set_status("Ripping disc — typically 20–60 min for a Blu-ray.")
     pre_rip_mkvs = frozenset(
         context._safe_glob(
             os.path.join(rip_path, "**", "*.mkv"),

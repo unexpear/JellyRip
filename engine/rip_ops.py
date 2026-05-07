@@ -24,9 +24,16 @@ def rip_preview_title(self, rip_path, title_id, preview_seconds, on_log):
     )
     os.makedirs(rip_path, exist_ok=True)
     self._purge_rip_target_files(rip_path, on_log)
+    # ``-r`` puts MakeMKV into robot/machine-readable mode so it
+    # emits the ``PRGV:`` / ``PRGT:`` / ``PRGC:`` / ``MSG:`` lines
+    # that ``RipperEngine._run_preview_process`` and
+    # ``_run_rip_process`` parse for progress + status.  Without
+    # it, MakeMKV emits human-readable text the parser silently
+    # drops — which masquerades as a "hung rip" even though
+    # data is flowing fine to disk (smoke bot finding 2026-05-04).
     cmd = (
         [makemkvcon] + global_args +
-        ["mkv", disc_target, str(title_id), rip_path] +
+        ["-r", "mkv", disc_target, str(title_id), rip_path] +
         RIP_ATTEMPT_FLAGS[0] + rip_args
     )
     return self._run_preview_process(cmd, preview_seconds, on_log)
@@ -92,9 +99,10 @@ def rip_all_titles(self, rip_path, on_progress, on_log):
             f"Rip attempt {attempt_num}/{len(attempts)} "
             f"(flags: {' '.join(flags)})"
         )
+        # See ``rip_preview_title`` for why ``-r`` is required.
         cmd = (
             [makemkvcon] + global_args +
-            ["mkv", disc_target, "all", rip_path] +
+            ["-r", "mkv", disc_target, "all", rip_path] +
             flags + rip_args
         )
         success = self._run_rip_process(
@@ -141,8 +149,10 @@ def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
     )
     os.makedirs(rip_path, exist_ok=True)
     self._purge_rip_target_files(rip_path, on_log)
+    _n = len(title_ids)
     on_log(
-        f"Ripping {len(title_ids)} selected title(s) "
+        f"Ripping {_n} selected "
+        f"{'title' if _n == 1 else 'titles'} "
         f"to: {rip_path}"
     )
     attempts      = self._get_rip_attempts()
@@ -186,9 +196,10 @@ def rip_selected_titles(self, rip_path, title_ids, on_progress, on_log):
                     "skipping without consuming a rip attempt."
                 )
                 break
+            # See ``rip_preview_title`` for why ``-r`` is required.
             cmd = (
                 [makemkvcon] + global_args +
-                ["mkv", disc_target, str(tid), rip_path] +
+                ["-r", "mkv", disc_target, str(tid), rip_path] +
                 flags + rip_args
             )
 

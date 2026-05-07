@@ -113,6 +113,14 @@ class RipperController(LegacyControllerMixin):
         self.session_report: List[str] = []
         self._preview_lock = threading.Lock()
         self._wiped_session_paths: set[str] = set()
+        # Tracks the temp folder of the currently-active rip session.
+        # Set after engine.write_temp_metadata() opens a session;
+        # consumed by the abort-cleanup hook in each workflow's
+        # outer try/finally to mark aborted + wipe partials when the
+        # user clicks Stop Session mid-rip.  Reset to None on
+        # session completion / failure so the abort hook only fires
+        # when there's actually something to clean up.
+        self._current_rip_path: Optional[str] = None
         self.session_paths: Optional[Dict[str, str]] = None
         self.session_helpers = SessionHelpers(ui, self)
         self.sm = SessionStateMachine(
@@ -415,6 +423,13 @@ class RipperController(LegacyControllerMixin):
         )
         if selected_ids_raw is None:
             self.log("Cancelled.")
+            # Mark the SM as user-cancelled so the post-loop
+            # ``sm.complete()`` doesn't force COMPLETED and
+            # ``write_session_summary`` doesn't falsely claim
+            # success.  Pinned by ``test_controller_cancel_class``
+            # — every caller's ``if selected_ids is None: break``
+            # inherits this cancellation.
+            self._state_cancelled("user_cancelled_disc_tree")
             return None, None
 
         selected_ids = [int(item) for item in selected_ids_raw]
@@ -669,6 +684,7 @@ class RipperController(LegacyControllerMixin):
     def run_smart_rip(self) -> None:
         """Guided rip: scan -> classify -> identity -> map -> extras -> preview -> rip."""
         self.diagnostics.update_context(session_mode="smart_rip", pipeline_step="init")
+        self._current_rip_path = None
         try:
             self._run_smart_rip_inner()
         except Exception as e:
@@ -676,6 +692,11 @@ class RipperController(LegacyControllerMixin):
             self.log("Unhandled error in smart rip: %s" % e)
             raise
         finally:
+            # Honor user-cancel: if abort fired mid-rip, mark the
+            # session aborted and wipe partial outputs so it doesn't
+            # leak into the resume picker.  See
+            # docs/workflow-stabilization-criteria.md "Abort propagation".
+            self._finalize_abort_cleanup_if_needed()
             self.diagnostics.update_context(pipeline_step="complete")
             try:
                 summary = self.diagnostics.generate_session_summary()
@@ -708,12 +729,13 @@ class RipperController(LegacyControllerMixin):
         if self.engine.abort_event.is_set():
             return
 
-        self.log("Flow: session initialized -> scanning disc.")
+        self.log("Session started — scanning disc.")
 
         self.gui.show_info(
             "Smart Rip",
-            "Insert disc and click OK.\n\n"
-            "JellyRip will scan, classify, and guide you through setup."
+            "Put the disc in the drive, then continue.\n\n"
+            "JellyRip will scan it, sort the titles, and walk you "
+            "through the rest."
         )
         if self.engine.abort_event.is_set():
             return
@@ -787,7 +809,7 @@ class RipperController(LegacyControllerMixin):
             tv_setup_defaults = self._build_tv_setup_defaults()
             tv_setup = self.gui.ask_tv_setup(**tv_setup_defaults)
             if self.engine.abort_event.is_set() or tv_setup is None:
-                self.log("Cancelled at library identity step.")
+                self.log("Cancelled at library info form.")
                 return
             tv_setup_defaults = self._tv_setup_defaults_from_setup(tv_setup)
             title = tv_setup.title
@@ -800,7 +822,7 @@ class RipperController(LegacyControllerMixin):
         else:
             movie_setup = self.gui.ask_movie_setup()
             if self.engine.abort_event.is_set() or movie_setup is None:
-                self.log("Cancelled at library identity step.")
+                self.log("Cancelled at library info form.")
                 return
             title = movie_setup.title
             year = movie_setup.year
@@ -831,8 +853,10 @@ class RipperController(LegacyControllerMixin):
             if not selected_ids:
                 self.log("No titles selected in standard flow.")
                 return
+            _n = len(selected_ids)
             self.log(
-                f"Standard flow: selected {len(selected_ids)} title(s) manually."
+                f"Standard flow: selected {_n} "
+                f"{'title' if _n == 1 else 'titles'} manually."
             )
         else:
             # ── Step 3: Content Mapping ─────────────────────────────────
@@ -991,6 +1015,11 @@ class RipperController(LegacyControllerMixin):
         rip_path = os.path.join(temp_root, make_rip_folder_name())
         os.makedirs(rip_path, exist_ok=True)
         self.engine.write_temp_metadata(rip_path, title, 1)
+        # Tracks the active rip session for the abort-cleanup hook
+        # in run_smart_rip's outer finally block.  Without this, an
+        # abort mid-rip would leave a phase="ripping" record that
+        # leaked into the resume picker.
+        self._current_rip_path = rip_path
 
         status_msg = (
             "Ripping all titles..."
@@ -1328,6 +1357,19 @@ class RipperController(LegacyControllerMixin):
 
     def run_dump_all(self):
         """Rip all titles to temp storage for later organization."""
+        self._current_rip_path = None
+        # Reset SM at workflow entry — same rationale as run_organize.
+        # Failure paths inside the inner call _state_fail; success
+        # paths fall through to sm.complete() at flow end.
+        self._reset_state_machine()
+        try:
+            self._run_dump_all_inner()
+        finally:
+            # Honor user-cancel for dump-all (single + multi-disc).
+            # See docs/workflow-stabilization-criteria.md "Abort propagation".
+            self._finalize_abort_cleanup_if_needed()
+
+    def _run_dump_all_inner(self):
         cfg       = self.engine.cfg
         path_overrides = self._prompt_run_path_overrides([
             ("temp_folder", "Temp Folder"),
@@ -1370,7 +1412,7 @@ class RipperController(LegacyControllerMixin):
             return
 
         self.gui.show_info(
-            "Insert Disc", "Insert disc and click OK when ready."
+            "Insert Disc", "Put the disc in the drive, then continue."
         )
 
         if self.engine.abort_event.is_set():
@@ -1393,6 +1435,8 @@ class RipperController(LegacyControllerMixin):
         rip_path = os.path.join(temp_root, make_rip_folder_name())
         os.makedirs(rip_path, exist_ok=True)
         self.engine.write_temp_metadata(rip_path, title, 1)
+        # Track for run_dump_all's abort-cleanup hook.
+        self._current_rip_path = rip_path
 
         if cfg.get("opt_scan_disc_size", True):
             self.gui.set_status("Scanning disc size...")
@@ -1449,6 +1493,7 @@ class RipperController(LegacyControllerMixin):
         if not success:
             self.log("Rip did not complete.")
             self.report(f"Dump All: rip failed for {title}")
+            self._state_fail("dump_rip_failed")
             self.flush_log()
             return
 
@@ -1464,6 +1509,7 @@ class RipperController(LegacyControllerMixin):
         if not stabilized:
             self.log("File stabilization check failed after rip.")
             self.report("Manual dump failed stabilization check")
+            self._state_fail("dump_stabilization_failed")
             self.gui.show_error(
                 "Rip Failed",
                 (
@@ -1476,11 +1522,16 @@ class RipperController(LegacyControllerMixin):
             return
         if not self._verify_container_integrity(mkv_files):
             self.report("Manual dump failed ffprobe integrity check")
+            self._state_fail("dump_integrity_failed")
             self.gui.show_error(
                 "Rip Failed",
                 "Container integrity check failed (ffprobe)."
             )
             return
+        # All single-disc dump checkpoints passed → mark SM complete
+        # before write_session_summary so its message picks COMPLETED.
+        # No-op if a prior _state_fail already fired.
+        self.sm.complete()
         self.write_session_summary()
         self.flush_log()
         self.gui.set_progress(0)
@@ -1919,6 +1970,10 @@ class RipperController(LegacyControllerMixin):
                 disc_title,
                 disc_number
             )
+            # Per-disc tracking inside the multi-disc loop so abort
+            # mid-dump only marks THIS disc aborted (already-completed
+            # discs keep their phase="complete").
+            self._current_rip_path = rip_path
             self.log(
                 f"--- Disc {disc_number}/{total}: '{disc_title}' ---"
             )
@@ -1964,7 +2019,7 @@ class RipperController(LegacyControllerMixin):
                             )
                             break
 
-            self.gui.set_status("Ripping... (this may take 20-60 min)")
+            self.gui.set_status("Ripping disc — typically 20–60 min for a Blu-ray.")
             _pre_rip_mkvs = frozenset(
                 self._safe_glob(
                     os.path.join(rip_path, "**", "*.mkv"),
@@ -1994,6 +2049,7 @@ class RipperController(LegacyControllerMixin):
                 ):
                     disc_number += 1
                     continue
+                self._state_fail("dump_rip_failed")
                 break
 
             self.engine.update_temp_metadata(rip_path, status="ripped")
@@ -2011,6 +2067,7 @@ class RipperController(LegacyControllerMixin):
                 self.report(
                     f"Dump disc {disc_number} failed stabilization check"
                 )
+                self._state_fail("dump_stabilization_failed")
                 self.gui.show_error(
                     "Rip Failed",
                     (
@@ -2025,6 +2082,7 @@ class RipperController(LegacyControllerMixin):
                 self.report(
                     f"Dump disc {disc_number} failed ffprobe integrity check"
                 )
+                self._state_fail("dump_integrity_failed")
                 self.gui.show_error(
                     "Rip Failed",
                     "Container integrity check failed (ffprobe).\n\n"
@@ -2034,6 +2092,9 @@ class RipperController(LegacyControllerMixin):
             self.gui.set_progress(0)
             disc_number += 1
 
+        # End of multi-disc loop — mark SM complete (no-op if a
+        # disc-level _state_fail already fired).
+        self.sm.complete()
         self.write_session_summary()
         self.flush_log()
         self.gui.set_progress(0)
@@ -2052,6 +2113,15 @@ class RipperController(LegacyControllerMixin):
 
     def run_organize(self) -> None:
         cfg = self.engine.cfg
+
+        # Reset SM at workflow entry so a leaked FAILED state from a
+        # prior run can't poison the session-summary message at the
+        # end of THIS run.  Mirrors _run_disc_inner's reset-and-
+        # terminal-state pattern (the SM doesn't walk intermediate
+        # states for organize — it has none — so reset + complete-or-
+        # fail is the contract).  See workflow-stabilization-criteria.md
+        # cross-cutting "state machine reaches a terminal state".
+        self._reset_state_machine()
 
         if callable(getattr(self.gui, "ask_directory", None)):
             self.log("Opening folder picker — Organize source folder")
@@ -2208,6 +2278,7 @@ class RipperController(LegacyControllerMixin):
         )
 
         if move_ok:
+            self.sm.complete()
             self._cleanup_success_session_metadata(folder_path)
             norm_folder = os.path.normpath(folder_path)
             if (cfg.get("opt_auto_delete_temp", True) and
@@ -2222,11 +2293,13 @@ class RipperController(LegacyControllerMixin):
                     self.log(
                         f"Warning: could not delete temp: {e}"
                     )
-        elif self.engine.abort_event.is_set():
-            self.log(
-                "Move stopped before completion — "
-                "some files may not have moved."
-            )
+        else:
+            self._state_fail("organize_move_failed")
+            if self.engine.abort_event.is_set():
+                self.log(
+                    "Move stopped before completion — "
+                    "some files may not have moved."
+                )
 
         self.write_session_summary()
         self.flush_log()
@@ -2277,8 +2350,10 @@ class RipperController(LegacyControllerMixin):
             dest_folder=dest_folder,
         )
 
+        _n = len(extra_ids)
         self.log(
-            f"Extras phase: ripping {len(extra_ids)} extra title(s) "
+            f"Extras phase: ripping {_n} "
+            f"{'extra' if _n == 1 else 'extras'} "
             f"after main feature move."
         )
         self.gui.set_status("Ripping extras...")
@@ -2704,6 +2779,7 @@ class RipperController(LegacyControllerMixin):
     def _run_disc(self, is_tv: bool) -> None:
         mode = "tv_disc" if is_tv else "movie_disc"
         self.diagnostics.update_context(session_mode=mode, pipeline_step="init")
+        self._current_rip_path = None
         try:
             self._run_disc_inner(is_tv)
         except Exception as e:
@@ -2711,6 +2787,9 @@ class RipperController(LegacyControllerMixin):
             self.log("Unhandled error in %s: %s" % (mode, e))
             raise
         finally:
+            # Honor user-cancel for manual TV/Movie disc workflows.
+            # See docs/workflow-stabilization-criteria.md "Abort propagation".
+            self._finalize_abort_cleanup_if_needed()
             self.diagnostics.update_context(pipeline_step="complete")
             try:
                 summary = self.diagnostics.generate_session_summary()
@@ -2730,7 +2809,7 @@ class RipperController(LegacyControllerMixin):
         ]
         path_overrides = self._prompt_run_path_overrides(path_fields)
         if path_overrides is None:
-            self.log("Cancelled before disc rip (path override step).")
+            self.log("Cancelled at folder picker.")
             return
         self._init_session_paths(path_overrides)
         self._log_session_paths()
@@ -2765,7 +2844,7 @@ class RipperController(LegacyControllerMixin):
             return
 
         self.log(
-            "Flow: session initialized -> waiting for disc + metadata input."
+            "Session started — waiting for disc and movie info."
         )
 
         resume_meta: dict[str, Any] = {}
@@ -2847,7 +2926,7 @@ class RipperController(LegacyControllerMixin):
                 )
                 tv_setup = self.gui.ask_tv_setup(**tv_setup_defaults)
                 if self.engine.abort_event.is_set() or tv_setup is None:
-                    self.log("Cancelled at TV library identity step.")
+                    self.log("Cancelled at TV info form.")
                     return
                 tv_setup_defaults = self._tv_setup_defaults_from_setup(tv_setup)
                 title = str(tv_setup.title or "").strip()
@@ -2904,8 +2983,7 @@ class RipperController(LegacyControllerMixin):
 
             self.gui.show_info(
                 "Insert Disc",
-                f"Insert disc {disc_number} "
-                f"and click OK when ready."
+                f"Put disc {disc_number} in the drive, then continue."
             )
 
             active_resume: dict[str, Any] | None = None
@@ -2988,7 +3066,9 @@ class RipperController(LegacyControllerMixin):
                         default_metadata_id=mid or "",
                     )
                     if self.engine.abort_event.is_set() or movie_setup is None:
-                        self.log("Cancelled at movie library identity step.")
+                        self.log("Cancelled at movie info form.")
+                        if not self.engine.abort_event.is_set():
+                            self._state_cancelled("user_cancelled_movie_setup")
                         break
                     title = str(movie_setup.title or "").strip()
                     if not title:
@@ -3075,6 +3155,8 @@ class RipperController(LegacyControllerMixin):
                 dest_folder=dest_folder,
                 phase="setup"
             )
+            # Track for _run_disc's abort-cleanup hook.
+            self._current_rip_path = rip_path
             if is_tv and use_tv_setup_dialog and tv_setup_defaults:
                 self.engine.update_temp_metadata(
                     rip_path,
@@ -3149,6 +3231,7 @@ class RipperController(LegacyControllerMixin):
                 continue
             if not self._log_drive_compatibility():
                 self.log("Cancelled: user declined UHD compatibility warning.")
+                self._state_cancelled("user_declined_uhd_warning")
                 break
 
             if (not is_tv) and auto_title_pending:
@@ -3371,6 +3454,7 @@ class RipperController(LegacyControllerMixin):
                     tv_setup_defaults=tv_setup_defaults,
                 ):
                     self.log("Cancelled at TV review step.")
+                    self._state_cancelled("user_cancelled_tv_review")
                     break
                 tv_review_confirmed = True
 
@@ -3393,17 +3477,21 @@ class RipperController(LegacyControllerMixin):
             )
 
             if cfg.get("opt_confirm_before_rip", True) and not tv_review_confirmed:
+                _n = len(selected_ids)
+                _gb = selected_size / (1024**3)
+                _noun = "title" if _n == 1 else "titles"
                 if not self.gui.ask_yesno(
-                    f"Rip {len(selected_ids)} title(s) — "
-                    f"~{selected_size / (1024**3):.1f} GB. Continue?"
+                    f"Rip {_n} {_noun} — ~{_gb:.1f} GB. Continue?"
                 ):
                     self.log("Rip cancelled by user.")
                     if not self.gui.ask_yesno("Try again?"):
                         break
                     continue
 
+            _n = len(selected_ids)
+            _noun = "title" if _n == 1 else "titles"
             self.log(
-                f"Selected {len(selected_ids)} title(s) — "
+                f"Selected {_n} {_noun} — "
                 f"~{selected_size / (1024**3):.1f} GB"
             )
 
@@ -3426,9 +3514,10 @@ class RipperController(LegacyControllerMixin):
                         required / (1024**3), free / (1024**3)
                     ):
                         self.log("Cancelled: not enough space.")
+                        self._state_cancelled("user_declined_space_warning")
                         break
 
-            self.gui.set_status("Ripping... (this may take 20-60 min)")
+            self.gui.set_status("Ripping disc — typically 20–60 min for a Blu-ray.")
             self.diagnostics.update_context(
                 pipeline_step="ripping", disc_title=title,
             )
@@ -3446,7 +3535,18 @@ class RipperController(LegacyControllerMixin):
                 output=rip_path,
                 profile="default"
             )
-            result = self.engine.run_job(job)
+            # Forward the controller's logger + the GUI's progress
+            # bar setter so PRGV/PRGT/PRGC log lines emitted during
+            # the rip reach the live UI.  Pre-2026-05-04 ``run_job``
+            # swallowed both into a local list nobody read, which
+            # made every rip look "hung" in the GUI even though
+            # MakeMKV was emitting progress events fine.  See
+            # tests/test_run_job_callbacks.py for the regression.
+            result = self.engine.run_job(
+                job,
+                on_log=self.log,
+                on_progress=self.gui.set_progress,
+            )
             success = result.success
             failed_titles = result.errors
             partial_rip = False
@@ -3593,7 +3693,11 @@ class RipperController(LegacyControllerMixin):
                 titles_list: AnalyzedFiles = self.engine.analyze_files(
                     mkv_files, self.log
                 ) or []
-                self.log(f"Analysis completed: {len(titles_list)} title(s) found.")
+                _n = len(titles_list)
+                self.log(
+                    f"Analysis completed: {_n} "
+                    f"{'title' if _n == 1 else 'titles'} found."
+                )
             except Exception as e:
                 self.log(f"ERROR during analysis: {e}")
                 titles_list = []
@@ -3730,12 +3834,29 @@ class RipperController(LegacyControllerMixin):
 
         # Mark session as completed so write_session_summary uses the
         # correct code path (warnings list vs clean success).
-        # sm.complete() is a no-op if the session already failed.
+        # sm.complete() is a no-op if the session already failed
+        # OR was explicitly cancelled (``_state_cancelled`` sets
+        # state=FAILED + was_cancelled=True at break sites).
         self.sm.complete()
         self.write_session_summary()
         self.gui.set_status("Ready")
         self.gui.set_progress(0)
-        self.gui.show_info("Done", "Session complete!")
+        # Pick the dialog wording based on how the loop exited.
+        # Pre-2026-05-04 this unconditionally said "Session complete!"
+        # — the smoke bot caught it: cancelling at the movie-setup
+        # form produced "All discs completed successfully." in the
+        # log AND a "Done — Session complete!" dialog.  Now the SM
+        # tracks user cancellation and we honor it here.
+        if getattr(self.sm, "was_cancelled", False):
+            self.gui.show_info("Cancelled", "Session cancelled.")
+        elif self.sm.is_success():
+            self.gui.show_info("Done", "Session complete!")
+        else:
+            # SM ended FAILED but not via _state_cancelled — a real
+            # error.  ``write_session_summary`` already emitted the
+            # specifics; the dialog just acknowledges the session
+            # ended without claiming success.
+            self.gui.show_info("Done", "Session ended.")
 
     def _select_and_move(
         self,
@@ -3817,7 +3938,7 @@ class RipperController(LegacyControllerMixin):
                     self.log(
                         f"Detected {len(existing_eps)} existing episode(s) in "
                         f"Season {season:02d} — {verb} "
-                        f"episode(s) {suggested[0]}â€“{suggested[-1]}."
+                        f"episode(s) {suggested[0]}–{suggested[-1]}."
                     )
 
             default_episode_input = ", ".join(
