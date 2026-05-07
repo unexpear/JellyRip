@@ -206,3 +206,8 @@ PyInstaller-built Windows executables.
 
 JellyRip is licensed under GPLv3. See [LICENSE](LICENSE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Credits
+
+A human-readable list of the tools, libraries, and people that make
+JellyRip possible lives at [CREDITS.md](CREDITS.md).
