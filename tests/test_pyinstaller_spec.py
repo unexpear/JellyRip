@@ -54,19 +54,30 @@ def test_spec_is_syntactically_valid_python():
 
 
 # ---------------------------------------------------------------------------
-# tkinter path still load-bearing
+# Tkinter retirement guard
 # ---------------------------------------------------------------------------
 
 
-def test_tkinter_hidden_imports_still_present():
-    """Phase 3 keeps the tkinter path runnable until Phase 3h, so
-    the spec must still bundle tkinter.  Pinned because losing this
-    silently breaks every user who hasn't opted into PySide6."""
+def test_tkinter_hidden_imports_are_gone():
+    """Phase 3h retired tkinter — the spec must NOT list tkinter /
+    _tkinter / tkinter.ttk in `hiddenimports`.  Pinned as the
+    inverse of the old "still present" guard so a future PR that
+    revives tkinter accidentally fails this test instead of
+    silently bloating the bundle.
+
+    The defensive `_configure_tcl_tk_environment` setup function in
+    the spec stays — it sets `TCL_LIBRARY` env vars without actually
+    importing tkinter, which is the belt-and-suspenders pattern the
+    bundled Python's auto-discovery occasionally needs.
+    """
     src = _spec_text()
-    for tk_mod in ("tkinter", "tkinter.ttk", "_tkinter"):
-        assert f'"{tk_mod}"' in src, (
-            f"{tk_mod} dropped from hidden imports — would break "
-            f"the tkinter path during the migration"
+    for tk_mod in ("tkinter", "tkinter.ttk", "_tkinter",
+                   "tkinter.messagebox", "tkinter.filedialog",
+                   "tkinter.simpledialog"):
+        assert f'"{tk_mod}"' not in src, (
+            f"{tk_mod} re-introduced into hidden imports — Phase 3h "
+            f"retired tkinter; if this needs to come back, update "
+            f"this test to match the new policy."
         )
 
 

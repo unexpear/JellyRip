@@ -59,13 +59,17 @@ _EXPECTED_THEMES = (
 
 
 def test_gui_qt_directory_exists():
-    """``gui_qt/`` is a package next to ``gui/``, not a child of it.
-    Pins the parallel-tree layout that lets tkinter and Qt coexist
-    during the migration."""
+    """``gui_qt/`` is the only UI package after Phase 3h retired
+    tkinter.  This test originally pinned the parallel-tree layout
+    (gui/ + gui_qt/ side by side); post-retirement it inverts to
+    pin that gui/ is gone and gui_qt/ is the live home."""
     gui_qt = _REPO_ROOT / "gui_qt"
     gui = _REPO_ROOT / "gui"
     assert gui_qt.is_dir(), "gui_qt/ must exist"
-    assert gui.is_dir(), "gui/ must still exist (tkinter not yet retired)"
+    assert not gui.exists(), (
+        "gui/ should be gone — Phase 3h retired the tkinter UI.  "
+        "If it's back, this test must be updated."
+    )
     assert (gui_qt / "__init__.py").is_file(), "gui_qt/__init__.py present"
 
 
