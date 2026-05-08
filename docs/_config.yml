@@ -1,0 +1,33 @@
+# GitHub Pages — Jekyll config for the published JellyRip site.
+# Source: main branch, /docs folder.
+
+title: JellyRip
+description: >-
+  Windows-first desktop app that rips discs with MakeMKV, validates output
+  with ffprobe, and organizes media into a Jellyfin-friendly library.
+theme: jekyll-theme-cayman
+show_downloads: false
+
+# Suppress internal-only material from the published site.  The files stay
+# tracked for contributors who clone the repo; they just don't render to
+# the public Pages URL.
+exclude:
+  - handoffs/
+  - smoke-report-2026-05-04.md
+  - workflow-stabilization-criteria.md
+  - migration-roadmap.md
+  - pyside6-migration-plan.md
+  - code-signing-application-draft.md
+  - code-signing-plan.md
+  - design/themes/qt-mock.jsx
+  - design/themes/themes.jsx
+  - design/themes/tweaks-panel.jsx
+  - design/themes/styles.css
+  - design/themes/theme-preview.html
+
+# Default front matter so existing .md files don't need to add their own.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
