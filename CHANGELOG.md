@@ -2,6 +2,50 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.21] - 2026-05-08
+
+Audit-driven cleanup release.  Engine-side improvement: drive-probe
+retries are now config-driven (was: hardcoded).  Plus pyproject
+metadata fix and a bundle-content cleanup.
+
+### Added
+
+- `opt_drive_probe_retries` (default 3) and
+  `opt_drive_probe_backoff_seconds` (default 2.0) added to
+  `DEFAULTS`.  Users with slow optical drives can now bump the
+  retry count without code changes.  Backed by the existing
+  `_wait_for_drive_ready` retry loop.
+- `_DEFAULT_MAKEMKVCON` resolver in `shared/runtime.py` — picks
+  `makemkvcon64.exe` on 64-bit Windows hosts (where `ProgramW6432`
+  is set), falls back to `makemkvcon.exe` elsewhere.  Matches the
+  64-bit Python + Qt runtime PyInstaller bundles, avoiding the rare
+  mixed-bitness "process suspended" hang.
+
+### Changed
+
+- `_wait_for_drive_ready` exponential backoff is now capped at 8s
+  but scales cleanly from the configured base — at the default 2s
+  base it produces 2 → 4 → 8 (the prior hardcoded sequence), but a
+  user with `opt_drive_probe_backoff_seconds=1.0` would see
+  1 → 2 → 4 → 8 → 8 with `opt_drive_probe_retries=5`.
+- `pyproject.toml` keywords updated: dropped `tkinter` (retired in
+  v1.0.19), added `pyside6` and `qt`.
+
+### Removed
+
+- `gui_qt/qss/warm.qss` — empty 0-byte placeholder leftover from
+  the original 3-theme design exploration.  The QSS collector was
+  shipping it into the bundle even though `_is_real_theme_file`
+  filtered it at load time; deleting at the source means the
+  bundle no longer carries the dead file.
+
+### Fixed
+
+- README "shipped path as of v1.0.0" → "since v1.0.19" (the
+  Qt-only milestone).
+- `STATUS.md:142` stale `__version__ = "1.0.19"` → 1.0.20 + clarifying
+  context for v1.0.20 / v1.0.21.
+
 ## [1.0.20] - 2026-05-08
 
 Documentation and repo-hygiene release.  No code or behavior changes

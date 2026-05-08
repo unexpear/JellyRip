@@ -393,9 +393,18 @@ class RipperEngine:
         on_log,
         *,
         context: str,
-        retries: int = 3,
+        retries: int | None = None,
     ) -> bool:
-        backoff_seconds = (2, 4, 8)
+        # Retry count + base backoff are now config-driven (defaults
+        # mirror the prior hardcoded 3-retries-with-(2,4,8)-backoff,
+        # but `opt_drive_probe_retries` lets users with slow trays
+        # bump the retry count without code changes).
+        if retries is None:
+            retries = max(0, int(self.cfg.get("opt_drive_probe_retries", 3) or 3))
+        backoff_base = max(
+            0.25,
+            float(self.cfg.get("opt_drive_probe_backoff_seconds", 2.0) or 2.0),
+        )
         for retry_index in range(retries + 1):
             if self.abort_event.is_set():
                 return False
@@ -411,9 +420,12 @@ class RipperEngine:
                     f"after {retries} retry attempt(s)."
                 )
                 return False
-            wait_seconds = backoff_seconds[min(retry_index, len(backoff_seconds) - 1)]
+            # Exponential backoff capped at 8s — matches the prior
+            # behavior at the default base (2 → 4 → 8) but scales
+            # cleanly when the user configures a different base.
+            wait_seconds = min(8.0, backoff_base * (2 ** retry_index))
             on_log(
-                f"Drive probe ({context}): waiting {wait_seconds}s before retry "
+                f"Drive probe ({context}): waiting {wait_seconds:.1f}s before retry "
                 f"{retry_index + 1}/{retries}."
             )
             if not self._sleep_with_abort(wait_seconds):

@@ -10,9 +10,9 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.20` (latest unstable pre-release)
-- MAIN release page: [v1.0.20](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20)
-- AI release page: [ai-v1.0.20](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.20) (fork — separate repo, `ai-v*` tag prefix)
+- Current unstable line: `v1.0.21` (latest unstable pre-release)
+- MAIN release page: [v1.0.21](https://github.com/unexpear/JellyRip/releases/tag/v1.0.21)
+- AI release page: [ai-v1.0.21](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.21) (fork — separate repo, `ai-v*` tag prefix)
 - Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 - Platform target: Windows
 - Runtime target: Python 3.13+
@@ -32,9 +32,9 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.20` unstable pre-release)
+(recommended, currently `v1.0.21` unstable pre-release)
 
-1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20).
+1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.21).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
   first (common PyInstaller false positive).
@@ -75,7 +75,7 @@ paths before the first rip.
 ## User Interface
 
 JellyRip ships a PySide6 (Qt) desktop UI. The Qt path is the only
-shipped path as of v1.0.0; the legacy tkinter UI was retired during
+shipped path as of v1.0.19; the legacy tkinter UI was retired during
 the Phase 3 migration. Six themes ship out of the box
 (`dark_github`, `light_inverted`, `dracula_light`, `hc_dark`, `slate`,
 `frost`) and can be switched live from **Settings -> Themes**. The
@@ -180,7 +180,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.20
+release.bat 1.0.21
 ```
 
 This runs tests, checks version consistency, builds both executables,

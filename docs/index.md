@@ -13,9 +13,9 @@ should be treated as non-final.
 
 ## Download
 
-[Latest release: v1.0.20](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20){: .btn .btn-primary }
-[Installer (.exe)](https://github.com/unexpear/JellyRip/releases/download/v1.0.20/JellyRipInstaller.exe){: .btn }
-[Standalone (.exe)](https://github.com/unexpear/JellyRip/releases/download/v1.0.20/JellyRip.exe){: .btn }
+[Latest release: v1.0.21](https://github.com/unexpear/JellyRip/releases/tag/v1.0.21){: .btn .btn-primary }
+[Installer (.exe)](https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRipInstaller.exe){: .btn }
+[Standalone (.exe)](https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRip.exe){: .btn }
 
 If Windows SmartScreen flags the executable, whitelist the download folder
 before retrying — this is a known false-positive pattern for
@@ -72,7 +72,7 @@ Gemini, and Ollama for on-device models.
 
 - [JellyRip AI on GitHub](https://github.com/unexpear-softwhere/JellyRipAI)
 - [JellyRip AI documentation site](https://unexpear-softwhere.github.io/JellyRipAI/)
-- [Latest AI release: ai-v1.0.20](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.20)
+- [Latest AI release: ai-v1.0.21](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.21)
 
 ## Source and license
 

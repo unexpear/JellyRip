@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.20"
+__version__ = "1.0.21"
 APP_DISPLAY_NAME = "JellyRip"
 """Canonical user-facing product name for the MAIN branch.
 
@@ -126,9 +126,21 @@ _DEFAULT_MOVIES = (
     if platform.system() == "Windows"
     else os.path.expanduser("~/Videos/Movies")
 )
+# MakeMKV ships both 32-bit (`makemkvcon.exe`) and 64-bit
+# (`makemkvcon64.exe`) binaries under the same install prefix.  On
+# 64-bit Windows hosts (`ProgramW6432` is set), prefer the 64-bit
+# binary — it's the one the bundled Anthropic SDK + Qt runtime are
+# already 64-bit, so matching architectures avoids the rare
+# "process suspended" hang seen with mixed-bitness sub-processes.
+# Fall back to 32-bit on 32-bit Windows or non-Windows.
+_DEFAULT_MAKEMKVCON = (
+    r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe"
+    if platform.system() == "Windows" and os.environ.get("ProgramW6432")
+    else r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe"
+)
 
 DEFAULTS: dict[str, ConfigScalar] = {
-    "makemkvcon_path": r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
+    "makemkvcon_path": _DEFAULT_MAKEMKVCON,
     "ffprobe_path": "",
     "ffmpeg_path": "",
     "handbrake_path": "",
@@ -172,6 +184,11 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_warn_low_space": True,
     "opt_hard_block_gb": 20,
     "opt_warn_out_of_order_episodes": True,
+    # Drive-probe retry tuning.  v1.0.21 made these config-driven so
+    # users with slow drive trays can increase retries without code
+    # changes.  Defaults mirror the prior hardcoded behavior.
+    "opt_drive_probe_retries": 3,
+    "opt_drive_probe_backoff_seconds": 2.0,
     "opt_debug_safe_int": False,
     "opt_debug_duration": False,
     "opt_debug_state": False,

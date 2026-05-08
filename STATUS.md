@@ -139,9 +139,11 @@ through to verification. State after the run:
 
 ### Version
 
-- `shared/runtime.py` `__version__ = "1.0.19"` — natural
-  patch bump from v1.0.18 in git origin. Marks the Qt-only
-  milestone.
+- `shared/runtime.py` `__version__ = "1.0.20"` — current
+  pre-alpha line.  v1.0.19 was the Qt-only milestone (Phase 3h
+  retired tkinter); v1.0.20 added the GitHub Pages site and
+  scrubbed local-only artifacts (dashboard.html,
+  ui_visual_assets_copy/) from the public tree.
 - **`tools/ui_sandbox_launcher.py`** — option (default) per the
   brief was to delete; the launcher is now a deferred-feature
   tombstone. Restoring it as a Qt sandbox is straightforward
