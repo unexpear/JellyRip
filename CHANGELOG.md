@@ -2,6 +2,40 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.20] - 2026-05-08
+
+Documentation and repo-hygiene release.  No code or behavior changes
+in the bundled `JellyRip.exe` — if you're already running v1.0.19 you
+gain a public documentation site and a cleaner tracked tree, but the
+ripping engine is byte-identical.
+
+### Added
+
+- GitHub Pages site published at
+  [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/).
+  Cayman theme, source = `main` branch / `docs/` folder.  Internal
+  phase handoffs, smoke reports, code-signing drafts, and design-system
+  source files are excluded via `docs/_config.yml` so they stay
+  tracked for contributors but don't render on the public site.
+- `docs/index.md` landing page with download CTA, project-info link
+  set, in-site documentation TOC, and cross-link to the JellyRip AI
+  fork.
+
+### Removed
+
+- `dashboard.html` — Claude productivity dashboard (reads `CLAUDE.md`,
+  renders memory tabs).  Local-only tooling that was inadvertently
+  tracked alongside the now-gitignored `CLAUDE.md`.  Untracked via
+  `git rm --cached` and added to `.gitignore`.
+- `ui_visual_assets_copy/` — visual-asset reference snapshot of the
+  retired tkinter UI (8 files, ~4700 lines of dead Python with live
+  `import tkinter` statements).  Untracked; kept locally for as long
+  as the visual reference is useful.
+- `release_notes_ai.{md,txt}` — drift'd duplicates of the AI fork's
+  own release notes.  The AI fork now maintains its own copies on
+  `unexpear-softwhere/JellyRipAI`; MAIN no longer carries a stale
+  mirror.
+
 ## [1.0.19] - 2026-05-04
 
 The Qt-only release. This closes out the multi-month PySide6

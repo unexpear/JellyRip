@@ -10,9 +10,10 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.19` (latest unstable pre-release)
-- MAIN release page: [v1.0.19](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19)
-- AI release page: [ai-v1.0.19](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.19) (fork — separate repo, `ai-v*` tag prefix)
+- Current unstable line: `v1.0.20` (latest unstable pre-release)
+- MAIN release page: [v1.0.20](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20)
+- AI release page: [ai-v1.0.20](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.20) (fork — separate repo, `ai-v*` tag prefix)
+- Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 - Platform target: Windows
 - Runtime target: Python 3.13+
 - Distribution target: standalone `JellyRip.exe` and optional installer
@@ -31,9 +32,9 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.19` unstable pre-release)
+(recommended, currently `v1.0.20` unstable pre-release)
 
-1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19).
+1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20).
 2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
   first (common PyInstaller false positive).
@@ -179,7 +180,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.19
+release.bat 1.0.20
 ```
 
 This runs tests, checks version consistency, builds both executables,

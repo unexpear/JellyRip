@@ -45,7 +45,7 @@ def test_build_pixmap_has_expected_size(qtbot):
 def test_build_pixmap_with_version_does_not_raise(qtbot):
     """Version string is rendered into the bottom-left corner —
     must not crash even with a long / weird version string."""
-    pm = _build_pixmap(version="1.0.19-rc.2")
+    pm = _build_pixmap(version="1.0.20-rc.2")
     assert not pm.isNull()
 
 

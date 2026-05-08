@@ -1,80 +1,50 @@
-# JellyRip v1.0.19 Release Notes
+# JellyRip v1.0.20 Release Notes
 
-## Release Channel
-
-Unstable pre-release.
-The Qt-only milestone — closes the multi-month PySide6 migration.
+JellyRip v1.0.20 — repository hygiene + GitHub Pages landing page.
+This is a documentation/cleanup release; the bundled `JellyRip.exe`
+is functionally identical to v1.0.19.  Upgrade for the public docs
+site and the cleaner tracked tree, not for any new ripping behavior.
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.19/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.19/JellyRipInstaller.exe)
-- Release page: [v1.0.19 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.19)
-- All releases: [GitHub Releases](https://github.com/unexpear/JellyRip/releases)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.20/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.20/JellyRipInstaller.exe)
+- Release page: [v1.0.20 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.20)
+- Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 
-## What's New in 1.0.19
+## What's New in 1.0.20
 
-### Qt-only UI
+### Documentation
 
-- The legacy tkinter UI is retired across the live import surface;
-  PySide6 (Qt) is now the only shipped path.
-- Six switchable themes ship out of the box: `dark_github`,
-  `light_inverted`, `dracula_light`, `hc_dark`, `slate`, `frost`.
-  Switch live from **Settings -> Themes** with pure-preview
-  semantics — click to preview, OK to apply, Cancel to revert.
-- Right-click MKV preview before commit, backed by QtMultimedia.
-  Catch wrong-title-selected before 30+ GB writes to disk.
-- Setup wizard fully reimplemented in Qt across all four steps
-  (scan results, content mapping, extras classification, output
-  plan with a real tree widget).
+- GitHub Pages site published at
+  [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
+  with a download landing page, project-info links, and an in-site
+  documentation TOC.  Cayman theme, source = `main` branch / `docs/`
+  folder.  Internal phase handoffs, smoke reports, code-signing
+  drafts, and design-system source files stay tracked but are
+  excluded from the public site via `docs/_config.yml`.
 
-### Live progress that actually moves
+### Repository hygiene
 
-- MakeMKV runs with `-r` (robot mode) on every invocation, so the
-  engine sees the machine-readable progress events it needs to
-  parse. Previously a rip that was actually running could look
-  hung in the GUI for 20–60 minutes.
-- The engine's `run_job` now forwards GUI hooks (`on_log`,
-  `on_progress`) all the way down to the rip subprocess, so the
-  live log and progress bar stay updated for the whole rip.
+- `dashboard.html` (Claude productivity dashboard) untracked from
+  the repo — local-only tooling that was inadvertently still tracked
+  alongside the gitignored `CLAUDE.md`.  Kept locally and gitignored.
+- `ui_visual_assets_copy/` untracked from the repo — ~4700 lines of
+  retired tkinter UI snapshot mirroring the live `gui_qt/` tree, with
+  live `import tkinter` statements.  Kept locally and gitignored.
+- `release_notes_ai.{md,txt}` deleted — drift'd duplicates of the AI
+  fork's own release notes.  The AI fork now maintains its own.
 
-### Friendlier error surfaces
+### What's NOT in this release
 
-- Workflow buttons now run a tool-path pre-flight before launching.
-  A missing or moved `makemkvcon` / `ffprobe` produces a clear
-  "Required Tool Not Found" dialog with the path-suggestion text
-  instead of a cryptic `[Errno 2] No such file or directory`.
-- A user-cancelled session no longer reports "completed
-  successfully" in the done dialog. The session state machine has
-  a real cancel class with a `was_cancelled` flag.
-- A corrupt or locked QSS theme file can no longer crash startup —
-  the loader normalizes read errors to `FileNotFoundError` with
-  the available-themes hint.
-- The "Preview already running" message now also surfaces in the
-  status bar where impatient re-clickers actually look.
+No code or behavior changes.  The bundled MakeMKV invocation,
+ffprobe validation, library organization, and all UI workflows are
+byte-identical to v1.0.19.
 
-### UX polish
+## Companion fork: JellyRip AI
 
-- Tray icon for long rips with notifications when a session
-  finishes.
-- Splash screen during the ~1s startup window.
-- Toolbar replaces the old utility chip row.
-- Log lines now carry severity glyphs (`⚠` warn, `✗` error) and
-  drive states show their own glyphs (`◉` mounted, `⊚` empty,
-  `◌` unknown). Conventions documented in `docs/symbol-library.md`.
-- Byte-progress format on the progress bar.
+The AI fork ships an assistant layer (chat sidebar + AI provider
+integrations) on top of the same disc-ripping core.
 
-### Quality bar
-
-- 1,608 tests green / 11 skipped / 0 failed.
-- Real-disc rip of *The Aristocats* Blu-ray (78 min) succeeded
-  end-to-end during the v1 acceptance smoke (full trace at
-  `docs/smoke-report-2026-05-04.md`).
-
-### Migration notes
-
-- Existing config files port forward unchanged. The
-  `opt_use_pyside6` key, if present, is silently ignored on first
-  launch.
-- Custom QSS overrides should target the objectNames documented
-  in `gui_qt/qss/` rather than baking color values into Python.
+- AI release page: [ai-v1.0.20 release](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.20)
+- AI project site: [unexpear-softwhere.github.io/JellyRipAI](https://unexpear-softwhere.github.io/JellyRipAI/)
