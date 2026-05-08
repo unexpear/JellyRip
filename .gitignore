@@ -69,3 +69,12 @@ CLAUDE.md
 # project source.
 experiments/
 tests/_test_qss_empty_placeholder_tmp/
+
+# Claude productivity dashboard (reads CLAUDE.md, renders memory tabs).
+# Local-only tooling — must not ship to the public repo.
+dashboard.html
+
+# Visual-asset reference snapshot of the retired tkinter UI.  Kept
+# local for as long as it's useful but does not belong in the public
+# tree alongside the live gui_qt/ implementation.
+ui_visual_assets_copy/
