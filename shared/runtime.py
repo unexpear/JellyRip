@@ -187,7 +187,10 @@ DEFAULTS: dict[str, ConfigScalar] = {
     # Drive-probe retry tuning.  v1.0.21 made these config-driven so
     # users with slow drive trays can increase retries without code
     # changes.  Defaults mirror the prior hardcoded behavior.
-    "opt_drive_probe_retries": 3,
+    # Harmonized 2026-05-08 with the AI fork: 5 retries × 2s base
+    # backoff (capped at 8s) → max wait 2+4+8+8+8 = 30s before
+    # giving up on an unresponsive drive.  Was 3/2.0 prior.
+    "opt_drive_probe_retries": 5,
     "opt_drive_probe_backoff_seconds": 2.0,
     "opt_debug_safe_int": False,
     "opt_debug_duration": False,
