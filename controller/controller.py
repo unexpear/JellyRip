@@ -1263,16 +1263,28 @@ class RipperController(LegacyControllerMixin):
         if ok:
             self._state_transition(SessionState.MOVED)
 
-            # Move extras to their classified Jellyfin subfolders
+            # Move extras to their classified Jellyfin subfolders.  The
+            # returned bool flips False on any per-file failure (missing
+            # category assignment, missing rip output, shutil.move
+            # exception).  We flag the session as partial so the
+            # downstream `_preserve_partial_session` branch fires
+            # instead of falsely claiming "session complete!" with
+            # bonus files still stranded in the temp folder.
             if (
                 extras_assignment
                 and extras_assignment.assignments
                 and not split_main_and_extras
             ):
-                self._move_extras_to_categories(
+                extras_move_ok = self._move_extras_to_categories(
                     titles_list, content, extras_assignment,
                     dest_folder, rip_path,
                 )
+                if not extras_move_ok:
+                    self.log(
+                        "Some bonus files did not move into their category folders; "
+                        "marking session as partial."
+                    )
+                    partial_rip = True
             if split_main_and_extras and not partial_rip:
                 extras_ok, extras_partial_path = (
                     self._run_smart_movie_extras_phase(
@@ -2605,13 +2617,23 @@ class RipperController(LegacyControllerMixin):
         )
         if extras_assignment and extras_assignment.assignments:
             self.gui.set_status("Moving extras...")
-            self._move_extras_to_categories(
+            # Bool return flags any per-file move failure; treat that as
+            # a partial session so the user is told something needs
+            # attention instead of seeing "complete!" with bonus files
+            # stuck in temp.
+            extras_move_ok = self._move_extras_to_categories(
                 titles_list,
                 content,
                 extras_assignment,
                 dest_folder,
                 extras_path,
             )
+            if not extras_move_ok:
+                self.log(
+                    "Some bonus files did not move into their category folders; "
+                    "marking session as partial."
+                )
+                partial_rip = True
 
         if partial_rip:
             self._preserve_partial_session(
@@ -2647,16 +2669,28 @@ class RipperController(LegacyControllerMixin):
         extras_assignment: "ExtrasAssignment",
         dest_folder: str,
         rip_path: str,
-    ) -> None:
+    ) -> bool:
         """Move ripped extra files into their Jellyfin extras category subfolders.
 
         Uses the title-to-file map from the engine to identify which ripped files
         belong to which title, then moves them into the correct category folder
         under dest_folder (e.g., dest_folder/Featurettes/, dest_folder/Deleted Scenes/).
+
+        Returns True if every extra file moved successfully, False if any step
+        failed (missing category assignment, missing ripped file, missing on
+        disk, or shutil.move exception).  Callers can use the bool to flag
+        the session as partial rather than silently reporting "complete" with
+        half the bonus files stranded in the temp folder.
         """
         title_file_map = _normalize_title_file_map(self.engine.last_title_file_map)
+        ok = True
 
-        for tid, category in extras_assignment.assignments.items():
+        for tid in content.extra_title_ids:
+            category = extras_assignment.assignments.get(tid)
+            if not category:
+                self.log(f"Missing extras category assignment for title {tid + 1}.")
+                ok = False
+                continue
             cat_path = os.path.join(dest_folder, category)
             os.makedirs(cat_path, exist_ok=True)
 
@@ -2667,9 +2701,17 @@ class RipperController(LegacyControllerMixin):
                 import glob as _glob
                 pattern = os.path.join(rip_path, f"*title_t{tid:02d}*")
                 files = _glob.glob(pattern)
+            if not files:
+                self.log(f"Missing ripped extra output for title {tid + 1}.")
+                ok = False
+                continue
 
             for src in files:
                 if not os.path.isfile(src):
+                    self.log(
+                        f"Expected extra file missing on disk: {os.path.basename(src)}"
+                    )
+                    ok = False
                     continue
                 dst = os.path.join(cat_path, os.path.basename(src))
                 try:
@@ -2677,6 +2719,9 @@ class RipperController(LegacyControllerMixin):
                     self.log(f"Moved extra: {os.path.basename(src)} -> {category}/")
                 except Exception as e:
                     self.log(f"Failed to move extra {os.path.basename(src)}: {e}")
+                    ok = False
+
+        return ok
 
     def _ask_extras_selection(
         self,
@@ -2847,8 +2892,14 @@ class RipperController(LegacyControllerMixin):
             "Session started — waiting for disc and movie info."
         )
 
-        resume_meta: dict[str, Any] = {}
-        resume_path: str | None = None
+        # Resume-after-interrupt scaffolding was removed from MAIN
+        # (see #9 in the 2026-05-08 audit ledger).  The locals
+        # `resume_meta` / `resume_path` / `active_resume` and every
+        # branch that tested them used to live here; none of them
+        # were ever populated because `check_resume` was never
+        # called from this code path, so they were dead conditional
+        # branches.  The AI fork keeps the feature wired up via its
+        # own `check_resume` call site.
         use_tv_setup_dialog = is_tv and callable(
             getattr(self.gui, "ask_tv_setup", None)
         )
@@ -2865,7 +2916,7 @@ class RipperController(LegacyControllerMixin):
             # detect what episodes exist, and pick up exactly where
             # the library left off — including filling gaps.
             # -------------------------------------------------------
-            if not resume_meta and self.gui.ask_yesno(
+            if self.gui.ask_yesno(
                 "Continue an existing show folder?\n\n"
                 "Choose YES to point to a show folder that already has "
                 "season/episode files.  JellyRip will detect what's "
@@ -2920,7 +2971,7 @@ class RipperController(LegacyControllerMixin):
             if use_tv_setup_dialog:
                 tv_setup_defaults = self._build_tv_setup_defaults(
                     current_setup=tv_setup_defaults,
-                    session_meta=resume_meta,
+                    session_meta={},
                     library_root=library_root,
                     library_state=library_state,
                 )
@@ -2947,7 +2998,7 @@ class RipperController(LegacyControllerMixin):
                     default_value=(
                         os.path.basename(library_root)
                         if library_root
-                        else resume_meta.get("title", "")
+                        else ""
                     )
                 )
                 title = str(title_input or "")
@@ -2965,12 +3016,7 @@ class RipperController(LegacyControllerMixin):
             if metadata_id:
                 self.log(f"Metadata ID: {parse_metadata_id(metadata_id)}")
 
-            if resume_path:
-                series_root = os.path.dirname(
-                    os.path.dirname(resume_path)
-                )
-            else:
-                series_root = os.path.join(temp_root, clean_name(title))
+            series_root = os.path.join(temp_root, clean_name(title))
             os.makedirs(series_root, exist_ok=True)
 
         while True:
@@ -2986,12 +3032,6 @@ class RipperController(LegacyControllerMixin):
                 f"Put disc {disc_number} in the drive, then continue."
             )
 
-            active_resume: dict[str, Any] | None = None
-            if resume_meta and safe_int(
-                resume_meta.get("disc_number", 0)
-            ) == disc_number:
-                active_resume = resume_meta
-
             auto_title_pending = False
             selected_ids: list[int] = []
             selected_size = 0
@@ -3004,10 +3044,7 @@ class RipperController(LegacyControllerMixin):
                 # the highest complete season).
                 if not use_tv_setup_dialog:
                     season_hint = ""
-                    default_season = str(
-                        active_resume.get("season", "")
-                        if active_resume else ""
-                    )
+                    default_season = ""
                     if library_state:
                         season_hint = " (detected: " + ", ".join(
                             f"S{s:02d}:{len(e)}ep"
@@ -3059,10 +3096,8 @@ class RipperController(LegacyControllerMixin):
             else:
                 if use_movie_setup_dialog:
                     movie_setup = self.gui.ask_movie_setup(
-                        default_title=((active_resume or {}).get("title", "") or title),
-                        default_year=str(
-                            (active_resume or {}).get("year", year)
-                        ),
+                        default_title=title,
+                        default_year=str(year),
                         default_metadata_id=mid or "",
                     )
                     if self.engine.abort_event.is_set() or movie_setup is None:
@@ -3090,7 +3125,7 @@ class RipperController(LegacyControllerMixin):
                 else:
                     title_input = self.gui.ask_input(
                         "Title", f"Title for disc {disc_number}:",
-                        default_value=(active_resume or {}).get("title", "")
+                        default_value=""
                     )
                     title = str(title_input or "")
                     if not title:
@@ -3102,9 +3137,7 @@ class RipperController(LegacyControllerMixin):
                         )
                     year_input = self.gui.ask_input(
                         "Year", "Release year:",
-                        default_value=str(
-                            (active_resume or {}).get("year", year)
-                        )
+                        default_value=str(year)
                     )
                     year = str(year_input or "")
                     if not year:
@@ -3136,12 +3169,6 @@ class RipperController(LegacyControllerMixin):
                 # _purge_rip_target_files never deletes the previously ripped
                 # files that are still sitting in the old resume folder.
                 rip_path = os.path.join(temp_root, make_rip_folder_name())
-                if active_resume and resume_path:
-                    # Mark the old session folder as superseded so it is not
-                    # offered for resume again in subsequent sessions.
-                    self.engine.update_temp_metadata(
-                        resume_path, phase="organized"
-                    )
 
             os.makedirs(rip_path, exist_ok=True)
             # rip_path is always a new folder (even on resume), so always
@@ -3260,10 +3287,7 @@ class RipperController(LegacyControllerMixin):
                         dest_folder=dest_folder,
                     )
 
-            restored_selected_ids = (
-                self._restore_selected_titles(disc_titles, active_resume)
-                if active_resume else None
-            )
+            restored_selected_ids = None
             manual_title_selection_used = False
 
             if restored_selected_ids:
@@ -3776,7 +3800,7 @@ class RipperController(LegacyControllerMixin):
                 year if not is_tv else "0000",
                 expected_size_by_title=expected_size_by_title,
                 session_rip_path=rip_path,
-                session_meta=active_resume,
+                session_meta=None,
                 selected_title_ids=move_selected_title_ids,
                 replace_existing=bool(
                     tv_setup_defaults.get("default_replace_existing", False)
@@ -3796,26 +3820,14 @@ class RipperController(LegacyControllerMixin):
                         failed_titles=list(failed_titles),
                         dest_folder=dest_folder,
                     )
-                    if (active_resume and resume_path
-                            and os.path.normpath(resume_path) !=
-                                os.path.normpath(rip_path)
-                            and os.path.isdir(resume_path)):
-                        shutil.rmtree(resume_path, ignore_errors=True)
                 else:
                     self._cleanup_success_session_metadata(
                         rip_path,
-                        resume_path if active_resume else None,
+                        None,
                     )
                     shutil.rmtree(rip_path, ignore_errors=True)
                     if os.path.exists(rip_path):
                         self.log(f"Warning: could not delete {rip_path}")
-                    # Also remove the original resume folder if it differs from
-                    # the fresh rip folder (it was superseded by this session).
-                    if (active_resume and resume_path
-                            and os.path.normpath(resume_path) !=
-                                os.path.normpath(rip_path)
-                            and os.path.isdir(resume_path)):
-                        shutil.rmtree(resume_path, ignore_errors=True)
                     self.log("Temp folder cleaned up.")
                     if cfg.get("opt_show_temp_manager", True):
                         self._offer_temp_manager(temp_root)
