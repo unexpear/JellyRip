@@ -474,12 +474,35 @@ def test_run_disc_inner_aborted_before_disc_prompt_returns_early(
 
 
 def test_engine_abort_called_before_run_job_terminates_subprocess():
-    """RETIRED 2026-05-04 — file was truncated mid-statement before Phase 3h.
+    """RECONSTRUCTION-RISK — original truncated, name is ambiguous.
 
-    The original test body was lost when the surrounding file got cut off
-    mid-write. This stub keeps the file parseable; the missing coverage is
-    tracked separately and should be recovered when the test's intent is
-    reconstructed from the docstring + neighboring tests.
+    The test name has two plausible readings:
+
+      (a) "abort called before run_job" terminates subprocess
+          → cause-effect: set abort_event before run_job, verify
+          the rip subprocess gets terminated cleanly during the
+          run.  (This is the same scenario as
+          ``test_abort_terminates_running_subprocess`` above, just
+          via run_job rather than direct abort() call.)
+
+      (b) "abort called" before "run_job terminates subprocess"
+          → event ordering: tests that abort happens before any
+          subprocess management run_job would do.  Doesn't read
+          as a coherent test contract.
+
+    Reading (a) is more likely the intent, but landing a test
+    that pins the wrong scenario would create a false-positive
+    coverage signal.  Sibling tests at lines 122–165 already
+    cover the abort→terminate→kill ladder via FakeProc; a
+    run_job-integrated test would duplicate that with extra
+    mock-subprocess plumbing.
+
+    Leaving as skip rather than guessing.  If the original intent
+    surfaces (commit history search, contributor recall), fill
+    this in.
     """
     import pytest
-    pytest.skip("test body was truncated; awaiting reconstruction")
+    pytest.skip(
+        "test body was truncated; intent ambiguous without original — "
+        "see docstring above for the two readings."
+    )

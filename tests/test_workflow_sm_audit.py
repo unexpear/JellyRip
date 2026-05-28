@@ -624,13 +624,29 @@ def test_run_disc_inner_reset_clears_prior_failed_state(
 # --------------------------------------------------------------------------
 
 
-def test_smart_rip_path_overrides_cancel_does_not_touch_sm():
-    """RETIRED 2026-05-04 — file was truncated mid-statement before Phase 3h.
+def test_smart_rip_path_overrides_cancel_does_not_touch_sm(monkeypatch):
+    """Cancel BEFORE path-overrides commit in ``run_smart_rip`` → no SM
+    interaction.  Mirror of
+    ``test_run_disc_inner_cancel_at_path_overrides_does_not_touch_sm``
+    (above) for the smart-rip workflow.  Pins that the SM reset only
+    fires after path_overrides is non-None for both workflow entry
+    points.
 
-    The original test body was lost when the surrounding file got cut off
-    mid-write. This stub keeps the file parseable; the missing coverage is
-    tracked separately and should be recovered when the test's intent is
-    reconstructed from the docstring + neighboring tests.
+    Reconstructed 2026-05-08 from the named sibling test.  Original
+    body was truncated mid-write before Phase 3h.
     """
-    import pytest
-    pytest.skip("test body was truncated; awaiting reconstruction")
+    controller, _engine = _controller_with_engine()
+    spy = _SMSpy(controller)
+    spy.install()
+
+    monkeypatch.setattr(
+        controller, "_prompt_run_path_overrides", lambda _f: None
+    )
+
+    controller.run_smart_rip()
+
+    assert spy.total_calls == 0, (
+        "run_smart_rip must not touch the state machine when the user "
+        "cancels at the path-overrides prompt (mirrors the run_movie_disc "
+        "guarantee)."
+    )

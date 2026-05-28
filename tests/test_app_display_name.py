@@ -149,12 +149,21 @@ def test_app_display_name_is_used_in_main_window():
 
 
 def test_app_display_name_propagates_through_window_title_string():
-    """RETIRED 2026-05-04 — file was truncated mid-statement before Phase 3h.
+    """OBSOLETE since Phase 3h (2026-05-04) — tkinter UI retired.
 
-    The original test body was lost when the surrounding file got cut off
-    mid-write. This stub keeps the file parseable; the missing coverage is
-    tracked separately and should be recovered when the test's intent is
-    reconstructed from the docstring + neighboring tests.
+    Original test was meant to pin that the tkinter
+    ``JellyRipperGUI.__init__`` set the window title from
+    ``APP_DISPLAY_NAME`` (see the top-of-file comment block at
+    line 141-144).  Tkinter was retired in v1.0.19 alongside the
+    ``gui/`` package; the PySide6 path is covered by
+    ``tests/test_pyside6_scaffolding.py`` so this slot is
+    genuinely empty rather than awaiting reconstruction.
+
+    Skipped permanently.  If the file is ever cleaned up further,
+    delete this stub entirely.
     """
     import pytest
-    pytest.skip("test body was truncated; awaiting reconstruction")
+    pytest.skip(
+        "tkinter window-title coverage was retired with Phase 3h; "
+        "Qt path is covered by test_pyside6_scaffolding tests."
+    )

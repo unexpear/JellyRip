@@ -506,13 +506,49 @@ def test_run_smart_rip_warn_with_user_decline_stops_before_rip(
     )
 
 
-def test_run_smart_rip_warn_with_opt_warn_low_space_off_skips_prompt():
-    """RETIRED 2026-05-04 — file was truncated mid-statement before Phase 3h.
+def test_run_smart_rip_warn_with_opt_warn_low_space_off_skips_prompt(
+    tmp_path, monkeypatch,
+):
+    """check_disk_space='warn' + opt_warn_low_space=False → controller
+    proceeds with the rip without prompting the user.  Pins the
+    silent-override branch in controller.py:1008-1013 (when warnings
+    are off, the elif arm doesn't trigger so the rip proceeds).
 
-    The original test body was lost when the surrounding file got cut off
-    mid-write. This stub keeps the file parseable; the missing coverage is
-    tracked separately and should be recovered when the test's intent is
-    reconstructed from the docstring + neighboring tests.
+    Reconstructed 2026-05-08 from the sibling
+    ``test_run_smart_rip_warn_with_opt_warn_low_space_prompts_user``
+    (inverse: warnings ON → prompt fires) and the controller branch.
     """
-    import pytest
-    pytest.skip("test body was truncated; awaiting reconstruction")
+    controller, engine = _controller_with_engine()
+    _wire_smart_rip_with_disk_check(
+        controller, engine, monkeypatch, tmp_path
+    )
+    engine.cfg["opt_warn_low_space"] = False
+
+    override_calls: list = []
+    monkeypatch.setattr(
+        engine, "check_disk_space",
+        lambda *_a, **_kw: (
+            "warn", 25 * (1024**3), 30 * (1024**3)
+        ),
+    )
+    controller.gui.ask_space_override = (
+        lambda required, free:
+            override_calls.append((required, free)) or True
+    )
+
+    run_job_calls: list = []
+    monkeypatch.setattr(
+        engine, "run_job",
+        lambda job: run_job_calls.append(job)
+        or SimpleNamespace(success=True, errors=[]),
+    )
+
+    controller.run_smart_rip()
+
+    assert override_calls == [], (
+        "ask_space_override must NOT be called when opt_warn_low_space=False"
+    )
+    assert run_job_calls, (
+        "run_job must still run when opt_warn_low_space=False — the "
+        "warn-but-silent branch proceeds without prompting."
+    )

@@ -3751,12 +3751,21 @@ def test_episodes_from_filename_single(tmp_path):
 
 
 def test_episodes_from_filename_wrong_season_returns_empty():
-    """RETIRED 2026-05-04 — file was truncated mid-statement before Phase 3h.
+    """A filename whose season number doesn't match the argument
+    returns the empty set rather than the parsed episode numbers.
 
-    The original test body was lost when the surrounding file got cut off
-    mid-write. This stub keeps the file parseable; the missing coverage is
-    tracked separately and should be recovered when the test's intent is
-    reconstructed from the docstring + neighboring tests.
+    Reconstructed 2026-05-08: original body was truncated mid-write
+    before Phase 3h.  Reconstructed from the function's contract
+    (``controller/library_scan.py:episodes_from_filename`` early-
+    returns ``set()`` at lines 32 and 38 when the S## token in the
+    filename doesn't match the season argument) and the sibling
+    ``test_episodes_from_filename_single`` test pattern.
     """
-    import pytest
-    pytest.skip("test body was truncated; awaiting reconstruction")
+    c, _ = _controller_with_engine()
+    # SxxExx form: S02 in filename, asked for season 1 → empty.
+    assert c._episodes_from_filename("Show - S02E05 - Title.mkv", 1) == set()
+    # NxNN form: 2x05 in filename, asked for season 1 → empty.
+    assert c._episodes_from_filename("Show 2x05 Title.mkv", 1) == set()
+    # Matching season still returns the episode (sanity — confirms
+    # the wrong-season branch isn't always firing).
+    assert c._episodes_from_filename("Show - S01E05 - Title.mkv", 1) == {5}
