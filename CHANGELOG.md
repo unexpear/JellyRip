@@ -2,6 +2,145 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.22] - 2026-05-28
+
+Audit-driven cleanup release.  No functional regressions; lots of
+small correctness and ergonomics improvements pulled together
+across a deep audit pass.
+
+### Fixed
+
+- **`stabilize_timeout` is now an actual deadline.**  The pre-move
+  source-file stability check used to take a single before/after
+  sample over ~1 second and fail immediately if sizes differed,
+  despite the config key being named ``opt_stabilize_timeout_seconds``
+  (default 60).  Replaced with a real polling loop that waits up to
+  the configured timeout for the file to settle, polling every
+  0.1–1.0s and honoring abort_event between samples.
+
+- **ffprobe cache key now normcased on Windows.**  ``cache_key``
+  used ``os.path.abspath(path)`` only, so reaching the same file
+  via ``C:\Foo`` and ``c:\foo`` produced two separate entries.
+  Now ``os.path.normcase`` is applied (no-op on POSIX).
+
+- **Engine ``print()`` routed through logging.**  A bare
+  ``print(f"Warning: failed to update session metadata ...")`` in
+  ``update_temp_metadata`` bypassed the controller's log capture
+  and interleaved with progress output on stdout.  Now uses
+  stdlib ``logging.warning`` like the other 8 warning sites.
+
+- **ffprobe duration return-type consistency.**  The
+  abort-mid-process exit returned ``-1`` (int) where the other
+  early-exit sites return ``-1.0`` (float).  Unified to float.
+
+- **``_move_extras_to_categories`` now returns bool.**  Was None
+  with silent partial-failure swallow.  Both callers in
+  ``_run_smart_rip_inner`` and ``_run_smart_movie_extras_phase``
+  now flip ``partial_rip = True`` on any extras-move failure,
+  triggering ``_preserve_partial_session`` instead of falsely
+  reporting "session complete" with bonus files stranded.
+
+- **Settings tab persist failures now log.**  All 4 tabs (Everyday,
+  Paths, Reliability, Appearance) caught ``self._save_cfg`` failures
+  with bare ``except Exception: pass``.  Now log via
+  ``logging.warning`` with the tab name so a disk-full or locked-
+  config.json save error leaves a session-log breadcrumb.
+
+- **Utility chip dispatch failures now surface in 3 places.**
+  Handler exceptions in ``utility_handlers._dispatch`` used to write
+  a single log-pane line and that was it.  Now also flips the
+  status bar and calls ``logging.exception`` so the full stack
+  trace lands in the session log.
+
+- **Appearance tab live-apply / cancel-restore failures now log.**
+  Four ``except Exception: pass`` swallows in
+  ``tab_appearance.py`` (live-preview handler, theme-preview load,
+  cancel-restore theme, cancel-restore live hook) now log instead
+  of silent swallow.
+
+- **Pages baseurl set so docs nav doesn't 404.**  ``docs/_config.yml``
+  now declares ``baseurl: /JellyRip`` so Jekyll's ``{% link %}`` tag
+  resolves to the project-path URLs instead of bare ``/foo.html``
+  that only worked at the apex domain.
+
+### Added
+
+- **5 named constants in ``engine/ripper_engine.py``** replacing four
+  magic numbers (raw-line capture cap 5000, ambiguity threshold 0.05,
+  scan-cache TTL 300s, log-rollover threshold 5 GB).  Each has a
+  comment documenting the rationale.
+
+- **``opt_disc_presence_probe_seconds`` added to DEFAULTS.**  Was read
+  from cfg at ``controller.py:1567`` with a hardcoded 45-second
+  fallback but missing from the master DEFAULTS dict.  Now
+  documented at the source.
+
+### Changed
+
+- **Drive-probe retries default bumped from 3 to 5.**  Slow optical
+  drives that previously gave up after 3 retries (worst case 14s)
+  now get 2 more attempts before the rip aborts.  Backoff base
+  unchanged at 2.0s (capped at 8s per attempt).  Harmonizes with
+  the AI fork's existing 5-retry default.
+
+### Removed
+
+- **Dead ``scan_disc`` delegate** in ``engine/ripper_engine.py``.
+  Python's "last def wins" rule made the 3-line delegate at line
+  553 unreachable — the live ``scan_disc`` was the ~325-line
+  inline implementation later in the file.  Verified via
+  ``RipperEngine.scan_disc.__code__.co_firstlineno``.  Removed
+  the unreachable copy.
+
+- **Dead resume-after-interrupt scaffolding** from
+  ``_run_disc_inner``.  The locals ``resume_meta``, ``resume_path``,
+  and ``active_resume`` were declared and read in ~15 branches but
+  never populated, because ``check_resume`` was never called from
+  this code path.  Every truthy-branch was unreachable.  Cleanup
+  inlines the always-true fallback values and deletes the dead
+  conditionals.  AI BRANCH keeps the feature wired up via its own
+  ``check_resume`` call site.
+
+- **Dead config key ``opt_use_pyside6``** from DEFAULTS.  The flag
+  that gated tkinter-vs-Qt UI was retired alongside tkinter itself
+  in v1.0.19; only the DEFAULTS entry and an obsolete-removed
+  comment in ``main.py`` remained.  Deleted both.
+
+- **Dead profile imports in ``main.py``** —
+  ``get_active_profile`` and ``get_profile_window_title`` were
+  imported but never referenced.
+
+### Tests
+
+- **3 of 5 truncated test bodies reconstructed.**  Three tests had
+  ``pytest.skip("test body was truncated; awaiting reconstruction")``
+  stubs.  Reconstructed from their names + sibling-test patterns
+  and verified passing:
+  ``test_episodes_from_filename_wrong_season_returns_empty``,
+  ``test_run_smart_rip_warn_with_opt_warn_low_space_off_skips_prompt``,
+  ``test_smart_rip_path_overrides_cancel_does_not_touch_sm``.
+  Two stubs (``test_app_display_name_propagates_through_window_title_string``
+  — obsolete since tkinter retirement; and
+  ``test_engine_abort_called_before_run_job_terminates_subprocess`` —
+  ambiguous original intent) were reframed with explicit notes.
+
+- **2 of 5 skipped security tests reframed as positive tests.**
+  ``test_update_check_stub_does_not_shell_out`` pins the negative
+  property that the deferred-port update stub doesn't shell out.
+  ``test_update_check_stub_logs_releases_url_to_match_fork`` pins
+  that the stub directs users to MAIN's releases page.  One
+  obsolete test (``test_notify_complete_uses_trusted_powershell``)
+  deleted entirely — Qt path uses ``QSystemTrayIcon.showMessage``
+  natively, no subprocess.  Two remain skipped (explorer
+  open/reveal — features genuinely absent on Qt path).
+
+- **Mojibake cleared from `CHANGELOG.md`, `smoke-report-2026-05-04.md`,
+  and `tests/test_behavior_guards.py`** (14 sites in the test file).
+  Same UTF-8-misread-as-cp1252 pattern that was cleared from
+  ``engine/ripper_engine.py`` in v1.0.19.
+
+Test suite: **1645 passed, 8 skipped** (was 1642 / 11).
+
 ## [1.0.21] - 2026-05-08
 
 Audit-driven cleanup release.  Engine-side improvement: drive-probe

@@ -1,45 +1,58 @@
-## JellyRip v1.0.21 Release Notes (UNSTABLE)
+## JellyRip v1.0.22 Release Notes (UNSTABLE)
 
-JellyRip v1.0.21 — audit-driven cleanup.  Adds a configurable
-drive-probe retry count, picks the 64-bit MakeMKV binary on x64
-Windows, and trims a stale empty file from the bundle.  Engine
-behavior under default settings is unchanged from v1.0.20.
+JellyRip v1.0.22 — deep audit cleanup.  Many small correctness +
+ergonomics improvements across the engine, settings UI, and test
+suite.  No functional regressions; the bundled ripper, validator,
+and library organizer behave identically to v1.0.21 under default
+settings.
 
 ## Download
 
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.21
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.22
 - Project site: https://unexpear.github.io/JellyRip/
 
-### What's New in 1.0.21
+### Highlights
 
 Engine
-- Drive-probe retries are now config-driven via
-  opt_drive_probe_retries (default 3) and
-  opt_drive_probe_backoff_seconds (default 2.0).  Users with slow
-  trays can bump these without code changes.  Default behavior
-  matches the prior hardcoded 3-retries-with-2-4-8 backoff exactly.
-- 64-bit MakeMKV binary preferred on x64 Windows.  _DEFAULT_MAKEMKVCON
-  picks makemkvcon64.exe when ProgramW6432 is set, falls back to
-  makemkvcon.exe on 32-bit / non-Windows.  Avoids the rare
-  mixed-bitness "process suspended" hang.
+- stabilize_timeout is now an actual deadline (was a single 1s
+  sample) — polls every 0.1–1.0s up to the configured timeout,
+  honors abort_event between samples.
+- Drive-probe retries default bumped from 3 to 5.
+- Dead scan_disc delegate removed (was shadowed by the live
+  inline implementation).
+- 5 magic numbers named as module-level constants.
+- print() in engine layer routed through stdlib logging.
 
-Bundle / repo
-- Removed gui_qt/qss/warm.qss (empty 0-byte placeholder).  Was
-  filtered at load time but still shipping in the bundle.
-- pyproject.toml keywords dropped tkinter, added pyside6 + qt.
+UI / Settings
+- Pages docs site nav now works (baseurl set in _config.yml).
+- Settings tab persist failures now log instead of swallowing.
+- Utility chip failures surface in status bar + session log.
 
-Documentation
-- README "shipped path as of v1.0.0" -> "since v1.0.19" (the Qt-only
-  milestone).
+Workflow
+- Partial-extras-move failures now flag the session as partial.
+- Dead resume scaffolding removed from _run_disc_inner.
+
+Tests
+- 3 of 5 truncated test bodies reconstructed.
+- 2 of 5 skipped security tests reframed as positive Qt-side
+  tests.
+- Test suite: 1645 passed, 8 skipped (was 1642 / 11).
+
+Documentation hygiene
+- Mojibake cleared from CHANGELOG.md, smoke-report-2026-05-04.md,
+  and tests/test_behavior_guards.py.
 
 ### What's NOT in this release
 
-No UI or workflow changes.  Engine behavior under default settings
-is byte-identical to v1.0.20.
+No new ripping/validation/organization features.  Engine behavior
+under default settings is byte-identical to v1.0.21.
 
 ### Companion fork: JellyRip AI
 
-- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.21
+The AI fork ships an assistant layer on top of the same disc-
+ripping core.
+
+- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.22
 - AI project site: https://unexpear-softwhere.github.io/JellyRipAI/

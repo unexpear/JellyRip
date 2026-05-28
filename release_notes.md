@@ -1,59 +1,97 @@
-# JellyRip v1.0.21 Release Notes
+# JellyRip v1.0.22 Release Notes
 
-JellyRip v1.0.21 — audit-driven cleanup.  Adds a configurable
-drive-probe retry count, picks the 64-bit MakeMKV binary on x64
-Windows, and trims a stale empty file from the bundle.  Engine
-behavior under default settings is unchanged from v1.0.20 — every
-new option falls back to the prior hardcoded value.
+JellyRip v1.0.22 — deep audit cleanup.  Many small correctness +
+ergonomics improvements across the engine, settings UI, and
+test suite.  No functional regressions; the bundled ripper +
+validator + library organizer behave identically to v1.0.21
+under default settings.
 
 ## Download
 
-- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRip.exe)
-- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.21/JellyRipInstaller.exe)
-- Release page: [v1.0.21 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.21)
+- Direct download: [JellyRip.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRip.exe)
+- Installer: [JellyRipInstaller.exe](https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRipInstaller.exe)
+- Release page: [v1.0.22 release](https://github.com/unexpear/JellyRip/releases/tag/v1.0.22)
 - Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 
-## What's New in 1.0.21
+## Highlights
 
 ### Engine
 
-- **Drive-probe retries are now config-driven.**
-  Two new options in `DEFAULTS`:
-  - `opt_drive_probe_retries` (default 3) — number of retries before
-    giving up if the drive isn't ready.
-  - `opt_drive_probe_backoff_seconds` (default 2.0) — base delay
-    between retries; exponential, capped at 8s.
+- **`stabilize_timeout` is now an actual deadline.** The pre-move
+  source-file stability check used to take a single 1-second
+  sample.  Now polls every 0.1–1.0s up to the configured timeout
+  (default 60s), honoring abort_event between samples.
+- **Drive-probe retries default bumped from 3 to 5.** Slow optical
+  drives that previously gave up after 3 retries (worst case
+  ~14s) now get 2 more attempts.  Backoff base unchanged.
+- **Dead `scan_disc` delegate removed.** Python's "last def wins"
+  rule had been silently shadowing this 3-line delegate with the
+  live ~325-line inline implementation.  Maintenance hazard
+  eliminated.
+- **5 magic numbers named.** Raw-line cap, ambiguity threshold,
+  scan-cache TTL, and log-rollover threshold now live as
+  module-level constants with documented rationale.
+- **`print()` in engine layer routed through `logging`.** Was
+  bypassing the controller's log capture and interleaving with
+  progress output on stdout.
 
-  Users with slow trays can bump these without code changes.
-  Default behavior matches the prior hardcoded 3-retries-with-2-4-8
-  backoff exactly.
+### UI / Settings
 
-- **64-bit MakeMKV binary preferred on x64 Windows.**
-  `_DEFAULT_MAKEMKVCON` now picks `makemkvcon64.exe` when
-  `ProgramW6432` is set (i.e., 64-bit Windows host).  Matches the
-  64-bit Python + Qt runtime PyInstaller bundles; avoids the rare
-  mixed-bitness "process suspended" hang.  Falls back to
-  `makemkvcon.exe` on 32-bit Windows or non-Windows.
+- **Pages docs site navigation now works.** Set `baseurl` in
+  `docs/_config.yml` so Jekyll's `{% link %}` tag resolves to
+  the project-path URLs.  Previously every documentation link
+  on [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
+  404'd.
+- **Settings tabs no longer silently lose changes.** All 4 tabs
+  (Everyday, Paths, Reliability, Appearance) used to swallow
+  config-save failures.  Now log them so a disk-full or locked
+  `config.json` leaves a session-log breadcrumb.
+- **Utility chip failures surface in 3 places** instead of 1.
+  Handler exceptions now flip the status bar + log to the
+  session log file (with full stack trace), not just the log
+  pane.
 
-### Bundle / repo
+### Workflow
 
-- **Removed `gui_qt/qss/warm.qss`** (empty 0-byte placeholder from
-  the early 3-theme design exploration).  Was filtered at load time
-  but still shipping into the bundle.
-- **`pyproject.toml` keywords** — dropped `tkinter` (retired in
-  v1.0.19), added `pyside6` + `qt`.
+- **Partial-extras-move now flagged as partial.** `_move_extras_to_categories`
+  used to silently swallow failures and report "session complete"
+  even when bonus files were stranded in temp.  Now reports
+  success/failure and triggers `_preserve_partial_session` on
+  failure.
+- **Dead resume scaffolding removed.** ~15 sites in
+  `_run_disc_inner` referenced resume-after-interrupt state that
+  was never populated (the `check_resume` call was missing).
+  Branches were unreachable.  Removed; the AI fork keeps the
+  feature working via its own wiring.
 
-### Documentation
+### Tests
 
-- README "shipped path as of v1.0.0" → "since v1.0.19" (the
-  Qt-only milestone).
+- **3 of 5 truncated test bodies reconstructed.** Coverage
+  improvements:
+  - `test_episodes_from_filename_wrong_season_returns_empty`
+  - `test_run_smart_rip_warn_with_opt_warn_low_space_off_skips_prompt`
+  - `test_smart_rip_path_overrides_cancel_does_not_touch_sm`
+- **2 of 5 skipped security tests reframed as positive Qt-side
+  tests.** Pins that `tools/update_check.py` stub doesn't shell
+  out + directs users to the correct fork's releases URL.
+- **Test suite: 1645 passed, 8 skipped** (was 1642 / 11 in v1.0.21).
 
-### What's NOT in this release
+### Documentation hygiene
 
-No user-facing UI changes.  No workflow changes.  Engine behavior
-under default settings is byte-identical to v1.0.20.
+- Mojibake (UTF-8-misread-as-cp1252 garbage) cleared from
+  `CHANGELOG.md`, `docs/smoke-report-2026-05-04.md`, and
+  `tests/test_behavior_guards.py`.
+
+## What's NOT in this release
+
+No new ripping/validation/organization features.  Engine behavior
+under default settings is byte-identical to v1.0.21 — every
+change preserves prior behavior at default values.
 
 ## Companion fork: JellyRip AI
 
-- AI release page: [ai-v1.0.21 release](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.21)
+The AI fork ships an assistant layer (chat sidebar + AI provider
+integrations) on top of the same disc-ripping core.
+
+- AI release page: [ai-v1.0.22 release](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.22)
 - AI project site: [unexpear-softwhere.github.io/JellyRipAI](https://unexpear-softwhere.github.io/JellyRipAI/)
