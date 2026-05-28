@@ -58,10 +58,8 @@ _bootstrap_profile_from_argv()
 
 from config import load_startup_config
 from shared.runtime import (
-    get_active_profile,
     get_config_dir,
     get_profile_aumid,
-    get_profile_window_title,
 )
 
 
