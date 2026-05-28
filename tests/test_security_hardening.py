@@ -104,37 +104,86 @@ def test_updater_signature_check_uses_trusted_powershell(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "launch_downloaded_update lived in retired gui/update_ui.py; "
-        "the PySide6 replacement (tools/update_check.py) is a deferred-port "
-        "stub today.  Restore this test once the Qt-native update flow "
-        "lands — the trusted-powershell property must hold."
+def test_update_check_stub_does_not_shell_out(monkeypatch):
+    """The Qt-side ``tools.update_check.check_for_updates`` is a
+    "feature deferred" stub.  As long as it stays a stub, it must
+    never grow subprocess / shell-out surface area accidentally —
+    that's how the prior tkinter implementation became a
+    trusted-binary attack target in the first place.
+
+    Pins three negative properties:
+      * ``subprocess.run`` / ``Popen`` / ``call`` not invoked
+      * ``os.system`` not invoked
+      * no ``shutil.copy*`` (would suggest the launch-downloaded-
+        update path is being reintroduced without re-enabling the
+        signature verification tests #3-#4 above)
+
+    Reconstructed 2026-05-08 from the prior skip reason that
+    pointed at "trusted-powershell property".  When the Qt-native
+    update flow lands and brings back the launch path, this test
+    should be replaced with the original positive-property test
+    (signed-binary launch via trusted PowerShell).
+    """
+    import subprocess as _sp
+    from unittest.mock import MagicMock
+    import tools.update_check as uc
+
+    shells: list[str] = []
+    monkeypatch.setattr(_sp, "run",   lambda *a, **kw: shells.append("run")   or MagicMock())
+    monkeypatch.setattr(_sp, "Popen", lambda *a, **kw: shells.append("Popen") or MagicMock())
+    monkeypatch.setattr(_sp, "call",  lambda *a, **kw: shells.append("call")  or 0)
+
+    import os as _os
+    monkeypatch.setattr(_os, "system", lambda *_a, **_kw: shells.append("system") or 0)
+
+    fake_window = MagicMock()
+    uc.check_for_updates(fake_window)
+
+    assert shells == [], (
+        "Update stub must remain pure-Python — any shell-out is a "
+        "regression toward the retired tkinter trusted-binary surface."
     )
-)
-def test_launch_downloaded_update_cleanup_uses_trusted_powershell():
-    pass
+    # And: it must talk to its window via the documented hooks only.
+    fake_window.set_status.assert_called_once()
+    fake_window.append_log.assert_called()
 
 
-@pytest.mark.skip(
-    reason=(
-        "check_for_updates lived in retired gui/update_ui.py; the PySide6 "
-        "replacement is currently a stub at tools/update_check.py.  Restore "
-        "this test once the Qt-native update flow lands — the empty-thumbprint "
-        "block path must keep working so users can't disable signature "
-        "verification by clearing the cfg key."
+def test_update_check_stub_logs_releases_url_to_match_fork(monkeypatch):
+    """The stub directs users to the right GitHub Releases URL for
+    the fork they're running (unexpear/JellyRip on MAIN,
+    unexpear-softwhere/JellyRipAI on AI BRANCH).  Pinned because the
+    AI fork copy of this file landed at a different URL — confirming
+    each fork's stub points at its own releases page so users don't
+    get sent to the wrong fork's downloads.
+    """
+    from unittest.mock import MagicMock
+    import tools.update_check as uc
+
+    fake_window = MagicMock()
+    uc.check_for_updates(fake_window)
+
+    logged_lines = [
+        call.args[0]
+        for call in fake_window.append_log.call_args_list
+    ]
+    assert any(
+        "https://github.com/unexpear/JellyRip/releases" in line
+        for line in logged_lines
+    ), (
+        "MAIN's stub must direct users to MAIN's releases page, "
+        f"not the AI fork's.  Logged lines: {logged_lines}"
     )
-)
-def test_check_for_updates_blocks_cleanly_without_signer_thumbprint():
-    pass
 
 
 @pytest.mark.skip(
     reason=(
         "_open_path_in_explorer lived on the retired tkinter "
         "JellyRipperGUI.  The PySide6 UI uses QFileDialog (Browse Folder) "
-        "and has no equivalent 'open this folder in Explorer' surface yet.  "
-        "If we add one, restore the trusted-explorer property test."
+        "and has no equivalent 'open this folder in Explorer' surface yet — "
+        "verified by `grep open_path_in_explorer gui_qt/` returning zero "
+        "hits.  When that feature is added, this test should be restored "
+        "and retargeted at the Qt implementation to pin the "
+        "trusted-explorer.exe-only property."
     )
 )
 def test_open_path_in_explorer_uses_trusted_explorer():
@@ -145,26 +194,27 @@ def test_open_path_in_explorer_uses_trusted_explorer():
     reason=(
         "_reveal_path_in_explorer lived on the retired tkinter "
         "JellyRipperGUI.  Same situation as _open_path_in_explorer — "
-        "no Qt-side reveal-in-explorer surface today."
+        "no Qt-side reveal-in-explorer surface today (verified absent "
+        "in gui_qt/).  Restore when the feature is added on the Qt side."
     )
 )
 def test_reveal_path_in_explorer_uses_trusted_explorer():
     pass
 
 
-@pytest.mark.skip(
-    reason=(
-        "_notify_complete on the retired tkinter UI used PowerShell to play "
-        "a notification sound.  The PySide6 replacement is "
-        "JellyRipTray.notify_complete (gui_qt/tray_icon.py), which uses "
-        "QSystemTrayIcon's Qt-native showMessage — no subprocess, no "
-        "powershell.  The 'trusted exe path' property doesn't apply to "
-        "the Qt path, but tray.notify_complete has its own coverage in "
-        "test_pyside6_tray_icon.py."
-    )
-)
-def test_notify_complete_uses_trusted_powershell():
-    pass
+# test_notify_complete_uses_trusted_powershell DELETED 2026-05-08.
+#
+# The retired tkinter UI shelled out to PowerShell to play a
+# notification sound; the original test pinned the trusted-exe-path
+# property of that shell-out.  The PySide6 replacement
+# (``JellyRipTray.notify_complete`` in ``gui_qt/tray_icon.py``) uses
+# ``QSystemTrayIcon.showMessage``, a Qt-native API that doesn't
+# spawn subprocesses — the "trusted exe path" property literally
+# doesn't apply anymore.  Coverage for the new path lives in
+# ``tests/test_pyside6_tray_icon.py``
+# (``test_tray_unavailable_path_is_a_no_op``,
+# ``test_tray_construction_does_not_raise``, etc.).  Nothing to
+# re-enable here; the slot is just removed.
 
 
 # ---------------------------------------------------------------------------
