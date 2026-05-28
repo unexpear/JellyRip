@@ -161,6 +161,12 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_user_prompt_timeout_seconds": 300,
     "opt_disc_swap_timeout_enabled": False,
     "opt_disc_swap_timeout_seconds": 300,
+    # How long ``_disc_present`` waits for a drive to either report
+    # a disc or time out, in seconds.  Read by
+    # ``controller/controller.py:_disc_present`` with a hardcoded
+    # 45-second fallback; surfacing here so the value is discoverable
+    # and tweakable from config.json (and eventually from Settings).
+    "opt_disc_presence_probe_seconds": 45,
     "opt_file_stabilization": True,
     "opt_stabilize_timeout_seconds": 60,
     "opt_stabilize_required_polls": 4,
@@ -199,16 +205,12 @@ DEFAULTS: dict[str, ConfigScalar] = {
     "opt_strict_mode": False,
     "opt_session_failure_report": True,
     "opt_plain_english_profile_summary": False,
-    # PySide6 migration scaffolding (Phase 3a, 2026-05-03).
-    # When True, main.py launches the QApplication path in
-    # gui_qt/app.py instead of the tkinter JellyRipperGUI.  Default
-    # False so the existing tkinter UI is unchanged for users who
-    # haven't opted in to the in-progress migration.  See
-    # docs/migration-roadmap.md and docs/pyside6-migration-plan.md.
-    "opt_use_pyside6": False,
     # Selected QSS theme name (without .qss extension).  Available
-    # themes live under gui_qt/qss/.  Sub-phase 3d will add an
-    # in-app picker; for now users edit config.json directly.
+    # themes live under gui_qt/qss/.  Surfaced via the Appearance
+    # settings tab (gui_qt/settings/tab_appearance.py).  The prior
+    # ``opt_use_pyside6`` toggle was removed in v1.0.19 when
+    # tkinter was retired; PySide6 is now the only UI path so the
+    # flag had no meaning.
     "opt_pyside6_theme": "dark_github",
     "opt_log_cap_lines": 300000,
     "opt_log_trim_lines": 200000,
