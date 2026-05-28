@@ -201,7 +201,8 @@ Phase 4 (see
 - **UX copy sweep.** 12 user-facing strings rewrote for clarity
   (workflow seed lines, status messages, dialog prompts,
   pluralization for `N title(s)` → `N title`/`N titles`). UTF-8
-  em-dash mojibake (`â€"`) cleared throughout
+  em-dash mojibake (the `â` `€` `"` triple that UTF-8 em-dashes
+  collapse into when misread as Windows-1252) cleared throughout
   `engine/ripper_engine.py` and `controller/controller.py`.
 - **Preview "already running" status-bar surface.** When a user
   rapidly re-clicks Preview during a busy preview, the "Wait for

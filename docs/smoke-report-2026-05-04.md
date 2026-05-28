@@ -804,7 +804,9 @@ file as a separate finding.
 ### UTF-8 em-dash mojibake in log lines
 
 Log line `Disk space â€" Required: 3.0 GB Free: 3910.7 GB`
-shows the classic Latin-1-decoded UTF-8 em-dash sequence.
+shows the classic Latin-1-decoded UTF-8 em-dash sequence (the
+literal mojibake bytes preserved here intentionally — this is
+the smoke report documenting what the bug looked like).
 Indicates a code path that's emitting the em-dash character but
 something in the pipeline (log writer? GUI render?) decoded as
 Latin-1 instead of UTF-8.
