@@ -97,10 +97,16 @@ def test_scan_disc_logs_actionable_summary_and_preserves_results(monkeypatch):
         def readline(self):
             return next(self._lines, "")
 
+        def close(self):
+            pass
+
     class _FakeProc:
         def __init__(self):
             self.stdout = _FakeStdout()
             self.returncode = 0
+
+        def poll(self):
+            return self.returncode
 
         def wait(self, timeout=None):
             _ = timeout
@@ -143,10 +149,16 @@ def test_scan_disc_returns_none_on_nonzero_exit(monkeypatch):
         def readline(self):
             return next(self._lines, "")
 
+        def close(self):
+            pass
+
     class _FakeProc:
         def __init__(self):
             self.stdout = _FakeStdout()
             self.returncode = 1
+
+        def poll(self):
+            return self.returncode
 
         def wait(self, timeout=None):
             _ = timeout
