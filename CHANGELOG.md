@@ -2,6 +2,32 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.23] - 2026-05-30
+
+Bug-fix release on top of the 1.0.22 audit cleanup — two user-facing
+fixes around disc scanning and tool detection.
+
+### Fixed
+
+- **Stop is now responsive during disc scan.**  The scan loop read
+  MakeMKV's output with a blocking ``readline()``, so the Stop button
+  could appear frozen until the next line arrived.  Scan output now
+  feeds through a reader thread + queue with ``proc.poll()``, so Stop
+  takes effect promptly and trailing title metadata isn't dropped.
+
+- **Blank tool path no longer breaks FFmpeg / MakeMKV auto-detect.**
+  ``os.path.normpath("")`` returns ``"."``, which the tool resolvers
+  read as a configured directory — so an empty ``ffprobe_path`` /
+  ``makemkvcon_path`` (meaning "auto-detect") found nothing and
+  reported "tool not found".  A new ``_norm_tool_path`` helper keeps a
+  blank path blank, so auto-detection (and the bundled FFmpeg) work.
+
+### Tests
+
+- Scan-disc process test fakes gained ``poll()`` + ``stdout.close()``
+  to match the reader-thread scan loop.  Full suite: 1647 passed, 5
+  skipped.
+
 ## [1.0.22] - 2026-05-28
 
 Audit-driven cleanup release.  No functional regressions; lots of

@@ -1,58 +1,41 @@
-## JellyRip v1.0.22 Release Notes (UNSTABLE)
+## JellyRip v1.0.23 Release Notes (UNSTABLE)
 
-JellyRip v1.0.22 — deep audit cleanup.  Many small correctness +
-ergonomics improvements across the engine, settings UI, and test
-suite.  No functional regressions; the bundled ripper, validator,
-and library organizer behave identically to v1.0.21 under default
-settings.
+JellyRip v1.0.23 — bug-fix release on top of the v1.0.22 audit
+cleanup.  Two user-facing fixes (disc-scan responsiveness + tool
+auto-detection); no new features.
 
 ## Download
 
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.22/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.22
+- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.23/JellyRip.exe
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.23/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.23
 - Project site: https://unexpear.github.io/JellyRip/
 
 ### Highlights
 
 Engine
-- stabilize_timeout is now an actual deadline (was a single 1s
-  sample) — polls every 0.1–1.0s up to the configured timeout,
-  honors abort_event between samples.
-- Drive-probe retries default bumped from 3 to 5.
-- Dead scan_disc delegate removed (was shadowed by the live
-  inline implementation).
-- 5 magic numbers named as module-level constants.
-- print() in engine layer routed through stdlib logging.
-
-UI / Settings
-- Pages docs site nav now works (baseurl set in _config.yml).
-- Settings tab persist failures now log instead of swallowing.
-- Utility chip failures surface in status bar + session log.
-
-Workflow
-- Partial-extras-move failures now flag the session as partial.
-- Dead resume scaffolding removed from _run_disc_inner.
+- Stop is now responsive during disc scan.  MakeMKV scan output
+  feeds through a reader thread + queue (proc.poll()) instead of a
+  blocking readline(), so the Stop button takes effect promptly and
+  trailing title metadata isn't dropped.
+- Blank tool path no longer breaks FFmpeg/ffprobe auto-detect.  An
+  empty ffprobe_path/makemkvcon_path used to collapse to "." and
+  report "tool not found"; it now stays blank so auto-detection (and
+  the bundled FFmpeg) is used.
 
 Tests
-- 3 of 5 truncated test bodies reconstructed.
-- 2 of 5 skipped security tests reframed as positive Qt-side
-  tests.
-- Test suite: 1645 passed, 8 skipped (was 1642 / 11).
-
-Documentation hygiene
-- Mojibake cleared from CHANGELOG.md, smoke-report-2026-05-04.md,
-  and tests/test_behavior_guards.py.
+- Scan-disc process test fakes gained poll() + stdout.close().
+- Full suite: 1647 passed, 5 skipped.
 
 ### What's NOT in this release
 
-No new ripping/validation/organization features.  Engine behavior
-under default settings is byte-identical to v1.0.21.
+No new ripping/validation/organization features.  These are
+targeted fixes to scan responsiveness and tool detection.
 
 ### Companion fork: JellyRip AI
 
 The AI fork ships an assistant layer on top of the same disc-
 ripping core.
 
-- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.22
+- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.23
 - AI project site: https://unexpear-softwhere.github.io/JellyRipAI/
