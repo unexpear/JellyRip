@@ -110,9 +110,11 @@ def test_critical_gui_qt_modules_in_hidden_imports():
         # Top-level shell + handlers
         "gui_qt.main_window",
         "gui_qt.app",
-        # Theming infrastructure (3a-themes)
+        # Theming infrastructure (3a-themes + token/custom system)
         "gui_qt.theme",
         "gui_qt.themes",
+        "gui_qt.qss_render",
+        "gui_qt.custom_themes",
         # 3c-i leaves
         "gui_qt.formatters",
         "gui_qt.log_pane",
@@ -136,6 +138,7 @@ def test_critical_gui_qt_modules_in_hidden_imports():
         "gui_qt.dialogs.list_picker",
         "gui_qt.dialogs.space_override",
         "gui_qt.dialogs.temp_manager",
+        "gui_qt.dialogs.theme_maker",
         # Settings (3d, renamed 2026-05-04)
         "gui_qt.settings",
         "gui_qt.settings.dialog",

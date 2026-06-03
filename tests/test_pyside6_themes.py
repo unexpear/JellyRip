@@ -3,7 +3,7 @@
 Pins the contracts for the 6 themes' tokens and the QSS files they
 generate via ``tools/build_qss.py``:
 
-- ``THEMES`` exposes exactly 6 themes with unique IDs.
+- ``THEMES`` exposes exactly 15 themes with unique IDs.
 - Every theme has all the tokens declared in ``TOKEN_KEYS``.
 - Every CTA pair (``go``/``goFg``, ``info``/``infoFg``, …) hits at
   least WCAG AA Large (3:1) contrast.  Themes that claim AA or AAA
@@ -75,18 +75,17 @@ _AAA = 7.0
 # ---------------------------------------------------------------------------
 
 
-def test_six_themes_with_unique_ids():
-    """Exactly 6 themes, each with a unique ID — pins the design
-    delivery from 2026-05-03 (replaces the original 3-theme
-    placeholder set)."""
-    assert len(THEMES) == 6, f"expected 6 themes, got {len(THEMES)}"
+def test_all_themes_have_unique_ids():
+    """Exactly 15 themes (6 base from 2026-05-03 + 9 added 2026-06-03),
+    each with a unique ID."""
+    assert len(THEMES) == 15, f"expected 15 themes, got {len(THEMES)}"
     ids = [t.id for t in THEMES]
-    assert len(set(ids)) == 6, f"theme IDs must be unique, got {ids}"
+    assert len(set(ids)) == 15, f"theme IDs must be unique, got {ids}"
 
 
 def test_expected_theme_ids_present():
-    """The 6 specific theme IDs from the user-delivered design.  If
-    this changes, we need a deliberate update — not silent drift."""
+    """The 15 specific theme IDs (6 base + 9 added).  If this changes,
+    we need a deliberate update — not silent drift."""
     expected = {
         "dark_github",
         "light_inverted",
@@ -94,6 +93,15 @@ def test_expected_theme_ids_present():
         "hc_dark",
         "slate",
         "frost",
+        "monokai",
+        "rose_pine",
+        "tokyo_night",
+        "catppuccin_mocha",
+        "everforest_dark",
+        "synthwave",
+        "ayu_mirage",
+        "carbon",
+        "palenight",
     }
     assert set(theme_ids()) == expected
 

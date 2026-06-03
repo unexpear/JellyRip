@@ -119,7 +119,7 @@ QTreeWidget#outputTreeView {
     border: 1px solid #3a4a5e;
     border-radius: 6px;
     selection-background-color: #4a78b8;
-    selection-color: #dbe5ee;
+    selection-color: #ffffff;
 }
 
 QTreeView::item:hover,
@@ -138,7 +138,7 @@ QTextEdit {
     border-radius: 5px;
     padding: 6px 10px;
     selection-background-color: #4a78b8;
-    selection-color: #dbe5ee;
+    selection-color: #ffffff;
 }
 
 QLineEdit:focus,
@@ -172,8 +172,15 @@ QComboBox QAbstractItemView {
     color: #dbe5ee;
     border: 1px solid #3a4a5e;
     selection-background-color: #4a78b8;
-    selection-color: #dbe5ee;
+    selection-color: #ffffff;
     outline: none;
+}
+
+/* Disabled combo entries (e.g. the chat model picker's Ollama cloud
+ * models when you aren't signed in) use the theme's muted color so they
+ * read as unavailable and stay legible in every theme - no baked hex. */
+QComboBox QAbstractItemView::item:disabled {
+    color: #8ea0b3;
 }
 
 QCheckBox {

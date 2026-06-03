@@ -4,17 +4,15 @@ Pins the contracts for sub-phase 3a per
 [docs/handoffs/phase-3a-pyside6-scaffolding.md](../docs/handoffs/phase-3a-pyside6-scaffolding.md):
 
 - ``gui_qt/`` directory exists with the expected layout.
-- The 6 themes (``dark_github``, ``light_inverted``, ``dracula_light``,
-  ``hc_dark``, ``slate``, ``frost``) all have non-empty QSS files.
-  **Updated 2026-05-03** when the user delivered design mockups for
-  6 themes (superseding the original 3-theme placeholder set).
-  Empty placeholder files like the deprecated ``warm.qss`` are
-  filtered out by ``list_themes()`` and don't need to count.
-- ``gui_qt.theme.list_themes()`` returns the 6 real names.
-- ``gui_qt.theme.load_theme()`` raises ``FileNotFoundError`` on
-  unknown names AND on empty placeholders, with a helpful message.
+- All built-in themes have non-empty committed QSS files under
+  ``gui_qt/qss/`` — dev-time artifacts written by ``tools/build_qss.py``.
+  The runtime renders themes from color tokens, not these files.
+- ``gui_qt.theme.list_themes()`` returns the built-in ids (plus any
+  user-made custom themes).
+- ``gui_qt.theme.load_theme()`` raises ``FileNotFoundError`` on an
+  unknown name, with a helpful message listing the available themes.
 - ``gui_qt.theme.load_theme()`` calls ``app.setStyleSheet`` with the
-  QSS file contents.
+  QSS rendered from the theme's color tokens.
 - ``DEFAULTS`` in ``shared/runtime.py`` has ``opt_use_pyside6`` and
   ``opt_pyside6_theme`` with the documented defaults.
 
@@ -50,6 +48,15 @@ _EXPECTED_THEMES = (
     "hc_dark",
     "slate",
     "frost",
+    "monokai",
+    "rose_pine",
+    "tokyo_night",
+    "catppuccin_mocha",
+    "everforest_dark",
+    "synthwave",
+    "ayu_mirage",
+    "carbon",
+    "palenight",
 )
 
 
@@ -93,11 +100,17 @@ def test_gui_qt_qss_directory_has_expected_themes():
 # --------------------------------------------------------------------------
 
 
-def test_list_themes_returns_expected_names_sorted():
-    """``list_themes()`` returns the theme names without the .qss
-    extension, sorted for stable picker order."""
+def test_list_themes_includes_all_builtins():
+    """``list_themes()`` returns every built-in theme id (in
+    declaration order), ahead of any user-made custom themes.
+
+    We assert on the built-in subset (order-independent) so a developer
+    who has custom themes saved in their profile doesn't spuriously
+    fail this test — customs are legitimately listed after the
+    built-ins."""
     names = theme_module.list_themes()
-    assert names == sorted(_EXPECTED_THEMES)
+    builtins = [n for n in names if n in _EXPECTED_THEMES]
+    assert set(builtins) == set(_EXPECTED_THEMES)
 
 
 class _FakeApp:
@@ -112,39 +125,32 @@ class _FakeApp:
         self.last_stylesheet = qss
 
 
-def test_load_theme_applies_qss_to_app(tmp_path, monkeypatch):
-    """``load_theme()`` reads the QSS file and applies it via
-    ``app.setStyleSheet``.  Pins the loader's primary contract."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    (fake_qss_dir / "test_theme.qss").write_text(
-        "QPushButton { color: #58a6ff; }",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
+def test_load_theme_renders_builtin_from_tokens():
+    """``load_theme()`` renders the theme's color tokens to QSS and
+    applies it via ``app.setStyleSheet``.  Pins the loader's primary
+    contract — token render at runtime, no static .qss read."""
+    from gui_qt.themes import THEMES_BY_ID
 
     app = _FakeApp()
-    theme_module.load_theme(app, "test_theme")
+    theme_module.load_theme(app, "dark_github")
 
-    assert app.last_stylesheet == "QPushButton { color: #58a6ff; }"
+    qss = app.last_stylesheet
+    assert qss and "QPushButton" in qss
+    # The rendered QSS carries the theme's own token colors.
+    assert THEMES_BY_ID["dark_github"].tokens["bg"] in qss
 
 
-def test_load_theme_raises_on_unknown_theme(tmp_path, monkeypatch):
-    """Unknown theme name raises ``FileNotFoundError`` so callers
-    can show a clear error rather than silently rendering an
-    unstyled window."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    (fake_qss_dir / "real_theme.qss").write_text("/* real */")
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
-
+def test_load_theme_raises_on_unknown_theme():
+    """Unknown theme name raises ``FileNotFoundError`` — with the
+    available themes listed — so callers can show a clear error rather
+    than silently rendering an unstyled window."""
     app = _FakeApp()
     with pytest.raises(FileNotFoundError) as excinfo:
         theme_module.load_theme(app, "doesnt_exist")
 
     msg = str(excinfo.value)
     assert "doesnt_exist" in msg, "error message names the missing theme"
-    assert "real_theme" in msg, (
+    assert "dark_github" in msg, (
         "error message lists available themes so the user can fix "
         "the typo without going to the docs"
     )
@@ -153,38 +159,20 @@ def test_load_theme_raises_on_unknown_theme(tmp_path, monkeypatch):
     )
 
 
-def test_load_theme_with_real_qss_files_does_not_raise():
-    """Each of the 6 real QSS files in ``gui_qt/qss/`` must load
-    without error and produce a non-empty stylesheet.  Pins that the
-    loader can read every documented theme and that
-    ``tools/build_qss.py`` produced real content for each."""
+def test_load_theme_renders_every_builtin():
+    """Every built-in theme must render to a non-empty stylesheet that
+    styles QPushButton.  Pins that each theme's token set is complete
+    and the renderer produces real content for it."""
     app = _FakeApp()
     for theme_name in _EXPECTED_THEMES:
         # Must not raise.
         theme_module.load_theme(app, theme_name)
         # And must have real content (not just empty/whitespace).
         assert app.last_stylesheet, (
-            f"theme {theme_name!r} loaded but produced empty stylesheet — "
-            f"did tools/build_qss.py run?"
+            f"theme {theme_name!r} loaded but produced empty stylesheet"
         )
         assert "QPushButton" in app.last_stylesheet, (
             f"theme {theme_name!r} doesn't style QPushButton — "
             f"template regression?"
         )
-
-
-def test_load_theme_rejects_empty_placeholder(tmp_path, monkeypatch):
-    """Empty .qss files (like the deprecated ``warm.qss`` pending
-    deletion) must be rejected by ``load_theme`` — they would
-    otherwise silently produce an unstyled window, which is
-    indistinguishable from "no theme loaded" and very confusing to
-    debug.  Pinned as a regression guard for the
-    ``_is_real_theme_file`` filter."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    (fake_qss_dir / "placeholder.qss").write_text("")  # 0 bytes
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
-
-    with pytest.raises(FileNotFoundError):
-        theme_module.load_theme(_FakeApp(), "placeholder")
 

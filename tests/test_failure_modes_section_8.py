@@ -4,21 +4,13 @@ Pins the app's defenses against three real-world environment
 failures the smoke bot could not exercise live without destroying
 test data:
 
-1. **Corrupt QSS theme file** — non-UTF-8 binary content masquerading
-   as a ``.qss`` file (e.g. someone copied a JPEG over the theme).
-   The loader must surface a clear ``FileNotFoundError`` rather than
-   propagating ``UnicodeDecodeError`` — that distinction is what
-   keeps ``gui_qt/app.py`` from crashing on startup before the
-   window appears.  An invalid-but-utf8 QSS (bad syntax) is NOT
-   tested here — Qt's ``setStyleSheet`` swallows parse errors and
-   degrades to default styling, which is acceptable behavior.
-
-2. **Locked / permission-denied QSS file** — same outcome required
-   as (1): friendly ``FileNotFoundError`` with available themes
-   listed, no startup crash.  Simulated by making the file
-   unreadable and patching ``Path.read_text`` to raise
-   ``PermissionError``.  Direct chmod tests don't work reliably on
-   Windows.
+1. **Unloadable theme** — themes render from color tokens at runtime,
+   so the old "corrupt .qss file on disk" failure can't happen for
+   built-ins.  The modern equivalents are an unknown theme id (e.g. a
+   saved custom theme the user deleted) or a custom theme whose JSON is
+   corrupt.  ``load_theme`` must surface a clear ``FileNotFoundError``
+   listing the available themes — never crash startup before the
+   window appears.
 
 3. **Disk-space block** — ``check_disk_space`` returns ``"block"``
    when free is below the hard floor, ``"warn"`` when between hard
@@ -72,101 +64,50 @@ class _FakeApp:
 
 
 # --------------------------------------------------------------------------
-# (1) Corrupt QSS — binary content
+# (1) Unloadable theme — unknown id / deleted custom / corrupt custom JSON
 # --------------------------------------------------------------------------
 
 
-def test_corrupt_qss_binary_content_raises_friendly_filenotfound(
-    tmp_path, monkeypatch,
-):
-    """A non-empty file with non-UTF-8 binary content must NOT
-    propagate ``UnicodeDecodeError`` — that would crash startup
-    before the main window appears.  Loader normalizes to
-    ``FileNotFoundError`` with the available-themes hint so the
-    caller in ``gui_qt/app.py`` can fall back cleanly."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    # Write JPEG-like bytes — invalid UTF-8.
-    (fake_qss_dir / "broken.qss").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF")
-    (fake_qss_dir / "good.qss").write_text(
-        "QPushButton { color: #58a6ff; }",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
-
+def test_unknown_theme_raises_friendly_filenotfound():
+    """Themes render from color tokens at runtime, so the old "corrupt
+    .qss file" failure can't happen for built-ins.  The modern
+    equivalent is a theme id that resolves to nothing (e.g. a saved
+    custom theme the user deleted).  ``load_theme`` must surface a
+    friendly ``FileNotFoundError`` listing the available themes —
+    never crash startup before the window appears."""
     app = _FakeApp()
     with pytest.raises(FileNotFoundError) as excinfo:
-        theme_module.load_theme(app, "broken")
+        theme_module.load_theme(app, "no_such_theme")
 
     msg = str(excinfo.value)
-    assert "broken" in msg, "error message names the broken theme"
-    assert "good" in msg, (
-        "error message lists available themes so the user can "
-        "switch to one without going to the docs"
+    assert "no_such_theme" in msg, "error names the missing theme"
+    assert "dark_github" in msg, (
+        "error lists available themes so the user can switch without "
+        "going to the docs"
     )
     assert app.last_stylesheet is None, (
-        "no stylesheet should be applied on failure — caller falls "
-        "back to default look"
+        "no stylesheet applied on failure — caller falls back to default"
     )
 
 
-def test_corrupt_qss_chains_original_exception_for_diagnostics(
-    tmp_path, monkeypatch,
-):
-    """``raise FileNotFoundError(...) from exc`` chains the
-    underlying ``UnicodeDecodeError`` so debug logging /
-    ``diag_exception`` can still capture root cause without
-    surfacing it to the user."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    (fake_qss_dir / "broken.qss").write_bytes(b"\xff\xfe\x00\x00")
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
+def test_corrupt_custom_theme_json_degrades_gracefully(tmp_path, monkeypatch):
+    """A custom theme whose JSON file is corrupt must not crash the
+    loader: ``custom_themes.get_custom`` returns ``None`` for
+    unparseable JSON, so ``load_theme`` degrades to the same friendly
+    ``FileNotFoundError`` as an unknown theme — no stylesheet applied."""
+    from gui_qt import custom_themes
 
-    with pytest.raises(FileNotFoundError) as excinfo:
-        theme_module.load_theme(_FakeApp(), "broken")
-
-    cause = excinfo.value.__cause__
-    assert cause is not None, "must chain underlying exception via 'from'"
-    assert isinstance(cause, (UnicodeDecodeError, OSError))
-
-
-# --------------------------------------------------------------------------
-# (2) Locked / permission-denied QSS
-# --------------------------------------------------------------------------
-
-
-def test_locked_qss_permission_denied_raises_friendly_filenotfound(
-    tmp_path, monkeypatch,
-):
-    """An unreadable .qss (locked by another process, NTFS ACL deny,
-    network share off-line) must NOT propagate ``PermissionError``.
-    Same normalization as (1)."""
-    fake_qss_dir = tmp_path / "qss"
-    fake_qss_dir.mkdir()
-    qss_path = fake_qss_dir / "locked.qss"
-    qss_path.write_text("/* placeholder */", encoding="utf-8")
-    monkeypatch.setattr(theme_module, "THEME_DIR", fake_qss_dir)
-
-    # Simulate the read failure by patching Path.read_text — chmod
-    # is unreliable on Windows for tests.
-    real_read_text = Path.read_text
-
-    def fake_read_text(self, *args, **kwargs):
-        if self == qss_path:
-            raise PermissionError(
-                f"[Errno 13] Permission denied: {qss_path}"
-            )
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    themes_dir = tmp_path / "themes"
+    themes_dir.mkdir()
+    (themes_dir / "custom_broken.json").write_bytes(
+        b"\xff\xd8\xff\xe0 not valid json"
+    )
+    monkeypatch.setattr(custom_themes, "themes_dir", lambda: themes_dir)
 
     app = _FakeApp()
-    with pytest.raises(FileNotFoundError) as excinfo:
-        theme_module.load_theme(app, "locked")
-
-    msg = str(excinfo.value)
-    assert "locked" in msg
-    assert "could not be read" in msg.lower() or "PermissionError" in msg
+    with pytest.raises(FileNotFoundError):
+        theme_module.load_theme(app, "custom_broken")
+    assert app.last_stylesheet is None
 
 
 # --------------------------------------------------------------------------

@@ -76,7 +76,7 @@ TOKEN_KEYS: tuple[str, ...] = (
     "warn", "warnFg",
     "danger", "dangerFg",
     # interaction state
-    "hover", "selection",
+    "hover", "selection", "selectionFg",
     # log panel
     "logBg", "promptFg", "answerFg",
     # drop shadow rgba string (used inline in QSS)
@@ -128,7 +128,7 @@ THEMES: List[Theme] = [
             "alt": "#6e40c9",    "altFg": "#ffffff",
             "warn": "#9a6700",   "warnFg": "#ffffff",
             "danger": "#c94b4b", "dangerFg": "#ffffff",
-            "hover": "#1f2933", "selection": "#1f6feb",
+            "hover": "#1f2933", "selection": "#1f6feb", "selectionFg": "#ffffff",
             "logBg": "#161b22", "promptFg": "#f0e68c", "answerFg": "#90ee90",
             "shadow": "rgba(0, 0, 0, 0.4)",
         },
@@ -156,7 +156,7 @@ THEMES: List[Theme] = [
             "alt": "#8a6a14",    "altFg": "#ffffff",   # mustard
             "warn": "#a64614",   "warnFg": "#ffffff",   # rust
             "danger": "#9b1c2c", "dangerFg": "#ffffff",   # crimson
-            "hover": "#eaeef2", "selection": "#0e6b6b",
+            "hover": "#eaeef2", "selection": "#0e6b6b", "selectionFg": "#ffffff",
             "logBg": "#f6f8fa", "promptFg": "#8a6a14", "answerFg": "#1f6e3a",
             "shadow": "rgba(31, 35, 40, 0.08)",
         },
@@ -184,7 +184,7 @@ THEMES: List[Theme] = [
             "alt": "#0a8a96",    "altFg": "#ffffff",   # dracula cyan
             "warn": "#8a6a14",   "warnFg": "#ffffff",   # deepened yellow
             "danger": "#c4312f", "dangerFg": "#ffffff",   # dracula red
-            "hover": "#e3d4ad", "selection": "#6f42c1",
+            "hover": "#e3d4ad", "selection": "#6f42c1", "selectionFg": "#ffffff",
             "logBg": "#ede1c5", "promptFg": "#8a6a14", "answerFg": "#0a8a96",
             "shadow": "rgba(61, 47, 21, 0.12)",
         },
@@ -211,7 +211,7 @@ THEMES: List[Theme] = [
             "alt": "#ff6ec7",    "altFg": "#000000",   # hot pink
             "warn": "#ffd60a",   "warnFg": "#000000",   # bright yellow
             "danger": "#ff3030", "dangerFg": "#ffffff",   # pure red
-            "hover": "#1a1a1a", "selection": "#ffd60a",
+            "hover": "#1a1a1a", "selection": "#ffd60a", "selectionFg": "#000000",
             "logBg": "#0a0a0a", "promptFg": "#ffd60a", "answerFg": "#00d26a",
             "shadow": "rgba(0, 0, 0, 0.8)",
         },
@@ -239,7 +239,7 @@ THEMES: List[Theme] = [
             "alt": "#8a8ec4",    "altFg": "#0d1721",   # periwinkle
             "warn": "#b88550",   "warnFg": "#0d1721",   # bronze
             "danger": "#a64545", "dangerFg": "#ffffff",   # brick
-            "hover": "#2a3a4d", "selection": "#4a78b8",
+            "hover": "#2a3a4d", "selection": "#4a78b8", "selectionFg": "#ffffff",
             "logBg": "#22303f", "promptFg": "#b88550", "answerFg": "#4ba89a",
             "shadow": "rgba(0, 0, 0, 0.35)",
         },
@@ -268,9 +268,261 @@ THEMES: List[Theme] = [
             "alt": "#9c5fa3",    "altFg": "#ffffff",   # rich violet
             "warn": "#d4a849",   "warnFg": "#1f1a10",   # saturated yellow
             "danger": "#b8434d", "dangerFg": "#ffffff",   # firm aurora red
-            "hover": "#434c5e", "selection": "#5e81ac",
+            "hover": "#434c5e", "selection": "#5e81ac", "selectionFg": "#ffffff",
             "logBg": "#3b4252", "promptFg": "#d4a849", "answerFg": "#a3be8c",
             "shadow": "rgba(0, 0, 0, 0.4)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Monokai — vivid classic editor palette
+    # ----------------------------------------------------------------
+    Theme(
+        id="monokai",
+        name="Monokai",
+        subtitle="Vivid classic editor",
+        family="dark",
+        notes=(
+            "Monokai's warm-charcoal surface with vivid CTAs — lime-green "
+            "primary, sky-blue secondary, magenta-pink tertiary, orange "
+            "caution, red destructive. High energy."
+        ),
+        tokens={
+            "bg": "#272822", "card": "#2d2e27",
+            "input": "#3a3b32", "border": "#49483e",
+            "fg": "#f8f8f2", "muted": "#a6a28c", "accent": "#66d9ef",
+            "go": "#5a9e1f",     "goFg": "#f8f8f2",   # monokai green (deepened)
+            "info": "#2c8fb5",   "infoFg": "#f8f8f2",   # monokai blue
+            "alt": "#c01c6e",    "altFg": "#f8f8f2",   # monokai pink
+            "warn": "#b8731a",   "warnFg": "#f8f8f2",   # monokai orange
+            "danger": "#d12d2d", "dangerFg": "#f8f8f2",   # red
+            "hover": "#3a3b32", "selection": "#49483e", "selectionFg": "#ffffff",
+            "logBg": "#2d2e27", "promptFg": "#e6db74", "answerFg": "#a6e22e",
+            "shadow": "rgba(0, 0, 0, 0.5)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Rosé Pine — muted soho-vibe, no harsh primaries
+    # ----------------------------------------------------------------
+    Theme(
+        id="rose_pine",
+        name="Rosé Pine",
+        subtitle="Muted soho-vibe dark",
+        family="dark",
+        notes=(
+            "Rosé Pine's plum-charcoal surface with soft natural CTAs — "
+            "pine primary, foam secondary, iris tertiary, gold caution, "
+            "love (rose-red) destructive. Calm and muted throughout."
+        ),
+        tokens={
+            "bg": "#191724", "card": "#1f1d2e",
+            "input": "#26233a", "border": "#403d52",
+            "fg": "#e0def4", "muted": "#908caa", "accent": "#9ccfd8",
+            "go": "#3d7068",     "goFg": "#e0def4",   # pine
+            "info": "#498790",   "infoFg": "#e0def4",   # foam (deepened for AA-L)
+            "alt": "#8177af",    "altFg": "#e0def4",   # iris (deepened for AA-L)
+            "warn": "#a08431",   "warnFg": "#191724",   # gold
+            "danger": "#b4637a", "dangerFg": "#e0def4",   # love
+            "hover": "#26233a", "selection": "#403d52", "selectionFg": "#ffffff",
+            "logBg": "#1f1d2e", "promptFg": "#f6c177", "answerFg": "#9ccfd8",
+            "shadow": "rgba(0, 0, 0, 0.45)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Tokyo Night — cool deep-blue surface, neon-ish CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="tokyo_night",
+        name="Tokyo Night",
+        subtitle="Cool deep-blue night",
+        family="dark",
+        notes=(
+            "Tokyo Night's deep blue-black surface with cool neon CTAs — "
+            "blue primary, cyan secondary, purple tertiary, orange caution, "
+            "red destructive. Modern and crisp."
+        ),
+        tokens={
+            "bg": "#1a1b26", "card": "#1f2030",
+            "input": "#24283b", "border": "#363b54",
+            "fg": "#c0caf5", "muted": "#787c99", "accent": "#7aa2f7",
+            "go": "#3d59a1",     "goFg": "#c0caf5",   # blue
+            "info": "#2e788f",   "infoFg": "#c0caf5",   # cyan (deepened for AA-L)
+            "alt": "#7a5cc0",    "altFg": "#c0caf5",   # purple
+            "warn": "#b3791f",   "warnFg": "#1a1b26",   # orange
+            "danger": "#bb4857", "dangerFg": "#c0caf5",   # red (deepened for AA-L)
+            "hover": "#24283b", "selection": "#363b54", "selectionFg": "#ffffff",
+            "logBg": "#1f2030", "promptFg": "#e0af68", "answerFg": "#9ece6a",
+            "shadow": "rgba(0, 0, 0, 0.5)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Catppuccin Mocha — soft pastel surface, gentle CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="catppuccin_mocha",
+        name="Catppuccin Mocha",
+        subtitle="Soft pastel dark",
+        family="dark",
+        notes=(
+            "Catppuccin's cozy mocha surface with pastel CTAs — mauve "
+            "primary, sapphire secondary, teal tertiary, peach caution, "
+            "red destructive. Low-glare and friendly."
+        ),
+        tokens={
+            "bg": "#1e1e2e", "card": "#181825",
+            "input": "#313244", "border": "#45475a",
+            "fg": "#cdd6f4", "muted": "#9399b2", "accent": "#cba6f7",
+            "go": "#8839ef",     "goFg": "#f5e0dc",   # mauve (deepened for AA)
+            "info": "#3a6cc9",   "infoFg": "#f5e0dc",   # sapphire
+            "alt": "#1a8f8f",    "altFg": "#f5e0dc",   # teal
+            "warn": "#b06a2c",   "warnFg": "#f5e0dc",   # peach (deepened)
+            "danger": "#c4344a", "dangerFg": "#f5e0dc",   # red
+            "hover": "#313244", "selection": "#45475a", "selectionFg": "#ffffff",
+            "logBg": "#181825", "promptFg": "#f9e2af", "answerFg": "#a6e3a1",
+            "shadow": "rgba(0, 0, 0, 0.45)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Everforest Dark — warm green-grey surface, earthy CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="everforest_dark",
+        name="Everforest Dark",
+        subtitle="Warm forest low-contrast",
+        family="dark",
+        notes=(
+            "Everforest's soft green-grey surface with earthy CTAs — green "
+            "primary, aqua secondary, blue tertiary, orange caution, red "
+            "destructive. Comfortable for long sessions."
+        ),
+        tokens={
+            "bg": "#2d353b", "card": "#272e33",
+            "input": "#374247", "border": "#4a555b",
+            "fg": "#d3c6aa", "muted": "#9da9a0", "accent": "#a7c080",
+            "go": "#4f7a52",     "goFg": "#fdf6e3",   # green
+            "info": "#3a8a82",   "infoFg": "#fdf6e3",   # aqua
+            "alt": "#4d7a99",    "altFg": "#fdf6e3",   # blue
+            "warn": "#b07a2c",   "warnFg": "#fdf6e3",   # orange
+            "danger": "#c2433a", "dangerFg": "#fdf6e3",   # red
+            "hover": "#374247", "selection": "#4a555b", "selectionFg": "#ffffff",
+            "logBg": "#272e33", "promptFg": "#dbbc7f", "answerFg": "#a7c080",
+            "shadow": "rgba(0, 0, 0, 0.45)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Synthwave — retro neon on deep indigo
+    # ----------------------------------------------------------------
+    Theme(
+        id="synthwave",
+        name="Synthwave",
+        subtitle="Retro neon outrun",
+        family="dark",
+        notes=(
+            "Deep indigo night with retro neon CTAs — magenta primary, cyan "
+            "secondary, purple tertiary, amber caution, hot red destructive. "
+            "High-energy 80s vibe."
+        ),
+        tokens={
+            "bg": "#1a132f", "card": "#221a3d",
+            "input": "#2d2350", "border": "#3f3370",
+            "fg": "#f0e6ff", "muted": "#a596c8", "accent": "#ff5dc8",
+            "go": "#c81d8e",     "goFg": "#ffffff",   # neon magenta
+            "info": "#1c8fb0",   "infoFg": "#ffffff",   # neon cyan
+            "alt": "#7a3fd0",    "altFg": "#ffffff",   # electric purple
+            "warn": "#b87a14",   "warnFg": "#1a132f",   # amber
+            "danger": "#e0344a", "dangerFg": "#ffffff",   # hot red
+            "hover": "#2d2350", "selection": "#3f3370", "selectionFg": "#ffffff",
+            "logBg": "#221a3d", "promptFg": "#ffcf4d", "answerFg": "#52e0c4",
+            "shadow": "rgba(0, 0, 0, 0.55)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Ayu Mirage — slate-blue surface, warm-leaning CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="ayu_mirage",
+        name="Ayu Mirage",
+        subtitle="Soft slate-blue mid-dark",
+        family="dark",
+        notes=(
+            "Ayu Mirage's muted slate-blue surface with warm-leaning CTAs — "
+            "orange primary, blue secondary, purple tertiary, yellow caution, "
+            "red destructive. Balanced mid-dark."
+        ),
+        tokens={
+            "bg": "#1f2430", "card": "#232834",
+            "input": "#2b3140", "border": "#3b4252",
+            "fg": "#cbccc6", "muted": "#8a8f99", "accent": "#ffcc66",
+            "go": "#c47a1f",     "goFg": "#1f2430",   # orange
+            "info": "#3a7fc4",   "infoFg": "#ffffff",   # blue
+            "alt": "#8a6fd0",    "altFg": "#ffffff",   # purple
+            "warn": "#b0922c",   "warnFg": "#1f2430",   # yellow
+            "danger": "#c44a4a", "dangerFg": "#ffffff",   # red
+            "hover": "#2b3140", "selection": "#3b4252", "selectionFg": "#ffffff",
+            "logBg": "#232834", "promptFg": "#ffcc66", "answerFg": "#87d96c",
+            "shadow": "rgba(0, 0, 0, 0.4)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # IBM Carbon — near-black grey surface, crisp product CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="carbon",
+        name="IBM Carbon",
+        subtitle="Crisp product grey",
+        family="dark",
+        notes=(
+            "IBM Carbon's near-black grey surface with crisp product CTAs — "
+            "blue primary, teal secondary, purple tertiary, yellow caution, "
+            "red destructive. Enterprise-clean."
+        ),
+        tokens={
+            "bg": "#161616", "card": "#1f1f1f",
+            "input": "#262626", "border": "#393939",
+            "fg": "#f4f4f4", "muted": "#a8a8a8", "accent": "#78a9ff",
+            "go": "#2f6ce5",     "goFg": "#ffffff",   # carbon blue
+            "info": "#197a78",   "infoFg": "#ffffff",   # teal
+            "alt": "#7a4fd0",    "altFg": "#ffffff",   # purple
+            "warn": "#a67a14",   "warnFg": "#161616",   # yellow
+            "danger": "#da1e28", "dangerFg": "#ffffff",   # red
+            "hover": "#262626", "selection": "#393939", "selectionFg": "#ffffff",
+            "logBg": "#1f1f1f", "promptFg": "#f1c21b", "answerFg": "#42be65",
+            "shadow": "rgba(0, 0, 0, 0.55)",
+        },
+    ),
+
+    # ----------------------------------------------------------------
+    # Palenight — muted indigo surface, soft material CTAs
+    # ----------------------------------------------------------------
+    Theme(
+        id="palenight",
+        name="Palenight",
+        subtitle="Muted material indigo",
+        family="dark",
+        notes=(
+            "Material Palenight's muted indigo surface with soft CTAs — "
+            "indigo primary, cyan secondary, green tertiary, coral caution, "
+            "pink destructive. Mellow and rounded."
+        ),
+        tokens={
+            "bg": "#292d3e", "card": "#222637",
+            "input": "#323750", "border": "#444a68",
+            "fg": "#c6cce6", "muted": "#8c92b8", "accent": "#82aaff",
+            "go": "#5a6fd0",     "goFg": "#ffffff",   # indigo
+            "info": "#2d8aa8",   "infoFg": "#ffffff",   # cyan
+            "alt": "#4f9a6f",    "altFg": "#ffffff",   # green
+            "warn": "#c47038",   "warnFg": "#ffffff",   # coral
+            "danger": "#c44a72", "dangerFg": "#ffffff",   # pink
+            "hover": "#323750", "selection": "#444a68", "selectionFg": "#ffffff",
+            "logBg": "#222637", "promptFg": "#ffcb6b", "answerFg": "#c3e88d",
+            "shadow": "rgba(0, 0, 0, 0.45)",
         },
     ),
 ]
