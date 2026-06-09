@@ -118,10 +118,13 @@ def _make_engine() -> RipperEngine:
 
 
 def test_clean_rip_emits_monotonic_progress_and_returns_true(monkeypatch):
+    # Real robot-mode format is PRGV:current,total,max — ``total`` is the
+    # whole operation's progress and ``max`` the fixed 65536 scale; percent
+    # is total/max (NOT current/total, which runs ahead per-task).
     lines = [
-        "PRGV:0,65536",
-        "PRGV:32768,65536",
-        "PRGV:65536,65536",
+        "PRGV:0,0,65536",
+        "PRGV:65536,32768,65536",
+        "PRGV:65536,65536,65536",
     ]
     _patch_popen(monkeypatch, lines, returncode=0)
     engine = _make_engine()
@@ -131,8 +134,8 @@ def test_clean_rip_emits_monotonic_progress_and_returns_true(monkeypatch):
     ok = engine._run_rip_process(["fake"], progress.append, logs.append)
 
     assert ok is True
-    # Progress callback fires for each PRGV line (current>0 required —
-    # the 0 line is skipped per the parser at line 1397).
+    # Progress callback fires for each PRGV line (total>0 required —
+    # the 0 line is skipped by the parser's guard).
     assert progress == [50, 100]
     # Each PRGV with non-zero current also emits a "Ripping: N%" log line.
     assert any("Ripping: 50%" in m for m in logs)
@@ -182,7 +185,8 @@ def test_msg_line_reaches_on_log_via_coalescer(monkeypatch):
 def test_malformed_prgv_is_silently_skipped(monkeypatch):
     lines = [
         "PRGV:not,a,number",  # ValueError on int() — must not crash
-        "PRGV:50,100",         # valid — emits 50% to verify parser still works
+        "PRGV:50,100",        # too few fields (real lines have 3) — skipped
+        "PRGV:25,50,100",     # valid — emits 50% to verify parser still works
     ]
     _patch_popen(monkeypatch, lines, returncode=0)
     engine = _make_engine()
@@ -192,14 +196,14 @@ def test_malformed_prgv_is_silently_skipped(monkeypatch):
     ok = engine._run_rip_process(["fake"], progress.append, logs.append)
 
     assert ok is True
-    # The malformed line emitted nothing; only the valid one fired.
+    # The malformed/short lines emitted nothing; only the valid one fired.
     assert progress == [50]
 
 
 def test_msg_line_with_too_few_fields_is_silently_skipped(monkeypatch):
     # Parser requires at least 5 comma-split parts (split with maxsplit=4).
     # `MSG:1` has zero commas → 1 part → must not crash, must not emit.
-    lines = ["MSG:1", "PRGV:50,100"]
+    lines = ["MSG:1", "PRGV:25,50,100"]
     _patch_popen(monkeypatch, lines, returncode=0)
     engine = _make_engine()
 
@@ -214,7 +218,7 @@ def test_msg_line_with_too_few_fields_is_silently_skipped(monkeypatch):
 
 
 def test_non_zero_exit_returns_false_and_logs_exit_code(monkeypatch):
-    _patch_popen(monkeypatch, ["PRGV:50,100"], returncode=253)
+    _patch_popen(monkeypatch, ["PRGV:25,50,100"], returncode=253)
     engine = _make_engine()
 
     logs: list[str] = []
@@ -225,7 +229,7 @@ def test_non_zero_exit_returns_false_and_logs_exit_code(monkeypatch):
 
 
 def test_abort_set_before_run_returns_false_and_terminates(monkeypatch):
-    _patch_popen(monkeypatch, ["PRGV:50,100"], returncode=0)
+    _patch_popen(monkeypatch, ["PRGV:25,50,100"], returncode=0)
     engine = _make_engine()
     engine.abort_event.set()  # arm before entering parser loop
 
@@ -246,7 +250,7 @@ def test_abort_set_before_run_returns_false_and_terminates(monkeypatch):
 def test_abort_set_mid_stream_via_on_progress_returns_false(monkeypatch):
     # Long stream so the loop has plenty of iterations; the on_progress
     # callback flips the abort flag after the first percent it sees.
-    lines = [f"PRGV:{i*1000},65536" for i in range(1, 30)]
+    lines = [f"PRGV:{i*1000},{i*1000},65536" for i in range(1, 30)]
     fake = _patch_popen(monkeypatch, lines, returncode=0)
     engine = _make_engine()
 
@@ -284,8 +288,11 @@ def test_eof_on_stdout_exits_loop_cleanly_and_logs_exit_code(monkeypatch):
 
 
 def test_zero_total_in_prgv_does_not_emit_progress(monkeypatch):
-    """`total=0` would divide by zero; parser guards with `total > 0`."""
-    _patch_popen(monkeypatch, ["PRGV:50,0"], returncode=0)
+    """``total=0`` (operation not started) and ``max=0`` (would divide by
+    zero) are both guarded — neither emits progress."""
+    _patch_popen(
+        monkeypatch, ["PRGV:50,0,65536", "PRGV:50,100,0"], returncode=0,
+    )
     engine = _make_engine()
 
     progress: list[int] = []
@@ -297,9 +304,9 @@ def test_zero_total_in_prgv_does_not_emit_progress(monkeypatch):
     assert not any("Ripping:" in m for m in logs)
 
 
-def test_progress_capped_at_100_when_current_exceeds_total(monkeypatch):
-    """`current > total` is possible for some MakeMKV phases; parser caps."""
-    _patch_popen(monkeypatch, ["PRGV:200,100"], returncode=0)
+def test_progress_capped_at_100_when_total_exceeds_max(monkeypatch):
+    """``total > max`` is possible for some MakeMKV phases; parser caps."""
+    _patch_popen(monkeypatch, ["PRGV:200,200,100"], returncode=0)
     engine = _make_engine()
 
     progress: list[int] = []
