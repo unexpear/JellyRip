@@ -645,6 +645,30 @@ class MainWindow(QMainWindow):
         return self._stop_button
 
     # ------------------------------------------------------------------
+    # Workflow-lifecycle button states.
+    # ------------------------------------------------------------------
+
+    def set_workflow_running(self, running: bool) -> None:
+        """Flip the workflow-lifecycle control states.
+
+        ``running=True`` (a workflow worker just started): the mode
+        buttons disable so a second workflow can't launch, and Stop
+        Session enables so the run can be aborted.  ``running=False``
+        (the worker exited — success, error, or abort): the reverse.
+
+        Called by ``WorkflowLauncher``.  Thread-safe — the finish
+        call arrives from the worker thread's ``finally``.
+        """
+        submit_to_main(
+            self._invoker, self._set_workflow_running_main, bool(running),
+        )
+
+    def _set_workflow_running_main(self, running: bool) -> None:
+        for btn in self._workflow_buttons.values():
+            btn.setEnabled(not running)
+        self._stop_button.setEnabled(running)
+
+    # ------------------------------------------------------------------
     # 3c-ii territory — stubbed dialog methods.
     # ------------------------------------------------------------------
     #

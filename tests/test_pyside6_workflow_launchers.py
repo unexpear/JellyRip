@@ -181,6 +181,104 @@ def test_stop_session_no_engine_logs_message(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# Stop button lifecycle — enabled while a task runs, disabled after
+# ---------------------------------------------------------------------------
+#
+# Pinned because Stop originally shipped permanently disabled (created
+# with setEnabled(False) and never enabled by production code) — a
+# 90-minute rip had no abort affordance at all.
+
+
+def test_stop_enabled_during_task_and_disabled_after(wired):
+    """Starting a workflow enables Stop and disables the mode
+    buttons; the worker's finally restores both on completion."""
+    window, ctrl, eng, launcher = wired
+    ctrl._sleep_secs = 0.3
+
+    assert not window.stop_button.isEnabled()  # idle: Stop disabled
+    window.workflow_button_clicked.emit("modeGoTv")
+    assert _drain_until(lambda: window.stop_button.isEnabled(), timeout=1.0)
+    assert all(
+        not b.isEnabled() for b in window.workflow_buttons.values()
+    ), "mode buttons must lock while a workflow runs"
+
+    assert _wait_until_idle(launcher, timeout=2.0)
+    assert _drain_until(
+        lambda: not window.stop_button.isEnabled(), timeout=2.0,
+    )
+    assert all(b.isEnabled() for b in window.workflow_buttons.values())
+
+
+def test_stop_click_mid_task_sets_abort(wired):
+    """End-to-end: start a slow task, click the now-enabled Stop
+    button through its real click path, and the engine's abort
+    event fires."""
+    window, ctrl, eng, launcher = wired
+    ctrl._sleep_secs = 0.5
+
+    window.workflow_button_clicked.emit("modeGoTv")
+    assert _drain_until(lambda: window.stop_button.isEnabled(), timeout=1.0)
+
+    window.stop_button.click()
+    assert eng.abort_event.is_set()
+    assert _wait_until_idle(launcher, timeout=2.0)
+
+
+def test_buttons_restored_after_worker_exception(qtbot):
+    """The finally path restores Stop/mode buttons even when the
+    controller method raises."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show_error = lambda *a, **k: None
+
+    class CrashController:
+        session_log = []
+        session_report = []
+        start_time = None
+        global_extra_counter = 0
+
+        def run_tv_disc(self):
+            raise RuntimeError("boom")
+
+    launcher = WorkflowLauncher(window, CrashController(), _StubEngine())
+    launcher.connect_signals()
+    window.workflow_button_clicked.emit("modeGoTv")
+    assert _drain_until(lambda: not launcher.is_busy(), timeout=2.0)
+    assert _drain_until(
+        lambda: not window.stop_button.isEnabled(), timeout=2.0,
+    )
+    assert all(b.isEnabled() for b in window.workflow_buttons.values())
+
+
+def test_finish_during_workflow_dialog_updates_snapshot(wired):
+    """Shells with the modeless workflow-dialog soft-lock (AI branch):
+    if the worker finishes while a dialog is open, the lifecycle
+    restore must land in the *snapshot* — not the live widgets — so
+    closing the dialog restores the post-task state instead of
+    resurrecting the mid-task one (Stop enabled, buttons locked)."""
+    window, ctrl, eng, launcher = wired
+    if not hasattr(window, "begin_workflow_dialog"):
+        pytest.skip("shell has no workflow-dialog soft-lock")
+    ctrl._sleep_secs = 0.3
+
+    window.workflow_button_clicked.emit("modeGoTv")
+    assert _drain_until(lambda: window.stop_button.isEnabled(), timeout=1.0)
+
+    window.begin_workflow_dialog()  # everything soft-locked now
+    assert not window.stop_button.isEnabled()
+
+    assert _wait_until_idle(launcher, timeout=2.0)
+    # Drain the worker's queued set_workflow_running(False) marshal.
+    QCoreApplication.instance().processEvents()
+    window.end_workflow_dialog()
+
+    assert not window.stop_button.isEnabled(), (
+        "snapshot restore resurrected mid-task Stop state"
+    )
+    assert all(b.isEnabled() for b in window.workflow_buttons.values())
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle: busy check, abort reset, session reset
 # ---------------------------------------------------------------------------
 

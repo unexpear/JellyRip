@@ -826,7 +826,8 @@ class LegacyControllerMixin:
         block.  If the abort flag is set AND a rip session was
         opened (``_current_rip_path`` populated by
         ``write_temp_metadata``) AND the session hasn't already
-        reached a terminal state (complete / failed / aborted),
+        reached a terminal state (complete / organized / failed /
+        aborted) or a deliberately-preserved one (partial / moving),
         marks it aborted and wipes partial outputs.
 
         Idempotent — the wiped-paths set guards against double-wipe
@@ -846,9 +847,17 @@ class LegacyControllerMixin:
             if meta is None:
                 return
             phase = meta.get("phase")
-            if phase in {"complete", "organized", "failed", "aborted"}:
-                # Already in a terminal state — don't overwrite
-                # with "aborted".  e.g., a flow that called
+            if phase in {
+                "complete", "organized", "failed", "aborted",
+                # Deliberately-preserved outcomes, not just terminal
+                # ones: "partial" sessions promise the user "Temp
+                # preserved at ..." for retry, and "moving" sessions
+                # hold fully-validated MKVs mid-move.  Wiping either
+                # destroys data the UI said it kept.
+                "partial", "moving",
+            }:
+                # Already terminal/preserved — don't overwrite with
+                # "aborted".  e.g., a flow that called
                 # _mark_session_failed before the user clicked Stop
                 # should keep its "failed" record.
                 return
