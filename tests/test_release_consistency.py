@@ -57,7 +57,9 @@ def test_release_script_checks_git_state_and_release_notes():
     assert 'set "ARTIFACT_DIR=dist\\main"' in release_script
     assert "tools\\stage_ffmpeg_bundle.ps1" in release_script
     assert '"%ARTIFACT_DIR%\\FFmpeg-LICENSE.txt" "%ARTIFACT_DIR%\\FFmpeg-README.txt"' in release_script
-    assert '"%ARTIFACT_DIR%\\ffmpeg.exe" "%ARTIFACT_DIR%\\ffprobe.exe" "%ARTIFACT_DIR%\\ffplay.exe"' in release_script
+    assert '"%ARTIFACT_DIR%\\ffmpeg.exe" "%ARTIFACT_DIR%\\ffprobe.exe"' in release_script
+    # ffplay was dropped 2026-06-09 (unused; ~130 MB per artifact).
+    assert "ffplay" not in release_script.lower()
     assert "is missing; JellyRip releases intentionally bundle FFmpeg" in release_script
     assert f"REM  Usage:  release.bat {version}" in release_script
     assert f"echo Example: release.bat {version}" in release_script
@@ -77,7 +79,7 @@ def test_release_metadata_tracks_license_notices():
     assert '#define MyAppBuildOutputDir "..\\dist\\main"' in installer
     assert 'Source: "{#MyAppBuildOutputDir}\\ffmpeg.exe"' in installer
     assert 'Source: "{#MyAppBuildOutputDir}\\ffprobe.exe"' in installer
-    assert 'Source: "{#MyAppBuildOutputDir}\\ffplay.exe"' in installer
+    assert "ffplay" not in installer.lower()
     assert 'Source: "..\\LICENSE"' in installer
     assert 'Source: "..\\THIRD_PARTY_NOTICES.md"' in installer
     assert 'Source: "{#MyAppBuildOutputDir}\\FFmpeg-LICENSE.txt"' in installer
@@ -98,7 +100,8 @@ def test_spec_bundles_ffmpeg_intentionally():
     assert "THIRD_PARTY_NOTICES.md" in spec
     assert "ffmpeg.exe" in spec.lower()
     assert "ffprobe.exe" in spec.lower()
-    assert "ffplay.exe" in spec.lower()
+    # ffplay is referenced only in the drop-note comment, never bundled.
+    assert '"ffplay.exe"' not in spec
     assert "C:/Users/" not in spec
     assert "Desktop/ffmpeg" not in spec
 
