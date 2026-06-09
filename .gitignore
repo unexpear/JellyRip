@@ -43,6 +43,11 @@ Thumbs.db
 
 # Config
 config.json
+# AI provider credential store (AI fork) — normally lives in
+# %APPDATA%, but it can hold PLAINTEXT API keys when DPAPI encryption
+# is unavailable.  Ignored here too so a port/merge from the AI fork
+# can never commit it.
+ai_credentials.json
 *.log
 rip_log.txt
 
