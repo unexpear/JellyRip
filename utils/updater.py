@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys as _sys
 import time
@@ -18,10 +19,23 @@ _ps_exe = get_powershell_executable()
 _POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
 
 
-def _normalize_version(value):
+def _extract_version_string(value):
+    """Pull the dotted version out of a tag regardless of prefix.
+
+    Handles both release channels: ``v1.0.24`` (MAIN) and
+    ``ai-v1.0.24`` (the AI fork) normalize to ``1.0.24``.
+    """
     token = str(value or "").strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)+)", token)
+    if match:
+        return match.group(1)
     if token.startswith("v"):
-        token = token[1:]
+        return token[1:]
+    return token
+
+
+def _normalize_version(value):
+    token = _extract_version_string(value)
     parts = []
     for piece in token.split("."):
         try:
@@ -43,8 +57,23 @@ def fetch_latest_release(
     timeout=8,
     *,
     include_prereleases=False,
+    preferred_assets=None,
+    tag_prefix="",
 ):
-    """Fetch GitHub release metadata for the given repo."""
+    """Fetch GitHub release metadata for the given repo.
+
+    ``include_prereleases=True`` lists recent releases and considers
+    prereleases too — required for JellyRip, which publishes every
+    build as a GitHub *prerelease* while the project is pre-alpha
+    (the ``/releases/latest`` endpoint only ever returns stable
+    releases, so it would never find anything).  ``tag_prefix``
+    filters to one release channel (``"v"`` on MAIN, ``"ai-v"`` on
+    the AI fork) so the forks can never cross-update.  Among the
+    matches, the newest release is chosen by parsed version — not by
+    list position.  ``preferred_assets`` ranks which asset to
+    surface; the default prefers the installer, then the portable
+    zip (the one-DIR replacement for the old bare exe).
+    """
     if include_prereleases:
         api_url = f"https://api.github.com/repos/{repo}/releases?per_page=10"
     else:
@@ -59,25 +88,34 @@ def fetch_latest_release(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
+    expected_tag_prefix = str(tag_prefix or "").strip().lower()
+
+    def _matches_expected_channel(item):
+        if not isinstance(item, dict):
+            return False
+        if item.get("draft"):
+            return False
+        if not include_prereleases and item.get("prerelease"):
+            return False
+        if not expected_tag_prefix:
+            return True
+        tag_name = str(item.get("tag_name") or "").strip().lower()
+        return tag_name.startswith(expected_tag_prefix)
+
     if isinstance(payload, list):
-        release = next(
-            (
-                item
-                for item in payload
-                if isinstance(item, dict)
-                and not item.get("draft")
-                and (
-                    include_prereleases
-                    or not item.get("prerelease")
-                )
-            ),
-            {},
+        candidates = [item for item in payload if _matches_expected_channel(item)]
+        release = max(
+            candidates,
+            key=lambda item: _normalize_version(item.get("tag_name")),
+            default={},
         )
     else:
-        release = payload if isinstance(payload, dict) else {}
+        release = payload if _matches_expected_channel(payload) else {}
 
     assets = release.get("assets") or []
-    preferred = ["JellyRipInstaller.exe", "JellyRip.exe"]
+    preferred = list(
+        preferred_assets or ["JellyRipInstaller.exe", "JellyRip-portable.zip"]
+    )
     chosen_asset = None
     for name in preferred:
         chosen_asset = next((a for a in assets if a.get("name") == name), None)
@@ -87,7 +125,7 @@ def fetch_latest_release(
         chosen_asset = assets[0]
 
     tag = str(release.get("tag_name") or "").strip()
-    normalized = tag[1:] if tag.lower().startswith("v") else tag
+    normalized = _extract_version_string(tag)
 
     return {
         "tag": tag,

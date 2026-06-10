@@ -183,6 +183,80 @@ def test_fetch_latest_release_skips_prereleases_by_default(monkeypatch):
     assert release["prerelease"] is False
 
 
+def test_fetch_latest_release_filters_channel_and_prefers_portable_zip(monkeypatch):
+    """The release picker must (1) ignore the AI fork's ai-v* tags
+    even on a shared remote, (2) ignore drafts, (3) choose the
+    newest matching release by parsed version rather than list
+    position, and (4) prefer the portable zip when no installer
+    asset is present — never a stray asset like LICENSE."""
+    releases = [
+        {   # AI-fork tag on a shared remote must be ignored
+            "tag_name": "ai-v9.9.9",
+            "html_url": "https://example.invalid/ai-v9.9.9",
+            "prerelease": True,
+            "draft": False,
+            "assets": [],
+        },
+        {   # draft must be ignored even with a huge version
+            "tag_name": "v9.9.8",
+            "html_url": "https://example.invalid/draft",
+            "prerelease": True,
+            "draft": True,
+            "assets": [],
+        },
+        {   # older version listed FIRST to prove max-by-version
+            "tag_name": "v1.0.20",
+            "html_url": "https://example.invalid/v1.0.20",
+            "prerelease": True,
+            "draft": False,
+            "assets": [],
+        },
+        {
+            "tag_name": "v1.0.24",
+            "html_url": "https://example.invalid/v1.0.24",
+            "prerelease": True,
+            "draft": False,
+            "assets": [
+                {
+                    "name": "LICENSE",
+                    "browser_download_url": "https://example.invalid/LICENSE",
+                },
+                {
+                    "name": "JellyRip-portable.zip",
+                    "browser_download_url": "https://example.invalid/zip",
+                },
+            ],
+        },
+    ]
+
+    class _JsonResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return updater.json.dumps(releases).encode("utf-8")
+
+    monkeypatch.setattr(
+        updater.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _JsonResponse(),
+    )
+
+    release = updater.fetch_latest_release(
+        "unexpear/JellyRip",
+        include_prereleases=True,
+        tag_prefix="v",
+        preferred_assets=("JellyRipInstaller.exe", "JellyRip-portable.zip"),
+    )
+
+    assert release["tag"] == "v1.0.24"
+    assert release["version"] == "1.0.24"
+    assert release["asset_name"] == "JellyRip-portable.zip"
+
+
 def test_download_asset_rejects_truncated_body(monkeypatch, tmp_path):
     """http.client treats a connection dropped mid-body as a clean
     EOF, so the byte count must be checked against Content-Length —

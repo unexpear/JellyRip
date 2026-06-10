@@ -56,6 +56,28 @@ def test_readme_points_to_spec_build_and_release_notes_txt():
     assert "ffplay" not in readme
 
 
+def test_update_check_contract_matches_release_pipeline():
+    """The in-app update check and release.bat must agree on where
+    releases live: same repo, same tag prefix, same artifact names,
+    prereleases included (every JellyRip release publishes as a
+    GitHub prerelease while the project is pre-alpha).  If the
+    publish target or artifact set ever changes, the updater must
+    change in the same commit — this is what keeps the Check
+    Updates chip always pointing at the latest published build."""
+    src = _read("tools/update_check.py")
+    release_script = _read("release.bat")
+
+    assert 'REPO_SLUG = "unexpear/JellyRip"' in src
+    assert 'TAG_PREFIX = "v"' in src
+    assert "include_prereleases=True" in src
+    assert '"JellyRipInstaller.exe"' in src
+    assert '"JellyRip-portable.zip"' in src
+    assert "feature pending Qt port" not in src
+
+    assert "gh release create v%VERSION%" in release_script
+    assert "--prerelease" in release_script
+
+
 def test_release_script_checks_git_state_and_release_notes():
     release_script = _read("release.bat")
     version = _current_version()
