@@ -118,28 +118,25 @@ if errorlevel 1 (
     echo ABORT: PyInstaller build failed.
     exit /b 1
 )
-if not exist "%ARTIFACT_DIR%\JellyRip.exe" (
-    echo ABORT: %ARTIFACT_DIR%\JellyRip.exe not found after build.
+REM One-DIR bundle: the app is a folder, not a single exe.
+if not exist "%ARTIFACT_DIR%\JellyRip\JellyRip.exe" (
+    echo ABORT: %ARTIFACT_DIR%\JellyRip\JellyRip.exe not found after build.
     exit /b 1
 )
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\stage_ffmpeg_bundle.ps1 -DistDir "%ARTIFACT_DIR%" >nul 2>&1
-if errorlevel 1 (
-    echo ABORT: FFmpeg bundle staging failed.
-    exit /b 1
-)
-for %%F in ("%ARTIFACT_DIR%\ffmpeg.exe" "%ARTIFACT_DIR%\ffprobe.exe") do (
+REM FFmpeg + notices are embedded by the spec into _internal\ — verify.
+for %%F in ("%ARTIFACT_DIR%\JellyRip\_internal\ffmpeg.exe" "%ARTIFACT_DIR%\JellyRip\_internal\ffprobe.exe") do (
     if not exist %%F (
         echo ABORT: %%F is missing; JellyRip releases intentionally bundle FFmpeg.
         exit /b 1
     )
 )
-for %%F in ("%ARTIFACT_DIR%\FFmpeg-LICENSE.txt" "%ARTIFACT_DIR%\FFmpeg-README.txt") do (
+for %%F in ("%ARTIFACT_DIR%\JellyRip\_internal\licenses\ffmpeg\LICENSE" "%ARTIFACT_DIR%\JellyRip\_internal\licenses\ffmpeg\README.txt") do (
     if not exist %%F (
         echo ABORT: %%F is missing; FFmpeg notices must ship with bundled FFmpeg.
         exit /b 1
     )
 )
-echo       %ARTIFACT_DIR%\JellyRip.exe built.
+echo       %ARTIFACT_DIR%\JellyRip\JellyRip.exe built.
 echo.
 
 REM ---- Step 5: Build installer ----
@@ -160,16 +157,23 @@ if not exist "%ARTIFACT_DIR%\JellyRipInstaller.exe" (
 echo       %ARTIFACT_DIR%\JellyRipInstaller.exe built.
 echo.
 
-REM ---- Step 6: Verify build outputs ----
+REM ---- Step 6: Verify build outputs + portable zip ----
 echo [6/8] Verifying build outputs...
-set "APP_EXE_SIZE="
-for %%F in (%ARTIFACT_DIR%\JellyRip.exe) do set "APP_EXE_SIZE=%%~zF"
-if not defined APP_EXE_SIZE (
-    echo ABORT: Could not determine size for %ARTIFACT_DIR%\JellyRip.exe.
+REM Portable artifact: a zip of the app folder (replaces the old
+REM single-exe download — onedir has no single-file form).
+powershell -NoProfile -Command "Compress-Archive -Path '%ARTIFACT_DIR%\JellyRip' -DestinationPath '%ARTIFACT_DIR%\JellyRip-portable.zip' -Force" >nul 2>&1
+if errorlevel 1 (
+    echo ABORT: Could not create JellyRip-portable.zip.
     exit /b 1
 )
-if !APP_EXE_SIZE! LSS 1000000 (
-    echo ABORT: JellyRip.exe is suspiciously small - !APP_EXE_SIZE! bytes.
+set "APP_ZIP_SIZE="
+for %%F in (%ARTIFACT_DIR%\JellyRip-portable.zip) do set "APP_ZIP_SIZE=%%~zF"
+if not defined APP_ZIP_SIZE (
+    echo ABORT: Could not determine size for %ARTIFACT_DIR%\JellyRip-portable.zip.
+    exit /b 1
+)
+if !APP_ZIP_SIZE! LSS 1000000 (
+    echo ABORT: JellyRip-portable.zip is suspiciously small - !APP_ZIP_SIZE! bytes.
     exit /b 1
 )
 set "INSTALLER_EXE_SIZE="
@@ -197,7 +201,7 @@ echo.
 
 REM ---- Step 8: Create release with assets ----
 echo [8/8] Publishing release v%VERSION% with assets...
-gh release create v%VERSION% "%ARTIFACT_DIR%\JellyRip.exe" "%ARTIFACT_DIR%\JellyRipInstaller.exe" LICENSE THIRD_PARTY_NOTICES.md "%ARTIFACT_DIR%\FFmpeg-LICENSE.txt" "%ARTIFACT_DIR%\FFmpeg-README.txt" --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
+gh release create v%VERSION% "%ARTIFACT_DIR%\JellyRip-portable.zip" "%ARTIFACT_DIR%\JellyRipInstaller.exe" LICENSE THIRD_PARTY_NOTICES.md --title "JellyRip v%VERSION% (UNSTABLE)" --notes-file release_notes.txt --prerelease
 if errorlevel 1 (
     echo ABORT: gh release create failed.
     exit /b 1
@@ -208,12 +212,10 @@ echo  Release v%VERSION% published!
 echo ========================================
 echo.
 echo  Assets:
-echo    - JellyRip.exe
+echo    - JellyRip-portable.zip
 echo    - JellyRipInstaller.exe
 echo    - LICENSE
 echo    - THIRD_PARTY_NOTICES.md
-echo    - FFmpeg-LICENSE.txt
-echo    - FFmpeg-README.txt
 echo.
 echo  Verify: https://github.com/unexpear/JellyRip/releases/tag/v%VERSION%
 echo.

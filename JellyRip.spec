@@ -286,19 +286,25 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# One-DIR bundle (switched 2026-06-09): the app ships as a folder —
+# <dist>/JellyRip/JellyRip.exe + _internal/ — instead of a onefile exe.
+# Onefile extracted the entire multi-hundred-MB bundle to %TEMP% on
+# EVERY launch (slow cold starts) and left the _MEIxxxx folder behind
+# whenever the app crashed or was killed.  Onedir starts instantly,
+# and ffmpeg/ffprobe + their notices ship inside _internal/ (resolved
+# via sys._MEIPASS), so the old "stage a second ffmpeg copy next to
+# the exe" step is gone — no more double-shipped FFmpeg.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="JellyRip",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -306,4 +312,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=APP_VERSION_INFO,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="JellyRip",
 )
