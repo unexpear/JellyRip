@@ -1,41 +1,90 @@
-## JellyRip v1.0.23 Release Notes (UNSTABLE)
+## JellyRip v1.0.24 Release Notes (UNSTABLE)
 
-JellyRip v1.0.23 — bug-fix release on top of the v1.0.22 audit
-cleanup.  Two user-facing fixes (disc-scan responsiveness + tool
-auto-detection); no new features.
+JellyRip v1.0.24 — a large bug-fix + packaging release driven by a
+full-codebase review: a working Stop button, a data-loss fix, Organize
+repairs, a new theme system with a Theme Maker, and a new app format.
 
-## Download
+## DOWNLOAD FORMAT CHANGED
 
-- Direct download: https://github.com/unexpear/JellyRip/releases/download/v1.0.23/JellyRip.exe
-- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.23/JellyRipInstaller.exe
-- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.23
+The standalone download is now **JellyRip-portable.zip** (a folder you
+unzip and run) instead of a single JellyRip.exe.  The app now starts
+instantly — the old single-exe format unpacked ~600 MB to your temp
+folder on every launch.  If you previously downloaded the bare exe,
+grab the portable zip or the installer this time.
+
+- Portable: https://github.com/unexpear/JellyRip/releases/download/v1.0.24/JellyRip-portable.zip
+- Installer: https://github.com/unexpear/JellyRip/releases/download/v1.0.24/JellyRipInstaller.exe
+- Release page: https://github.com/unexpear/JellyRip/releases/tag/v1.0.24
 - Project site: https://unexpear.github.io/JellyRip/
 
 ### Highlights
 
-Engine
-- Stop is now responsive during disc scan.  MakeMKV scan output
-  feeds through a reader thread + queue (proc.poll()) instead of a
-  blocking readline(), so the Stop button takes effect promptly and
-  trailing title metadata isn't dropped.
-- Blank tool path no longer breaks FFmpeg/ffprobe auto-detect.  An
-  empty ffprobe_path/makemkvcon_path used to collapse to "." and
-  report "tool not found"; it now stays blank so auto-detection (and
-  the bundled FFmpeg) is used.
+Packaging
+- One-DIR app format: instant launches, nothing written to %TEMP%, no
+  leftover _MEI folders after crashes.  FFmpeg ships once (inside
+  _internal\) instead of twice; the installer shrinks to ~150 MB.
+  Upgrading cleans up the old staged FFmpeg automatically.
+- Unused ffplay.exe dropped from all artifacts (~130 MB saved).
 
-Tests
-- Scan-disc process test fakes gained poll() + stdout.close().
-- Full suite: 1647 passed, 5 skipped.
+Critical fixes
+- Stop Session works.  The button was never enabled by production
+  code — a 90-minute rip had no abort.  It now lights up while a
+  workflow runs and the mode buttons lock.
+- Stopping a multi-disc Dump All no longer deletes the most recently
+  COMPLETED disc's files (completed discs are now marked terminal
+  before the abort cleanup can see them).
+- Organize Existing MKVs: episodes now get your real season number
+  (was hardcoded S00, which Jellyfin shelves as Specials); the
+  auto-delete check can no longer remove a folder that merely shares
+  the temp folder's name prefix (or the temp root itself); and a
+  failed move now reports "Organize Incomplete" instead of
+  "Organize complete!".
+
+Engine
+- MakeMKV output is decoded as UTF-8: non-ASCII disc titles
+  ("Amélie", anime) no longer mojibake into filenames or kill the
+  scan/rip reader mid-stream.
+- The progress bar tracks the whole rip (PRGV total/max) instead of
+  running ahead and sawtoothing on multi-title dumps; ETA is real.
+- Moves validate the staged copy BEFORE it takes the final library
+  name — a corrupt copy can no longer sit in your library; failed
+  non-atomic moves are quarantined as .failed-validation.
+- "Degraded success" rips (MakeMKV errored but produced output) are
+  rejected when far below the scanned title size — a 60%-of-a-movie
+  truncation is no longer kept.
+- Title-file mapping now works for labeled discs (it previously only
+  matched discs literally named "title"), so per-file integrity
+  expectations apply to every disc.
+
+Themes
+- New token-based theme system with a Theme Maker: pick a color for
+  everything the theme touches with a live full-app preview, save,
+  export to a shareable .json, and import themes others made.
+- 9 new built-in themes: Monokai, Rosé Pine, Tokyo Night, Catppuccin
+  Mocha, Everforest Dark, Synthwave, Ayu Mirage, IBM Carbon,
+  Palenight (15 total).
+
+Quality of life
+- Closing Settings or the MKV preview with the title-bar X now
+  behaves like Cancel (previewed themes revert; the preview releases
+  its file handle so temp files can be deleted).
+- Crashes now write a readable crash.log next to config.json — the
+  windowed exe previously swallowed every error silently.
+- Update checker fixes: the signature check actually runs now, and
+  truncated downloads are detected instead of looking complete.
+- Session logs no longer append to a junk "..txt" file when the log
+  path is blank.
 
 ### What's NOT in this release
 
-No new ripping/validation/organization features.  These are
-targeted fixes to scan responsiveness and tool detection.
+FFmpeg/HandBrake transcoding remains unwired in the UI (its builder
+got real fixes — AMD/Intel GPU support, correct GPU quality flags —
+ready for when it lands).
 
 ### Companion fork: JellyRip AI
 
-The AI fork ships an assistant layer on top of the same disc-
-ripping core.
+The AI fork ships an assistant layer on top of the same core, plus
+TMDB/OMDb disc auto-identification.
 
-- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.23
+- AI release page: https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.24
 - AI project site: https://unexpear-softwhere.github.io/JellyRipAI/

@@ -2,6 +2,50 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.24] - 2026-06-09
+
+Large bug-fix + packaging release driven by a full-codebase review.
+
+### Changed
+
+- **One-DIR app format.**  The app ships as a folder (exe + `_internal\`)
+  instead of a single exe: instant launches (onefile unpacked ~600 MB to
+  %TEMP% on every start), no leftover `_MEI` folders after crashes, and
+  FFmpeg ships once instead of twice.  The portable download is now
+  `JellyRip-portable.zip`; the installer shrinks to ~150 MB and cleans up
+  the old staged FFmpeg on upgrade.  Unused `ffplay.exe` dropped.
+- **New token-based theme system** with a Theme Maker (live full-app
+  preview, save/export/import) and 9 new built-in themes (15 total).
+
+### Fixed
+
+- **Stop Session works** — the button was never enabled by production
+  code; a long rip had no abort.  And stopping a multi-disc Dump All no
+  longer deletes the most recently completed disc's files.
+- **Organize Existing MKVs**: real season numbers (was hardcoded S00),
+  separator-safe auto-delete (no more sibling-folder/temp-root hazard),
+  and an honest "Organize Incomplete" on failed moves.
+- **MakeMKV output decoded as UTF-8** — non-ASCII disc titles no longer
+  mojibake into filenames or kill the scan/rip reader.
+- **Progress bar math** — percent now derives from PRGV total/max, so the
+  bar tracks the whole rip instead of running ahead / sawtoothing.
+- **Move validation order** — the staged copy is validated BEFORE taking
+  the final library name; failed non-atomic moves are quarantined.
+  Truncated "degraded" rips are rejected against the scanned title size.
+- **Title-file mapping for labeled discs** (previously only discs
+  literally named "title" matched), enabling per-file integrity checks.
+- **Title-bar X behaves like Cancel** in Settings (theme previews revert)
+  and the MKV preview (file handle released).
+- **Crash logging** — unhandled exceptions and native faults now write to
+  `crash.log` in the profile config dir (the windowed exe was silent).
+- **Updater** — the Authenticode query never worked (PowerShell param
+  binding); downloads are now staged + length-checked.
+- **Transcode builder (latent)** — `auto_prefer` probes the FFmpeg build
+  (CPU fallback on AMD/Intel), CRF maps to GPU quality flags, and every
+  command carries `-nostdin` + an explicit overwrite flag.
+- **Blank log path** no longer appends every session log to a junk
+  `..txt` file.
+
 ## [1.0.23] - 2026-05-30
 
 Bug-fix release on top of the 1.0.22 audit cleanup — two user-facing

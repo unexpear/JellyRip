@@ -10,9 +10,9 @@ should be treated as non-final.
 
 ## Project Status
 
-- Current unstable line: `v1.0.23` (latest unstable pre-release)
-- MAIN release page: [v1.0.23](https://github.com/unexpear/JellyRip/releases/tag/v1.0.23)
-- AI release page: [ai-v1.0.23](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.23) (fork — separate repo, `ai-v*` tag prefix)
+- Current unstable line: `v1.0.24` (latest unstable pre-release)
+- MAIN release page: [v1.0.24](https://github.com/unexpear/JellyRip/releases/tag/v1.0.24)
+- AI release page: [ai-v1.0.24](https://github.com/unexpear-softwhere/JellyRipAI/releases/tag/ai-v1.0.24) (fork — separate repo, `ai-v*` tag prefix)
 - Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 - Platform target: Windows
 - Runtime target: Python 3.13+
@@ -32,10 +32,11 @@ should be treated as non-final.
 
 ### From GitHub release
 
-(recommended, currently `v1.0.23` unstable pre-release)
+(recommended, currently `v1.0.24` unstable pre-release)
 
-1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.23).
-2. Download `JellyRipInstaller.exe` (installer) or `JellyRip.exe` (standalone).
+1. Go to the [current unstable release page](https://github.com/unexpear/JellyRip/releases/tag/v1.0.24).
+2. Download `JellyRipInstaller.exe` (installer) or `JellyRip-portable.zip`
+   (portable - unzip anywhere and run `JellyRip.exe` inside the folder).
 3. If SmartScreen/Defender flags the file, whitelist the download folder
   first (common PyInstaller false positive).
 4. Run and open **Settings** to confirm MakeMKV and ffprobe paths before first rip.
@@ -180,7 +181,7 @@ through GitHub Releases rather than committed to the repository.
 ### Full release pipeline
 
 ```bash
-release.bat 1.0.23
+release.bat 1.0.24
 ```
 
 This runs tests, checks version consistency, builds both executables,
