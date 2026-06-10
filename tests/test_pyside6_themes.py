@@ -76,16 +76,16 @@ _AAA = 7.0
 
 
 def test_all_themes_have_unique_ids():
-    """Exactly 15 themes (6 base from 2026-05-03 + 9 added 2026-06-03),
-    each with a unique ID."""
-    assert len(THEMES) == 15, f"expected 15 themes, got {len(THEMES)}"
+    """Exactly 17 themes (6 base from 2026-05-03 + 9 added 2026-06-03
+    + the gruvbox pair added 2026-06-10), each with a unique ID."""
+    assert len(THEMES) == 17, f"expected 17 themes, got {len(THEMES)}"
     ids = [t.id for t in THEMES]
-    assert len(set(ids)) == 15, f"theme IDs must be unique, got {ids}"
+    assert len(set(ids)) == 17, f"theme IDs must be unique, got {ids}"
 
 
 def test_expected_theme_ids_present():
-    """The 15 specific theme IDs (6 base + 9 added).  If this changes,
-    we need a deliberate update — not silent drift."""
+    """The 17 specific theme IDs (6 base + 9 added + gruvbox pair).
+    If this changes, we need a deliberate update — not silent drift."""
     expected = {
         "dark_github",
         "light_inverted",
@@ -102,6 +102,8 @@ def test_expected_theme_ids_present():
         "ayu_mirage",
         "carbon",
         "palenight",
+        "gruvbox_dark",
+        "gruvbox_light",
     }
     assert set(theme_ids()) == expected
 
@@ -208,7 +210,15 @@ def test_cta_meets_aa_large_floor(theme: Theme, role: str):
 # values support the claim are pinned strictly — known gaps in
 # dracula_light/hc_dark/frost are recorded in the module docstring
 # rather than hard-failed here.
-_THEMES_PINNED_AT_AA = ("dark_github", "light_inverted", "slate")
+_THEMES_PINNED_AT_AA = (
+    "dark_github",
+    "light_inverted",
+    "slate",
+    # The gruvbox pair (2026-06-10) claims AA in its notes and was
+    # designed to clear 4.5:1 on every CTA — hold it to that.
+    "gruvbox_dark",
+    "gruvbox_light",
+)
 
 
 @pytest.mark.parametrize("theme_id", _THEMES_PINNED_AT_AA)

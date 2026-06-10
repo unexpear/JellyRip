@@ -176,9 +176,8 @@ QComboBox QAbstractItemView {
     outline: none;
 }
 
-/* Disabled combo entries (e.g. the chat model picker's Ollama cloud
- * models when you aren't signed in) use the theme's muted color so they
- * read as unavailable and stay legible in every theme - no baked hex. */
+/* Disabled combo entries use the theme's muted color so they read as
+ * unavailable and stay legible in every theme - no baked hex. */
 QComboBox QAbstractItemView::item:disabled {
     color: #908caa;
 }

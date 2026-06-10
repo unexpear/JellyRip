@@ -57,6 +57,8 @@ _EXPECTED_THEMES = (
     "ayu_mirage",
     "carbon",
     "palenight",
+    "gruvbox_dark",
+    "gruvbox_light",
 )
 
 
