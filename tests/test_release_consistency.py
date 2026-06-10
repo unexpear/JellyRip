@@ -45,6 +45,15 @@ def test_readme_points_to_spec_build_and_release_notes_txt():
     assert "pyinstaller JellyRip.spec" in readme
     assert "release_notes.txt" in readme
     assert f"release.bat {version}" in readme
+    # One-DIR bundle (2026-06-09): the build output is an app folder
+    # (exe + _internal\), the portable download is a zip of it, and
+    # the FFmpeg notices ship inside _internal\licenses\ffmpeg\ —
+    # there are no staged FFmpeg-LICENSE.txt copies anymore.
+    assert "dist\\main\\JellyRip\\JellyRip.exe" in readme
+    assert "JellyRip-portable.zip" in readme
+    assert "_internal\\licenses\\ffmpeg\\" in readme
+    assert "FFmpeg-LICENSE.txt" not in readme
+    assert "ffplay" not in readme
 
 
 def test_release_script_checks_git_state_and_release_notes():

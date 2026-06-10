@@ -16,7 +16,7 @@ should be treated as non-final.
 - Project site: [unexpear.github.io/JellyRip](https://unexpear.github.io/JellyRip/)
 - Platform target: Windows
 - Runtime target: Python 3.13+
-- Distribution target: standalone `JellyRip.exe` and optional installer
+- Distribution target: portable app folder (`JellyRip-portable.zip`) and optional installer
 - Quality target: practical and safe for testing,
   not yet stable enough to treat as finished software
 
@@ -77,10 +77,11 @@ paths before the first rip.
 
 JellyRip ships a PySide6 (Qt) desktop UI. The Qt path is the only
 shipped path as of v1.0.19; the legacy tkinter UI was retired during
-the Phase 3 migration. Six themes ship out of the box
-(`dark_github`, `light_inverted`, `dracula_light`, `hc_dark`, `slate`,
-`frost`) and can be switched live from **Settings -> Themes**. The
-disc tree supports right-click MKV preview using QtMultimedia.
+the Phase 3 migration. Fifteen built-in themes ship out of the box
+and can be switched live from **Settings -> Appearance**, which also
+includes a Theme Maker for building, saving, and sharing custom
+themes (stored under `%APPDATA%\JellyRip\themes\`). The disc tree
+supports right-click MKV preview using QtMultimedia.
 
 ## Configuration
 
@@ -112,7 +113,8 @@ App-directory `.env` files are no longer loaded at startup.
 - [main.py](main.py) - primary entrypoint
 - [JellyRip.py](JellyRip.py) - compatibility entrypoint and project map
 - [gui_qt](gui_qt) - PySide6 (Qt) UI layer (themes, dialogs, preview)
-- [gui_qt/qss](gui_qt/qss) - generated theme stylesheets (six themes)
+- [gui_qt/qss](gui_qt/qss) - generated theme stylesheet snapshots
+  (dev reference; at runtime themes render live from token palettes)
 - [controller](controller) - workflow orchestration
 - [engine](engine) - MakeMKV, ffprobe, and file operations
 - [utils](utils) - helper modules
@@ -146,19 +148,20 @@ Contribution and security guidance:
 
 ## Building Releases
 
-### Standalone executable
+### Portable app folder
 
 ```bash
 build.bat
 ```
 
-The MAIN build scripts place standalone build artifacts under `dist\main`.
+The MAIN build scripts place the app folder under `dist\main\JellyRip`.
 `build.bat` wraps `pyinstaller JellyRip.spec` with the MAIN artifact and
 work directories preconfigured.
-The spec bundles the Gyan FFmpeg full build (`ffmpeg.exe`, `ffprobe.exe`,
-and `ffplay.exe`). Put the extracted build under `.\ffmpeg\` or `..\ffmpeg\`,
-or set `JELLYRIP_FFMPEG_DIR` before building. Release builds must also ship
-`FFmpeg-LICENSE.txt` and `FFmpeg-README.txt`.
+The spec bundles the Gyan FFmpeg full build (`ffmpeg.exe` and
+`ffprobe.exe`) into the app's `_internal\` folder, along with the FFmpeg
+license and README under `_internal\licenses\ffmpeg\`. Put the extracted
+FFmpeg build under `.\ffmpeg\` or `..\ffmpeg\`, or set
+`JELLYRIP_FFMPEG_DIR` before building.
 
 ### Executable plus installer
 
@@ -170,10 +173,12 @@ Commercial installer builds require an appropriate Inno Setup license.
 
 Expected outputs:
 
-- `dist/main/JellyRip.exe`
-- `dist/main/JellyRipInstaller.exe`
-- `dist\main\ffmpeg.exe`, `dist\main\ffprobe.exe`, and `dist\main\ffplay.exe`
-- `dist\main\FFmpeg-LICENSE.txt` and `dist\main\FFmpeg-README.txt`
+- `dist\main\JellyRip\JellyRip.exe` - the app folder; `_internal\`
+  carries the Python runtime, `ffmpeg.exe`, `ffprobe.exe`, and the
+  FFmpeg notices under `_internal\licenses\ffmpeg\`
+- `dist\main\JellyRipInstaller.exe`
+- `dist\main\JellyRip-portable.zip` - zip of the app folder, created
+  by `release.bat` (this is the release's portable download)
 
 Build output is intentionally git-ignored and should be published
 through GitHub Releases rather than committed to the repository.
