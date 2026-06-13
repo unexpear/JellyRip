@@ -2018,6 +2018,108 @@ def test_run_tv_disc_review_step_uses_output_plan_and_stops_before_rip(
     assert not any("Keep raw:" in line for line in kwargs["detail_lines"])
 
 
+def test_watch_gate_rename_updates_show_title_and_folders(
+    tmp_path, monkeypatch
+):
+    """Watch-before-rip follow-up (2026-06-12): when the user takes
+    the watch gate and recognizes the disc, the show-title prompt
+    must rename the run — the output plan and season folder pick up
+    the new name, and the placeholder-named destination folders are
+    removed while still empty."""
+    controller, engine = _controller_with_engine()
+
+    temp_root = tmp_path / "temp"
+    tv_root = tmp_path / "tv"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    tv_root.mkdir(parents=True, exist_ok=True)
+
+    engine.cfg["opt_show_temp_manager"] = False
+    engine.cfg["opt_smart_rip_mode"] = False
+    engine.cfg["opt_offer_preview_before_rip"] = True
+    engine.cfg["temp_folder"] = str(temp_root)
+    engine.cfg["tv_folder"] = str(tv_root)
+
+    controller.gui.show_info = lambda *_args, **_kwargs: None
+    # YES to the watch gate only; NO to everything else.
+    controller.gui.ask_yesno = (
+        lambda prompt: "Watch any titles" in str(prompt)
+    )
+
+    rename_prompts = []
+
+    def fake_ask_input(label, prompt, default="", *args, **kwargs):
+        rename_prompts.append((str(label), str(default)))
+        if label == "Show Title":
+            return "Planet Earth"
+        return ""
+
+    controller.gui.ask_input = fake_ask_input
+    controller.gui.ask_tv_setup = lambda **_kwargs: TVSessionSetup(
+        title="auto temp test",  # placeholder typed before watching
+        year="2006",
+        season=1,
+        starting_disc=1,
+        episode_mapping="manual",
+        metadata_provider="TMDB",
+        metadata_id="",
+        multi_episode="merge",
+        specials="season0",
+        replace_existing=True,
+        keep_raw=True,
+    )
+
+    output_plan_calls = []
+
+    def capture_output_plan(base_folder, main_label, extras_map, **kwargs):
+        output_plan_calls.append((base_folder, main_label))
+        return False  # stop before the rip
+
+    controller.gui.show_output_plan_step = capture_output_plan
+
+    disc_titles = [
+        {
+            "id": 0,
+            "name": "Episode 1",
+            "duration": "24:00",
+            "size": "1.0 GB",
+            "duration_seconds": 1440,
+            "size_bytes": 1_000_000_000,
+        },
+    ]
+    monkeypatch.setattr(engine, "cleanup_partial_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "write_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(engine, "update_temp_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(controller, "scan_with_retry", lambda: disc_titles)
+    monkeypatch.setattr(
+        controller,
+        "_open_manual_disc_picker",
+        lambda _titles, _is_tv: ([0], 1_000_000_000),
+    )
+    monkeypatch.setattr(
+        engine,
+        "run_job",
+        lambda _job, **_kw: SimpleNamespace(success=True, errors=[]),
+    )
+
+    controller.run_tv_disc()
+
+    show_title_prompts = [
+        d for label, d in rename_prompts if label == "Show Title"
+    ]
+    assert show_title_prompts, "the show-title prompt never appeared"
+    # The prompt pre-fills the placeholder so it's editable in place.
+    assert show_title_prompts[0] == "auto temp test"
+    assert output_plan_calls, "flow never reached the output plan"
+    base_folder, main_label = output_plan_calls[0]
+    assert "Planet Earth" in base_folder
+    assert main_label.startswith("Planet Earth - Season 01")
+    # The placeholder-named destination folder was cleaned up.
+    leftovers = [p.name for p in tv_root.iterdir()]
+    assert leftovers and all(
+        "Planet Earth" in name for name in leftovers
+    ), leftovers
+
+
 def test_select_and_move_tv_passes_replace_existing_to_move_files(
     tmp_path, monkeypatch
 ):
@@ -2321,7 +2423,7 @@ def test_movie_run_manual_selection_preserves_main_movie_picker(tmp_path, monkey
     controller.gui.show_info = lambda *_args, **_kwargs: None
     disc_tree_args = {}
 
-    def show_disc_tree(_disc_titles, _is_tv, _preview):
+    def show_disc_tree(_disc_titles, _is_tv, _preview, **_kwargs):
         disc_tree_args["preview"] = _preview
         return ["0", "1"]
 

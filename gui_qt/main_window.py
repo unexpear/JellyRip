@@ -821,7 +821,7 @@ class MainWindow(QMainWindow):
         self,
         disc_titles: "Sequence[dict[str, Any]]",
         is_tv: bool,
-        preview_callback: "Callable[[int], None] | None" = None,
+        preview_callback: "Callable[..., None] | None" = None,
         *args: Any,
         **kwargs: Any,
     ) -> "list[str] | None":

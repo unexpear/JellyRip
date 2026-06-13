@@ -1708,7 +1708,12 @@ class RipperEngine:
         return rc == 0
 
     def _run_preview_process(self, cmd, preview_seconds, on_log):
-        """Run a disposable preview rip with a hard time limit and no retries."""
+        """Run a disposable preview rip with no retries.
+
+        ``preview_seconds`` > 0 stops the rip after that many seconds
+        (a quick sample); 0 / falsy means NO time cap — the full
+        title rips to completion (the watch-before-rip flow).
+        """
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -1746,7 +1751,11 @@ class RipperEngine:
                 self.current_process = None
                 return False
 
-            if time.time() - start >= preview_seconds and proc.poll() is None:
+            if (
+                preview_seconds
+                and time.time() - start >= preview_seconds
+                and proc.poll() is None
+            ):
                 timed_out = True
                 on_log(
                     f"Preview sample reached {preview_seconds}s; stopping rip."

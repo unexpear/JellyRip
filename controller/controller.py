@@ -3060,6 +3060,9 @@ class RipperController(LegacyControllerMixin):
 
             disc_number += 1
             self.log(f"--- Disc {disc_number} ---")
+            # New disc, new title numbering — watch rips kept from a
+            # previous disc must never be reused here.
+            self.discard_watched_rips()
 
             self.gui.show_info(
                 "Insert Disc",
@@ -3324,6 +3327,32 @@ class RipperController(LegacyControllerMixin):
             restored_selected_ids = None
             manual_title_selection_used = False
 
+            # Watch-before-rip gate (TV only).  Offer to open the title
+            # picker — which has Preview-in-VLC buttons — so the user
+            # can play a short, disposable clip of any title before
+            # committing.  "Yes" routes through the manual picker even
+            # when Smart Rip is on; "No" keeps the normal run.  Toggle
+            # off via ``opt_offer_preview_before_rip``.
+            force_manual_pick = False
+            if (
+                is_tv
+                and disc_titles
+                and not restored_selected_ids
+                and cfg.get("opt_offer_preview_before_rip", True)
+            ):
+                if self.gui.ask_yesno(
+                    "Watch any titles before you start?\n\n"
+                    "Yes — open the title list and watch any title in "
+                    "VLC first (it rips to a temporary file that is "
+                    "deleted after) before you pick what to rip.\n"
+                    "No — continue the normal run."
+                ):
+                    force_manual_pick = True
+                    self.log(
+                        "Preview-before-rip: opening the picker with "
+                        "Preview buttons."
+                    )
+
             if restored_selected_ids:
                 selected_ids: list[int] = restored_selected_ids
                 selected_size = sum(
@@ -3336,7 +3365,11 @@ class RipperController(LegacyControllerMixin):
                 )
 
             # Smart Rip reads the shared ranked classification result.
-            if not restored_selected_ids and cfg.get("opt_smart_rip_mode", False):
+            if (
+                not restored_selected_ids
+                and cfg.get("opt_smart_rip_mode", False)
+                and not force_manual_pick
+            ):
                 all_classified = self._get_shared_classified_titles(disc_titles)
                 main_ct = self._get_recommended_classified_title(all_classified)
 
@@ -3499,6 +3532,57 @@ class RipperController(LegacyControllerMixin):
                         break
                     continue
                 manual_title_selection_used = True
+                if force_manual_pick and is_tv:
+                    # Watch-before-rip follow-up: now that the user has
+                    # seen (and maybe previewed) the titles, let them
+                    # set the real show name — the whole point of
+                    # watching first is discs whose setup title was a
+                    # placeholder.  A rename rebuilds the destination
+                    # folders; the temp rip folder keeps its original
+                    # name (it is deleted after a successful move).
+                    new_title = self.gui.ask_input(
+                        "Show Title",
+                        "Recognize the disc?  Set the show title used "
+                        "for naming and organizing:",
+                        title,
+                    )
+                    new_title = str(new_title or "").strip()
+                    if new_title and new_title != title:
+                        old_season_folder = season_folder
+                        old_extras_folder = extras_folder
+                        title = new_title
+                        self.log(f"Show title set to: {title}")
+                        if library_root:
+                            self.log(
+                                "Library folder mode — existing folder "
+                                "kept; the new title is used for naming."
+                            )
+                        else:
+                            season_folder = os.path.join(
+                                tv_root,
+                                build_tv_folder_name(
+                                    clean_name(title), metadata_id or ""
+                                ),
+                                f"Season {season:02d}",
+                            )
+                            extras_folder = os.path.join(
+                                season_folder, "Extras"
+                            )
+                            os.makedirs(season_folder, exist_ok=True)
+                            os.makedirs(extras_folder, exist_ok=True)
+                            dest_folder = season_folder
+                            self.log(f"Season folder: {season_folder}")
+                            # Drop the placeholder-named destination
+                            # folders if they are still empty.
+                            for stale in (
+                                old_extras_folder,
+                                old_season_folder,
+                                os.path.dirname(old_season_folder),
+                            ):
+                                try:
+                                    os.rmdir(stale)
+                                except OSError:
+                                    pass
 
             tv_review_confirmed = False
             if is_tv and use_tv_setup_dialog:
@@ -3588,25 +3672,44 @@ class RipperController(LegacyControllerMixin):
                 )
             )
             from engine.ripper_engine import Job
-            job = Job(
-                source=','.join(str(tid) for tid in selected_ids),
-                output=rip_path,
-                profile="default"
-            )
-            # Forward the controller's logger + the GUI's progress
-            # bar setter so PRGV/PRGT/PRGC log lines emitted during
-            # the rip reach the live UI.  Pre-2026-05-04 ``run_job``
-            # swallowed both into a local list nobody read, which
-            # made every rip look "hung" in the GUI even though
-            # MakeMKV was emitting progress events fine.  See
-            # tests/test_run_job_callbacks.py for the regression.
-            result = self.engine.run_job(
-                job,
-                on_log=self.log,
-                on_progress=self.gui.set_progress,
-            )
-            success = result.success
-            failed_titles = result.errors
+            # Reuse full-title watch rips: a title watched in the
+            # picker is already ripped, so move it into the session
+            # folder instead of ripping it twice.  Watched titles the
+            # user UNchecked are discarded inside the helper (their
+            # rule: keep only while still selected).  This runs after
+            # the pre-rip snapshot so the moved files count as new
+            # rip output downstream.
+            reused_ids = self._reuse_watched_rips(selected_ids, rip_path)
+            rip_ids = [
+                tid for tid in selected_ids if tid not in reused_ids
+            ]
+            if rip_ids:
+                job = Job(
+                    source=','.join(str(tid) for tid in rip_ids),
+                    output=rip_path,
+                    profile="default"
+                )
+                # Forward the controller's logger + the GUI's progress
+                # bar setter so PRGV/PRGT/PRGC log lines emitted during
+                # the rip reach the live UI.  Pre-2026-05-04 ``run_job``
+                # swallowed both into a local list nobody read, which
+                # made every rip look "hung" in the GUI even though
+                # MakeMKV was emitting progress events fine.  See
+                # tests/test_run_job_callbacks.py for the regression.
+                result = self.engine.run_job(
+                    job,
+                    on_log=self.log,
+                    on_progress=self.gui.set_progress,
+                )
+                success = result.success
+                failed_titles = result.errors
+            else:
+                self.log(
+                    "All selected titles were already ripped while "
+                    "watching — skipping the disc rip."
+                )
+                success = True
+                failed_titles = []
             partial_rip = False
             completed_title_ids = list(selected_ids)
             self._warn_degraded_rips()

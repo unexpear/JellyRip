@@ -109,7 +109,7 @@ class _DiscTreeDialog(QDialog):
         self,
         disc_titles: Sequence[dict[str, Any]],
         is_tv: bool,
-        preview_callback: Callable[[int], None] | None = None,
+        preview_callback: "Callable[..., None] | None" = None,
         parent: "QWidget | None" = None,
     ) -> None:
         super().__init__(parent)
@@ -135,11 +135,20 @@ class _DiscTreeDialog(QDialog):
         outer.setContentsMargins(20, 18, 20, 14)
         outer.setSpacing(8)
 
-        # Header text — same instructional banner as tkinter.
-        header = QLabel(
+        # Header text — same instructional banner as tkinter, plus a
+        # preview hint when previewing is available.
+        header_text = (
             "Select titles to rip.  Click a row to toggle the "
             "checkbox.  Recommended titles are pre-checked."
         )
+        if preview_callback is not None:
+            header_text += (
+                "  To watch one first: select it and click Watch in "
+                "VLC (or right-click it) — the full title rips to a "
+                "temporary file, plays, and is deleted when the player "
+                "closes."
+            )
+        header = QLabel(header_text)
         header.setObjectName("stepSubtitle")
         header.setWordWrap(True)
         outer.addWidget(header)
@@ -163,6 +172,31 @@ class _DiscTreeDialog(QDialog):
         self._populate(disc_titles)
 
         outer.addWidget(self._tree, stretch=1)
+
+        # Watch controls — rip the selected title to a disposable
+        # local-temp file, play it in VLC, and delete it when the
+        # player closes.  Full title only: partial-sample rips proved
+        # unreliable on protected discs (short reads get blocked).
+        # Only shown when a watch callback is wired.
+        if preview_callback is not None:
+            preview_row = QHBoxLayout()
+
+            self._preview_button = QPushButton("▶  Watch in VLC")
+            self._preview_button.setObjectName("previewButton")
+            self._preview_button.clicked.connect(self._on_preview_clicked)
+            preview_row.addWidget(self._preview_button)
+
+            note = QLabel(
+                "Rips the whole title to a temporary file first — "
+                "this can take a few minutes."
+            )
+            note.setObjectName("previewNote")
+            preview_row.addWidget(note)
+
+            preview_row.addStretch(1)
+            outer.addLayout(preview_row)
+        else:
+            self._preview_button = None
 
         # Buttons — Cancel left, OK (default) right.
         button_row = QHBoxLayout()
@@ -271,11 +305,35 @@ class _DiscTreeDialog(QDialog):
             title_id = int(title_id_str)
         except (TypeError, ValueError):
             return
+        self._invoke_preview(title_id)
+
+    def _invoke_preview(self, title_id: int) -> None:
+        """Call the watch callback for one title.  The controller side
+        rips the full title, plays it, and cleans up afterward."""
+        cb = self._preview_callback
+        if cb is None:
+            return
         try:
-            self._preview_callback(title_id)
+            cb(title_id)
         except Exception:
             # Don't let a misbehaving callback take down the dialog.
             pass
+
+    def _on_preview_clicked(self) -> None:
+        """Preview the currently-selected row in VLC."""
+        if self._preview_callback is None:
+            return
+        item = self._tree.currentItem()
+        if item is None:
+            return
+        title_id_str = item.data(_COL_TITLE, Qt.ItemDataRole.UserRole)
+        if not title_id_str:
+            return
+        try:
+            title_id = int(title_id_str)
+        except (TypeError, ValueError):
+            return
+        self._invoke_preview(title_id)
 
     def trigger_preview_for_test(self, title_id_str: str) -> None:
         """Test helper — invoke the preview callback as if the user
@@ -284,7 +342,7 @@ class _DiscTreeDialog(QDialog):
         if self._preview_callback is None:
             return
         try:
-            self._preview_callback(int(title_id_str))
+            self._invoke_preview(int(title_id_str))
         except Exception:
             pass
 
@@ -320,7 +378,7 @@ def show_disc_tree(
     parent: "QWidget | None",
     disc_titles: Sequence[dict[str, Any]],
     is_tv: bool,
-    preview_callback: Callable[[int], None] | None = None,
+    preview_callback: "Callable[..., None] | None" = None,
 ) -> list[str] | None:
     """Show the disc-tree selector modally.
 
