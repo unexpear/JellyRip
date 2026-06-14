@@ -57,6 +57,7 @@ from gui_qt.dialogs import (
     ask_space_override as _ask_space_override,
     ask_tv_setup as _ask_tv_setup,
     ask_yesno as _ask_yesno,
+    run_disc_tree as _run_disc_tree,
     show_disc_tree as _show_disc_tree,
     show_error as _show_error,
     show_extras_picker as _show_extras_picker,
@@ -220,6 +221,11 @@ class MainWindow(QMainWindow):
         # Track the latest known progress so the tray tooltip can
         # combine status text with current percent on either update.
         self._last_progress_pct: int | None = None
+
+        # Pointing-hand cursor on every clickable control — QSS can't
+        # set the cursor in Qt, so we walk the finished widget tree.
+        from gui_qt.ui_polish import apply_pointing_cursors
+        apply_pointing_cursors(self)
 
     # ------------------------------------------------------------------
     # Layout builders
@@ -829,14 +835,38 @@ class MainWindow(QMainWindow):
         Delegates to ``gui_qt.dialogs.show_disc_tree``.
 
         Returns ``list[str]`` of selected title IDs (controller calls
-        ``int()`` on each), or ``None`` on cancel.
+        ``int()`` on each), or ``None`` on cancel.  The per-title
+        episode names the user typed are stashed for the controller to
+        read via :meth:`consume_episode_names`.
 
         Thread-safe."""
         def _call() -> "list[str] | None":
-            return _show_disc_tree(
+            ids, names, numbers = _run_disc_tree(
                 self, disc_titles, is_tv, preview_callback,
             )
+            self._last_episode_names = dict(names or {})
+            self._last_episode_numbers = dict(numbers or {})
+            return ids
         return run_on_main(self._invoker, _call)
+
+    def consume_episode_names(self) -> "dict[int, str]":
+        """Return (and clear) the per-title episode names from the most
+        recent ``show_disc_tree``.  Keyed by integer title id; empty
+        when nothing was named or for a movie disc.  One-shot so a
+        later disc in a multi-disc session can't inherit stale names."""
+        names = dict(getattr(self, "_last_episode_names", {}) or {})
+        self._last_episode_names = {}
+        return names
+
+    def consume_episode_numbers(self) -> "dict[int, int]":
+        """Return (and clear) the per-title episode numbers from the
+        most recent ``show_disc_tree``.  Keyed by integer title id;
+        empty when nothing was numbered or for a movie disc.  One-shot,
+        like :meth:`consume_episode_names`, so a later disc in a
+        multi-disc session can't inherit stale numbers."""
+        numbers = dict(getattr(self, "_last_episode_numbers", {}) or {})
+        self._last_episode_numbers = {}
+        return numbers
 
     def show_temp_manager(
         self,

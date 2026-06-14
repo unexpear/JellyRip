@@ -332,6 +332,30 @@ def test_full_watch_keeps_file_and_registers_for_reuse(
     )
 
 
+def test_purge_preview_temp_sweeps_leftover_clips(monkeypatch, tmp_path):
+    """Startup purge (2026-06-13): a full-title watch the user never
+    continued past, or a failed/0-byte preview, lingers in local temp —
+    so launch sweeps the whole preview root.  Hermetic via a fake
+    gettempdir."""
+    from controller.legacy_compat import purge_preview_temp
+
+    monkeypatch.setattr(
+        legacy_compat.tempfile, "gettempdir", lambda: str(tmp_path)
+    )
+    # Fork-agnostic: MAIN uses "JellyRip", the AI fork "JellyRipAI".
+    preview_root = tmp_path / legacy_compat._PREVIEW_TEMP_SUBDIR / "preview"
+    (preview_root / "t00").mkdir(parents=True)
+    (preview_root / "t00" / "preview.mkv").write_bytes(b"")   # 0-byte leftover
+    (preview_root / "t03").mkdir(parents=True)
+    (preview_root / "t03" / "show_t03.mkv").write_bytes(b"x" * 4096)
+
+    purge_preview_temp()
+
+    assert not preview_root.exists(), "the whole preview root must be swept"
+    # Idempotent / safe when already absent.
+    purge_preview_temp()
+
+
 def test_reuse_watched_rips_moves_selected_and_discards_unchecked(
     tmp_path,
 ):

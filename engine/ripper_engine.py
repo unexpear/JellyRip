@@ -1103,13 +1103,18 @@ class RipperEngine:
             projected_name = clean_name(raw_name) if raw_name else ""
             if not projected_name:
                 projected_name = f"Title_{safe_int(t.get('id', 0)) + 1:02d}"
+            # Show MakeMKV's real output filename (e.g. "B1_t10.mkv")
+            # alongside our "Title N" so the scan list lines up with
+            # the ripped files.
+            disc_name = str(t.get("output_name", "") or "").strip()
+            disc_part = f" disc='{disc_name}'" if disc_name else ""
             on_log(
                 f"  Title {t['id']+1}: score={score:.3f} | "
                 f"{t['duration']} {t['size']} | "
                 f"chap={safe_int(t.get('chapters', 0))} "
                 f"aud={len(t.get('audio_tracks', []))} "
                 f"sub={len(t.get('subtitle_tracks', []))} | "
-                f"projected='{projected_name}'"
+                f"projected='{projected_name}'{disc_part}"
             )
         if scored:
             best_title = scored[0][0]

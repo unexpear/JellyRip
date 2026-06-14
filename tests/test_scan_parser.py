@@ -96,6 +96,7 @@ def test_clean_scan_returns_titles_with_parsed_fields(monkeypatch):
         'TINFO:0,9,0,"1:30:00"',          # duration → 5400 seconds
         'TINFO:0,8,0,"12"',                # chapters
         'TINFO:0,11,0,"5368709120"',       # size → 5.00 GB
+        'TINFO:0,27,0,"B1_t10.mkv"',       # MakeMKV output filename
         'SINFO:0,0,6,0,"V_MPEG4/ISO/AVC"', # video stream codec
     ]
     _patch_popen(monkeypatch, lines, returncode=0)
@@ -115,6 +116,9 @@ def test_clean_scan_returns_titles_with_parsed_fields(monkeypatch):
     assert t["chapters"] == 12
     assert t["size_bytes"] == 5368709120
     assert "GB" in t["size"]
+    # MakeMKV's real output filename (attr 27) is captured so the
+    # picker/logs can show it next to our "Title N" (2026-06-13).
+    assert t["output_name"] == "B1_t10.mkv"
     assert t["streams"][0][6] == "V_MPEG4/ISO/AVC"
     assert t["_invalid"] is False
     # First TINFO line for a title bumps progress.

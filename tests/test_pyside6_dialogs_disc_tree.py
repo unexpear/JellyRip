@@ -30,6 +30,8 @@ from PySide6.QtWidgets import QHeaderView
 from gui_qt.dialogs.disc_tree import (
     _COL_CHAPTERS,
     _COL_DURATION,
+    _COL_NAME,
+    _COL_NUM,
     _COL_SIZE,
     _COL_STATUS,
     _COL_TITLE,
@@ -69,22 +71,228 @@ def _title(
 # ---------------------------------------------------------------------------
 
 
-def test_format_title_label_zero_indexed_id():
-    """``Title 1`` for id=0, etc.  Mirrors tkinter's ``t['id']+1``."""
-    assert _format_title_label({"id": 0, "name": "Main"}) == "Title 1: Main"
-    assert _format_title_label({"id": 5, "name": "X"}) == "Title 6: X"
+def test_format_title_label_zero_indexed_id_with_file_token():
+    """``Title 1`` for id=0, plus the ``_tNN.mkv`` token that matches
+    the rip file (id is the MakeMKV index, not the 1-based number)."""
+    assert _format_title_label({"id": 0, "name": "Main"}) == "Title 1: Main  ·  _t00.mkv"
+    assert _format_title_label({"id": 5, "name": "X"}) == "Title 6: X  ·  _t05.mkv"
 
 
-def test_format_title_label_empty_name_falls_back():
-    """Missing or empty name → ``(no name)`` fallback."""
-    assert _format_title_label({"id": 2, "name": ""}) == "Title 3: (no name)"
-    assert _format_title_label({"id": 2}) == "Title 3: (no name)"
+def test_format_title_label_generic_name_not_duplicated():
+    """Unlabeled discs name every title "Title {n+1}"; don't echo it as
+    "Title 5: Title 5" — just show the head + the file token.  This is
+    the user-reported "scan names don't match rip names" case."""
+    assert _format_title_label({"id": 4, "name": "Title 5"}) == "Title 5  ·  _t04.mkv"
+    assert _format_title_label({"id": 2, "name": ""}) == "Title 3  ·  _t02.mkv"
+    assert _format_title_label({"id": 2}) == "Title 3  ·  _t02.mkv"
+
+
+def test_format_title_label_real_name_kept_with_token():
+    """A genuine disc-supplied name is shown, with the file token."""
+    assert (
+        _format_title_label({"id": 10, "name": "Play All"})
+        == "Title 11: Play All  ·  _t10.mkv"
+    )
+
+
+def test_tv_picker_rows_sorted_by_title_number(qtbot):
+    """TV discs list titles in number order (1, 2, 3 …) even when the
+    scan hands them in longest-first order — so the picker reads
+    naturally and lines up with the rip filenames (2026-06-13)."""
+    # Scan order: a long extra first, then episodes out of order.
+    titles = [
+        _title(tid=10, duration="0:53:50"),  # play-all / extra
+        _title(tid=2),
+        _title(tid=0),
+        _title(tid=5),
+    ]
+    d = _DiscTreeDialog(titles, is_tv=True)
+    qtbot.addWidget(d)
+    order = [
+        d._tree.topLevelItem(i).data(_COL_TITLE, Qt.ItemDataRole.UserRole)
+        for i in range(d._tree.topLevelItemCount())
+    ]
+    assert order == ["0", "2", "5", "10"]  # ascending by title id
+
+
+def test_movie_picker_keeps_scan_order(qtbot):
+    """Movies keep the scan's longest-first order (main feature on top,
+    pre-checked) — only TV is re-sorted by number."""
+    titles = [_title(tid=10), _title(tid=2), _title(tid=0)]
+    d = _DiscTreeDialog(titles, is_tv=False)
+    qtbot.addWidget(d)
+    order = [
+        d._tree.topLevelItem(i).data(_COL_TITLE, Qt.ItemDataRole.UserRole)
+        for i in range(d._tree.topLevelItemCount())
+    ]
+    assert order == ["10", "2", "0"]  # unchanged from input
+
+
+def test_format_title_label_prefers_real_output_name():
+    """When the scan captured MakeMKV's real output filename
+    (``output_name``, e.g. "B1_t10.mkv"), show THAT instead of the
+    predicted ``_tNN.mkv`` — the A1_/B1_ prefix isn't predictable, so
+    the real name is what lines the picker up with the ripped files
+    (2026-06-13 user request: show both Title N and the disc name)."""
+    assert (
+        _format_title_label({"id": 10, "name": "Title 11", "output_name": "B1_t10.mkv"})
+        == "Title 11  ·  B1_t10.mkv"
+    )
+    # No output_name → fall back to the predicted token.
+    assert (
+        _format_title_label({"id": 10, "name": "Title 11"})
+        == "Title 11  ·  _t10.mkv"
+    )
 
 
 def test_is_recommended_true_only_when_flag_set():
     assert _is_recommended({"recommended": True}) is True
     assert _is_recommended({"recommended": False}) is False
     assert _is_recommended({}) is False
+
+
+# ---------------------------------------------------------------------------
+# Per-title episode naming (2026-06-13) — name each title in the picker;
+# the name becomes the saved file's episode name.
+# ---------------------------------------------------------------------------
+
+
+def test_name_column_shown_for_tv_hidden_for_movie(qtbot):
+    """The editable "Episode name" column is for TV episodes only; a
+    movie disc names by title/year, so the column is hidden there."""
+    tv = _DiscTreeDialog([_title(tid=0)], is_tv=True)
+    qtbot.addWidget(tv)
+    assert not tv._tree.isColumnHidden(_COL_NAME)
+
+    movie = _DiscTreeDialog([_title(tid=0)], is_tv=False)
+    qtbot.addWidget(movie)
+    assert movie._tree.isColumnHidden(_COL_NAME)
+
+
+def test_episode_names_collects_typed_names_by_int_id(qtbot):
+    """What the user types in the name cell is returned keyed by the
+    integer title id — that's what the move step maps to each file."""
+    d = _DiscTreeDialog([_title(tid=2), _title(tid=5)], is_tv=True)
+    qtbot.addWidget(d)
+    # Simulate the inline editor committing text into the name cells.
+    d._items_by_id["2"].setText(_COL_NAME, "Pilot")
+    d._items_by_id["5"].setText(_COL_NAME, "  The Big One  ")  # trimmed
+    names = d.episode_names()
+    assert names == {2: "Pilot", 5: "The Big One"}
+
+
+def test_episode_names_skips_blank_rows(qtbot):
+    d = _DiscTreeDialog([_title(tid=0), _title(tid=1)], is_tv=True)
+    qtbot.addWidget(d)
+    d._items_by_id["0"].setText(_COL_NAME, "Named")
+    # tid 1 left blank → omitted entirely.
+    assert d.episode_names() == {0: "Named"}
+
+
+def test_episode_names_empty_for_movie(qtbot):
+    """The name column is hidden for movies, so no names come back even
+    if a cell somehow holds text."""
+    d = _DiscTreeDialog([_title(tid=0)], is_tv=False)
+    qtbot.addWidget(d)
+    d._items_by_id["0"].setText(_COL_NAME, "ignored")
+    assert d.episode_names() == {}
+
+
+def test_on_ok_captures_ids_and_names(qtbot):
+    """Hitting OK snapshots both the checked ids and the typed names so
+    the caller (run_disc_tree) can read them after the dialog closes."""
+    d = _DiscTreeDialog([_title(tid=3), _title(tid=7)], is_tv=True)
+    qtbot.addWidget(d)
+    d._items_by_id["3"].setCheckState(_COL_TITLE, Qt.CheckState.Checked)
+    d._items_by_id["3"].setText(_COL_NAME, "Episode A")
+    d._on_ok()
+    assert d.result_value == ["3"]
+    assert d.episode_names_value == {3: "Episode A"}
+
+
+# ---------------------------------------------------------------------------
+# Per-title episode numbering (2026-06-13) — set each title's episode
+# number in the picker (next to its duration/size); blank = an extra.
+# ---------------------------------------------------------------------------
+
+
+def test_number_column_shown_for_tv_hidden_for_movie(qtbot):
+    """The editable "Ep #" column is for TV only — movies number by
+    title/year, so it's hidden there."""
+    tv = _DiscTreeDialog([_title(tid=0)], is_tv=True)
+    qtbot.addWidget(tv)
+    assert not tv._tree.isColumnHidden(_COL_NUM)
+
+    movie = _DiscTreeDialog([_title(tid=0)], is_tv=False)
+    qtbot.addWidget(movie)
+    assert movie._tree.isColumnHidden(_COL_NUM)
+
+
+def test_tv_episode_numbers_blank_until_typed(qtbot):
+    """No auto-fill (2026-06-13): TV rows start with an empty Ep # — you
+    type each number yourself, and a row left blank stays an extra."""
+    d = _DiscTreeDialog(
+        [_title(tid=2), _title(tid=0), _title(tid=5)], is_tv=True,
+    )
+    qtbot.addWidget(d)
+    assert d.episode_numbers() == {}
+
+
+def test_episode_numbers_reads_edited_cells(qtbot):
+    """Editing the Ep # cell changes what's reported; a cleared cell
+    drops out (that title is treated as an extra)."""
+    d = _DiscTreeDialog(
+        [_title(tid=0), _title(tid=1), _title(tid=2)], is_tv=True,
+    )
+    qtbot.addWidget(d)
+    d._items_by_id["0"].setText(_COL_NUM, "4")
+    d._items_by_id["1"].setText(_COL_NUM, "3")
+    d._items_by_id["2"].setText(_COL_NUM, "")  # extra → omitted
+    assert d.episode_numbers() == {0: 4, 1: 3}
+
+
+def test_episode_numbers_empty_for_movie(qtbot):
+    """The Ep # column is hidden for movies, so no numbers come back."""
+    d = _DiscTreeDialog([_title(tid=0)], is_tv=False)
+    qtbot.addWidget(d)
+    assert d.episode_numbers() == {}
+
+
+def test_on_ok_captures_numbers(qtbot):
+    """OK snapshots the typed numbers too, so run_disc_tree can read
+    them after the dialog closes (alongside ids and names)."""
+    d = _DiscTreeDialog([_title(tid=3)], is_tv=True)
+    qtbot.addWidget(d)
+    d._items_by_id["3"].setText(_COL_NUM, "9")
+    d._on_ok()
+    assert d.episode_numbers_value == {3: 9}
+
+
+def test_picker_cell_clipboard_helpers(qtbot):
+    """Right-click Cut/Copy/Paste on an editable cell moves text via the
+    clipboard (whole-cell), collapsing any pasted newlines to spaces."""
+    from PySide6.QtWidgets import QApplication
+
+    d = _DiscTreeDialog([_title(tid=0), _title(tid=1)], is_tv=True)
+    qtbot.addWidget(d)
+    a = d._items_by_id["0"]
+    b = d._items_by_id["1"]
+    a.setText(_COL_NAME, "Pilot")
+
+    d._cell_copy(a, _COL_NAME)
+    assert QApplication.clipboard().text() == "Pilot"
+
+    d._cell_paste(b, _COL_NAME)
+    assert b.text(_COL_NAME) == "Pilot"
+
+    d._cell_cut(a, _COL_NAME)
+    assert a.text(_COL_NAME) == ""
+    assert QApplication.clipboard().text() == "Pilot"
+
+    # Multi-line clipboard collapses to a single-line cell value.
+    QApplication.clipboard().setText("Line1\nLine2")
+    d._cell_paste(b, _COL_NAME)
+    assert b.text(_COL_NAME) == "Line1 Line2"
 
 
 def test_classification_text_uses_classification_first():
@@ -135,7 +343,7 @@ def test_row_columns_populated(qtbot):
     d = _DiscTreeDialog(titles, is_tv=False)
     qtbot.addWidget(d)
     item = d._tree.topLevelItem(0)
-    assert item.text(_COL_TITLE) == "Title 3: Main Feature"
+    assert item.text(_COL_TITLE) == "Title 3: Main Feature  ·  _t02.mkv"
     assert item.text(_COL_DURATION) == "2:18:00"
     assert item.text(_COL_SIZE) == "38.2 GB"
     assert item.text(_COL_CHAPTERS) == "28"

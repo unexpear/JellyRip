@@ -2,6 +2,41 @@
 
 <!-- markdownlint-disable MD013 -->
 
+## [1.0.26] - 2026-06-14
+
+Unstable pre-release — a workflow + UI pass on the TV ripping flow.
+
+### Added
+
+- **Watch a title before you rip it.**  The disc picker has a "Watch in
+  VLC" control that rips the selected title to a temporary file and
+  plays it, so you can confirm what a title actually is before
+  committing to a full rip.
+- **Name and number episodes right in the disc picker.**  The picker now
+  has editable **Ep #** and **Episode name** columns, with each title's
+  length and size beside it — set it all in one window.  A title left
+  without a number is filed as an extra.
+- **Cut / Copy / Paste in the picker's editable cells** (right-click
+  menu; the usual Ctrl+C / V / X work too).
+
+### Changed
+
+- **The post-rip "Episode Numbers" and "Episode Names" prompts are
+  gone.**  A TV rip builds its plan straight from the picker instead of
+  asking you to type comma-separated lists afterward.  The
+  duplicate-number and existing-file safety checks still run, ending in
+  a move preview you confirm.
+- **TV picker and file lists sort by title number**, and each title
+  shows both its "Title N" label and MakeMKV's real output filename so
+  the scan list lines up with the files you get.
+
+### Polish
+
+- **Tactile UI pass.**  Buttons darken on press and show a focus ring
+  for keyboard navigation; clickable controls take a pointing-hand
+  cursor; inputs and list rows gained hover/selected states.  Derived
+  per-theme, so every built-in and custom theme gets it.
+
 ## [1.0.25] - 2026-06-10
 
 Small fix release for the Settings dialog under light themes.

@@ -154,6 +154,12 @@ QTreeWidget::item:hover {
     background-color: #2a3a4d;
 }
 
+QTreeView::item:selected,
+QTreeWidget::item:selected {
+    background-color: #4a78b8;
+    color: #ffffff;
+}
+
 /* ---- Form controls -------------------------------------------------- */
 
 QLineEdit,
@@ -162,10 +168,16 @@ QTextEdit {
     background-color: #2a3a4d;
     color: #dbe5ee;
     border: 1px solid #3a4a5e;
-    border-radius: 5px;
+    border-radius: 6px;
     padding: 6px 10px;
     selection-background-color: #4a78b8;
     selection-color: #ffffff;
+}
+
+QLineEdit:hover,
+QPlainTextEdit:hover,
+QTextEdit:hover {
+    border-color: #8ea0b3;
 }
 
 QLineEdit:focus,
@@ -178,12 +190,16 @@ QComboBox {
     background-color: #2a3a4d;
     color: #dbe5ee;
     border: 1px solid #3a4a5e;
-    border-radius: 5px;
+    border-radius: 6px;
     padding: 5px 10px;
     min-height: 20px;
 }
 
 QComboBox:hover {
+    border-color: #5dbcd2;
+}
+
+QComboBox:focus {
     border-color: #5dbcd2;
 }
 
@@ -241,13 +257,18 @@ QPushButton {
     background-color: #22303f;
     color: #dbe5ee;
     border: 1px solid #3a4a5e;
-    border-radius: 5px;
+    border-radius: 6px;
     padding: 7px 14px;
     font-weight: 500;
 }
 
 QPushButton:hover {
     background-color: #2a3a4d;
+    border-color: #5dbcd2;
+}
+
+QPushButton:pressed {
+    background-color: #253445;
     border-color: #5dbcd2;
 }
 
@@ -274,6 +295,10 @@ QPushButton#confirmButton:hover {
     background-color: #4ba89a;
     border-color: #0d1721;
 }
+QPushButton#confirmButton:pressed {
+    background-color: #3d897e;
+    border-color: #0d1721;
+}
 QPushButton#confirmButton:disabled {
     background-color: #22303f;
     color: #8ea0b3;
@@ -292,6 +317,10 @@ QPushButton#primaryButton:hover {
     background-color: #7aa8c8;
     border-color: #0d1721;
 }
+QPushButton#primaryButton:pressed {
+    background-color: #6489a4;
+    border-color: #0d1721;
+}
 
 /* Workflow alt button — "Standard".
  * Maps to the ``alt`` role. */
@@ -303,6 +332,10 @@ QPushButton#secondaryButton {
 }
 QPushButton#secondaryButton:hover {
     background-color: #8a8ec4;
+    border-color: #0d1721;
+}
+QPushButton#secondaryButton:pressed {
+    background-color: #7174a0;
     border-color: #0d1721;
 }
 
@@ -317,6 +350,11 @@ QPushButton#cancelButton:hover {
     color: #dbe5ee;
     background-color: #2a3a4d;
     border-color: #3a4a5e;
+}
+QPushButton#cancelButton:pressed {
+    color: #dbe5ee;
+    background-color: #253445;
+    border-color: #5dbcd2;
 }
 
 /* ---- Progress / scrollbars ----------------------------------------- */
@@ -428,6 +466,9 @@ QComboBox#driveCombo {
 QComboBox#driveCombo:hover {
     border-color: #5dbcd2;
 }
+QComboBox#driveCombo:focus {
+    border-color: #5dbcd2;
+}
 QPushButton#driveRefresh {
     background-color: #2a3a4d;
     color: #8ea0b3;
@@ -438,6 +479,11 @@ QPushButton#driveRefresh {
 }
 QPushButton#driveRefresh:hover {
     background-color: #2a3a4d;
+    color: #5dbcd2;
+    border-color: #5dbcd2;
+}
+QPushButton#driveRefresh:pressed {
+    background-color: #253445;
     color: #5dbcd2;
     border-color: #5dbcd2;
 }
@@ -480,6 +526,13 @@ QToolButton#utilUpdates:pressed,
 QToolButton#utilCopyLog:pressed,
 QToolButton#utilBrowse:pressed {
     background-color: #4a78b8;
+    color: #dbe5ee;
+}
+QToolButton#utilSettings:focus,
+QToolButton#utilUpdates:focus,
+QToolButton#utilCopyLog:focus,
+QToolButton#utilBrowse:focus {
+    border-color: #5dbcd2;
     color: #dbe5ee;
 }
 /* Legacy QPushButton#utilXxx selectors kept while build_qss.py
@@ -529,6 +582,13 @@ QPushButton[objectName^="modeGo"] {
 QPushButton[objectName^="modeGo"]:hover {
     border-color: #0d1721;
 }
+QPushButton[objectName^="modeGo"]:focus {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeGo"]:pressed {
+    background-color: #3d897e;
+    border-color: #0d1721;
+}
 QPushButton[objectName^="modeInfo"] {
     background-color: #7aa8c8;
     color: #0d1721;
@@ -538,6 +598,13 @@ QPushButton[objectName^="modeInfo"] {
     font-weight: 700;
 }
 QPushButton[objectName^="modeInfo"]:hover {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeInfo"]:focus {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeInfo"]:pressed {
+    background-color: #6489a4;
     border-color: #0d1721;
 }
 QPushButton[objectName^="modeAlt"] {
@@ -551,6 +618,13 @@ QPushButton[objectName^="modeAlt"] {
 QPushButton[objectName^="modeAlt"]:hover {
     border-color: #0d1721;
 }
+QPushButton[objectName^="modeAlt"]:focus {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeAlt"]:pressed {
+    background-color: #7174a0;
+    border-color: #0d1721;
+}
 QPushButton[objectName^="modeWarn"] {
     background-color: #b88550;
     color: #0d1721;
@@ -560,6 +634,13 @@ QPushButton[objectName^="modeWarn"] {
     font-weight: 700;
 }
 QPushButton[objectName^="modeWarn"]:hover {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeWarn"]:focus {
+    border-color: #0d1721;
+}
+QPushButton[objectName^="modeWarn"]:pressed {
+    background-color: #966d41;
     border-color: #0d1721;
 }
 
@@ -580,6 +661,11 @@ QPushButton#stopButton {
 QPushButton#stopButton:hover {
     background-color: #a64545;
     color: #ffffff;
+}
+QPushButton#stopButton:pressed {
+    background-color: #883838;
+    color: #ffffff;
+    border-color: #883838;
 }
 QPushButton#stopButton:disabled {
     color: #8ea0b3;

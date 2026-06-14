@@ -50,6 +50,34 @@ from utils.state_machine import SessionState, SessionStateMachine
 from utils.scoring import choose_best_title
 
 
+# Local-temp home for disposable watch/preview clips.  One source of
+# truth so ``preview_title`` and the startup purge agree on the path.
+_PREVIEW_TEMP_SUBDIR = "JellyRip"
+
+
+def _preview_root() -> str:
+    """Local-temp root for disposable watch/preview clips."""
+    return os.path.join(tempfile.gettempdir(), _PREVIEW_TEMP_SUBDIR, "preview")
+
+
+def purge_preview_temp() -> None:
+    """Best-effort sweep of leftover preview clips from a prior run.
+
+    Called once at startup.  Sample clips delete when the player
+    closes and kept full-title watches are moved/discarded on
+    continue — but a full-title watch the user never continued past
+    (the app was closed first) or a failed/0-byte preview would
+    otherwise linger in local temp.  Clearing the whole preview root
+    at launch guarantees nothing accumulates across runs.
+    """
+    try:
+        root = _preview_root()
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)
+    except Exception:
+        pass
+
+
 DiscTitle = dict[str, Any]
 DiscTitles = list[DiscTitle]
 AnalyzedFile = tuple[str, float, float]
@@ -1019,10 +1047,7 @@ class LegacyControllerMixin:
         # Each title gets its own subfolder so a KEPT watch rip of one
         # title survives watching another — the per-run cleanup below
         # and MakeMKV's pre-rip purge stay scoped to this title only.
-        preview_dir = os.path.join(
-            tempfile.gettempdir(), "JellyRip", "preview",
-            f"t{title_id:02d}",
-        )
+        preview_dir = os.path.join(_preview_root(), f"t{title_id:02d}")
 
         try:
             shutil.rmtree(preview_dir, ignore_errors=True)
