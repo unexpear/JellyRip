@@ -18,6 +18,14 @@ Unstable pre-release — a workflow + UI pass on the TV ripping flow.
   without a number is filed as an extra.
 - **Cut / Copy / Paste in the picker's editable cells** (right-click
   menu; the usual Ctrl+C / V / X work too).
+- **Type with a single click, plus Select All / Select None.**  The Ep #
+  and Episode name cells open for editing on a single click and show a
+  faint hint so it's obvious you can type in them, and two buttons check
+  or uncheck every title at once.
+- **Organize & resume use the picker too.**  Numbering already-ripped
+  episodes (Organize Existing MKVs, or resuming a disc) now uses the same
+  per-title picker — so a missing episode or an extra is handled the same
+  friendly way as a fresh rip, instead of typing comma-separated lists.
 
 ### Changed
 
@@ -29,6 +37,14 @@ Unstable pre-release — a workflow + UI pass on the TV ripping flow.
 - **TV picker and file lists sort by title number**, and each title
   shows both its "Title N" label and MakeMKV's real output filename so
   the scan list lines up with the files you get.
+- **TV discs are treated as episodes, not one "main feature."**  The scan
+  now labels full-length titles as Episodes and pre-checks them all,
+  instead of picking a single "MAIN" and rejecting the equal-length
+  episodes as duplicates; the rip logs read in episode terms.
+- **Continue a box set across seasons.**  When there's another disc in
+  the set, the app asks whether it's the same season or a new one (and
+  which number), so Season 1 → Season 2 flows in one session instead of
+  forcing a brand-new run.
 
 ### Polish
 

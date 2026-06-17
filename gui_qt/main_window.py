@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
         Thread-safe."""
         def _call() -> "list[str] | None":
             ids, names, numbers = _run_disc_tree(
-                self, disc_titles, is_tv, preview_callback,
+                self, disc_titles, is_tv, preview_callback, **kwargs,
             )
             self._last_episode_names = dict(names or {})
             self._last_episode_numbers = dict(numbers or {})

@@ -145,7 +145,9 @@ class RipperController(LegacyControllerMixin):
         if classification_matches_titles(cached, disc_titles):
             return list(cached)
 
-        _fallback_main, classified = classify_and_pick_main(disc_titles)
+        _fallback_main, classified = classify_and_pick_main(
+            disc_titles, is_tv=getattr(self.engine, "content_is_tv", False)
+        )
         self.engine.last_classification = classified
         return classified
 
@@ -901,7 +903,8 @@ class RipperController(LegacyControllerMixin):
                     "Smart movie split mode: ripping main feature before extras."
                 )
             self.log(
-                f"Content mapping: {len(content.main_title_ids)} main, "
+                f"Content mapping: {len(content.main_title_ids)} "
+                f"{'episodes' if is_tv else 'main'}, "
                 f"{len(content.extra_title_ids)} extras, "
                 f"{len(content.skip_title_ids)} skipped."
             )
@@ -1044,6 +1047,8 @@ class RipperController(LegacyControllerMixin):
         status_msg = (
             "Ripping all titles..."
             if len(selected_ids) > 1 else
+            "Ripping episode..."
+            if getattr(self.engine, "content_is_tv", False) else
             "Ripping main feature..."
         )
         self.gui.set_status(status_msg)
@@ -2897,6 +2902,32 @@ class RipperController(LegacyControllerMixin):
             except Exception:
                 pass
 
+    def _prompt_next_disc_season(self, current_season: int) -> int:
+        """At a multi-disc continuation, let the user move the next disc
+        to a new season.  In setup-dialog mode the season is otherwise
+        fixed for the whole session, which used to force a brand-new run
+        to start the next season; this lets a box set flow S1 -> S2 in
+        place.  The destination Season folder auto-derives from the
+        returned number at the top of the disc loop.  Returns the season
+        to use next (unchanged if the user keeps the same one)."""
+        if self.gui.ask_yesno(
+            f"Is the next disc also Season {current_season:02d}?"
+        ):
+            return current_season
+        raw = self.gui.ask_input(
+            "Season",
+            "Season number for the next disc:",
+            default_value=str(current_season + 1),
+        )
+        text = str(raw or "").strip()
+        if text.isdigit():
+            self.log(f"Next disc: switching to Season {int(text):02d}.")
+            return int(text)
+        self.log(
+            f"No valid season entered — staying on Season {current_season:02d}."
+        )
+        return current_season
+
     def _run_disc_inner(self, is_tv: bool) -> None:
         cfg        = self.engine.cfg
         path_fields = [
@@ -2917,6 +2948,9 @@ class RipperController(LegacyControllerMixin):
         temp_root: str = self.get_path("temp")
 
         self.engine.reset_abort()
+        # Tell the title classifier whether this session is TV (N
+        # episodes, no single "main feature") or a movie.
+        self.engine.content_is_tv = bool(is_tv)
         self._reset_state_machine()
         self._wiped_session_paths.clear()
         self.global_extra_counter = 1
@@ -4001,6 +4035,17 @@ class RipperController(LegacyControllerMixin):
             if not self.gui.ask_yesno("Another disc in this set?"):
                 break
 
+            # In setup-dialog mode the season is fixed for the whole
+            # session — the disc loop won't re-ask it — so this
+            # continuation is the only place to advance to a new season.
+            # Offer it here so a box set flows S1 -> S2 in one session
+            # instead of forcing a brand-new run; the destination Season
+            # folder auto-derives from the season at the top of the loop.
+            # (In per-disc mode the loop already prompts the season each
+            # disc, so we don't double-ask.)
+            if is_tv and use_tv_setup_dialog:
+                season = self._prompt_next_disc_season(season)
+
         # Mark session as completed so write_session_summary uses the
         # correct code path (warnings list vs clean success).
         # sm.complete() is a no-op if the session already failed
@@ -4103,6 +4148,72 @@ class RipperController(LegacyControllerMixin):
             real_names = []
             extra_indices = []
             bonus_indices = None
+
+            # Organize / resume an already-ripped TV disc that has no
+            # numbers yet (no pre-rip picker run AND no saved session
+            # numbers): show the SAME per-title picker on the ripped
+            # files, so you number/name each title here (blank = an
+            # extra) instead of the old comma-box prompts.  Makes resume
+            # and Organize Existing MKVs as friendly as a fresh rip, and
+            # handles gaps (a missing episode) the fixed-count box can't.
+            if not picker_driven and not resume_numbers and titles_list:
+                organize_titles = []
+                for _of, _odur, _omb in titles_list:
+                    _otid = self._title_id_from_filename(_of)
+                    organize_titles.append({
+                        "id": (
+                            _otid if _otid is not None
+                            else len(organize_titles)
+                        ),
+                        "name": os.path.basename(_of),
+                        "output_name": os.path.basename(_of),
+                        "duration": (
+                            f"{int(_odur // 60)} min"
+                            if _odur and _odur > 0 else ""
+                        ),
+                        "size": f"{int(_omb)} MB" if _omb else "",
+                        "chapters": "",
+                        "recommended": True,
+                    })
+                self.log(
+                    "Organize: set each title's episode number + name "
+                    "in the picker (leave a title blank to file it as "
+                    "an extra)."
+                )
+                org_ids = self.gui.show_disc_tree(
+                    organize_titles, True, None,
+                    window_title="Organize — Number & Name Episodes",
+                    intro_text=(
+                        "These titles are already ripped — set each "
+                        "title's episode number and name."
+                    ),
+                )
+                if not org_ids:
+                    self.log("Cancelled.")
+                    return False
+                try:
+                    picker_names = dict(
+                        self.gui.consume_episode_names() or {}
+                    )
+                except Exception:
+                    picker_names = {}
+                try:
+                    picker_numbers = dict(
+                        self.gui.consume_episode_numbers() or {}
+                    )
+                except Exception:
+                    picker_numbers = {}
+                picker_driven = bool(picker_numbers)
+                if not picker_driven:
+                    self.report("Organize picker: nothing numbered")
+                    self.gui.show_error(
+                        "No Episodes Numbered",
+                        "No title was given an episode number, so "
+                        "there's nothing to file as an episode.  "
+                        "Number each episode (leave extras blank) and "
+                        "try again."
+                    )
+                    return False
 
             if picker_driven:
                 main_indices = []

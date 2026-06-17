@@ -39,6 +39,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -93,6 +94,29 @@ class _EditableColumnsDelegate(QStyledItemDelegate):
         if index.column() not in _EDITABLE_COLS:
             return None
         return super().createEditor(parent, option, index)
+
+    def paint(self, painter, option, index):  # noqa: N802 (Qt)
+        super().paint(painter, option, index)
+        # Empty editable cell → faint placeholder so it visibly reads as
+        # a fill-in field (a bare Qt cell otherwise looks like static
+        # text, so people don't realise they can type in it).
+        if index.column() in _EDITABLE_COLS and not str(index.data() or ""):
+            hint = "episode #" if index.column() == _COL_NUM else "episode name"
+            painter.save()
+            painter.setPen(
+                option.palette.color(
+                    QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text
+                )
+            )
+            painter.drawText(
+                option.rect.adjusted(7, 0, -7, 0),
+                int(
+                    Qt.AlignmentFlag.AlignVCenter
+                    | Qt.AlignmentFlag.AlignLeft
+                ),
+                hint,
+            )
+            painter.restore()
 
 
 def _format_title_label(title: dict[str, Any]) -> str:
@@ -169,11 +193,14 @@ class _DiscTreeDialog(QDialog):
         is_tv: bool,
         preview_callback: "Callable[..., None] | None" = None,
         parent: "QWidget | None" = None,
+        *,
+        window_title: "str | None" = None,
+        intro_text: "str | None" = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("discTreeDialog")
         self.setWindowTitle(
-            "Disc Contents — Select Titles to Rip"
+            window_title or "Disc Contents — Select Titles to Rip"
         )
         self.setModal(True)
         self.resize(900, 600)
@@ -193,12 +220,17 @@ class _DiscTreeDialog(QDialog):
         outer.setContentsMargins(20, 18, 20, 14)
         outer.setSpacing(8)
 
-        # Header text — same instructional banner as tkinter, plus a
-        # preview hint when previewing is available.
-        header_text = (
-            "Select titles to rip.  Click a row to toggle the "
-            "checkbox.  Recommended titles are pre-checked."
-        )
+        # Header text — the caller can override it (the organize flow
+        # numbers already-ripped files instead of choosing what to rip),
+        # else it's the rip-selection banner.  A preview hint is added
+        # when previewing is available, and a per-cell edit hint on TV.
+        if intro_text is not None:
+            header_text = intro_text
+        else:
+            header_text = (
+                "Select titles to rip.  Click a row to toggle the "
+                "checkbox.  Recommended titles are pre-checked."
+            )
         if preview_callback is not None:
             header_text += (
                 "  To watch one first: select it and click Watch in "
@@ -206,10 +238,30 @@ class _DiscTreeDialog(QDialog):
                 "temporary file, plays, and is deleted when the player "
                 "closes."
             )
+        if is_tv:
+            header_text += (
+                "  Click a row's Ep # or Episode name cell to type it; "
+                "leave a title's Ep # blank to file it as an extra."
+            )
         header = QLabel(header_text)
         header.setObjectName("stepSubtitle")
         header.setWordWrap(True)
         outer.addWidget(header)
+
+        # Select All / None — quick way to (un)check every row instead
+        # of clicking each checkbox one at a time.
+        if disc_titles:
+            select_row = QHBoxLayout()
+            select_all_btn = QPushButton("Select All")
+            select_all_btn.setObjectName("selectAllButton")
+            select_all_btn.clicked.connect(self._select_all)
+            select_row.addWidget(select_all_btn)
+            select_none_btn = QPushButton("Select None")
+            select_none_btn.setObjectName("selectNoneButton")
+            select_none_btn.clicked.connect(self._select_none)
+            select_row.addWidget(select_none_btn)
+            select_row.addStretch(1)
+            outer.addLayout(select_row)
 
         # The tree itself.
         self._tree = QTreeWidget()
@@ -384,13 +436,26 @@ class _DiscTreeDialog(QDialog):
         if column == _COL_TITLE:
             return  # Qt's built-in checkbox handling fires already
         if column in _EDITABLE_COLS:
-            return  # clicking an editable cell edits it — don't toggle
+            # Single click opens the inline editor, so it's obvious you
+            # can type here — no hidden double-click needed.
+            self._tree.editItem(item, column)
+            return
         new_state = (
             Qt.CheckState.Unchecked
             if item.checkState(_COL_TITLE) == Qt.CheckState.Checked
             else Qt.CheckState.Checked
         )
         item.setCheckState(_COL_TITLE, new_state)
+
+    def _select_all(self) -> None:
+        """Check every row (Select All button)."""
+        for item in self._items_by_id.values():
+            item.setCheckState(_COL_TITLE, Qt.CheckState.Checked)
+
+    def _select_none(self) -> None:
+        """Uncheck every row (Select None button)."""
+        for item in self._items_by_id.values():
+            item.setCheckState(_COL_TITLE, Qt.CheckState.Unchecked)
 
     # ------------------------------------------------------------------
     # Right-click → preview
@@ -597,6 +662,9 @@ def run_disc_tree(
     disc_titles: Sequence[dict[str, Any]],
     is_tv: bool,
     preview_callback: "Callable[..., None] | None" = None,
+    *,
+    window_title: "str | None" = None,
+    intro_text: "str | None" = None,
 ) -> tuple[list[str] | None, dict[int, str], dict[int, int]]:
     """Show the selector modally and return the selected title IDs plus
     the per-title episode names AND numbers the user typed.
@@ -612,6 +680,8 @@ def run_disc_tree(
         is_tv=is_tv,
         preview_callback=preview_callback,
         parent=parent,
+        window_title=window_title,
+        intro_text=intro_text,
     )
     dialog.exec()
     ids = dialog.result_value
@@ -625,6 +695,9 @@ def show_disc_tree(
     disc_titles: Sequence[dict[str, Any]],
     is_tv: bool,
     preview_callback: "Callable[..., None] | None" = None,
+    *,
+    window_title: "str | None" = None,
+    intro_text: "str | None" = None,
 ) -> list[str] | None:
     """Show the disc-tree selector modally.
 
@@ -636,5 +709,8 @@ def show_disc_tree(
     opens but has no rows; the user can only Cancel or hit OK with
     nothing selected (returns ``[]``).  Mirrors tkinter behavior.
     """
-    ids, _names, _numbers = run_disc_tree(parent, disc_titles, is_tv, preview_callback)
+    ids, _names, _numbers = run_disc_tree(
+        parent, disc_titles, is_tv, preview_callback,
+        window_title=window_title, intro_text=intro_text,
+    )
     return ids

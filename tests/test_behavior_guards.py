@@ -2125,7 +2125,7 @@ def test_select_and_move_tv_passes_replace_existing_to_move_files(
 ):
     controller, engine = _controller_with_engine()
 
-    src_episode = tmp_path / "raw_episode.mkv"
+    src_episode = tmp_path / "A1_t00.mkv"
     src_episode.write_text("new", encoding="utf-8")
 
     dest_folder = tmp_path / "TV" / "Chosen Show" / "Season 01"
@@ -2180,6 +2180,11 @@ def test_select_and_move_tv_passes_replace_existing_to_move_files(
 
     monkeypatch.setattr(engine, "move_files", fake_move_files)
 
+    # Number the title in the picker so the move is picker-driven
+    # (A1_t00.mkv -> title id 0 -> episode 1).  The organize picker only
+    # appears when nothing is numbered, which other tests cover.
+    controller._picker_episode_numbers = {0: 1}
+
     ok = controller._select_and_move(
         titles_list=[(str(src_episode), 1440.0, 1000.0)],
         is_tv=True,
@@ -2199,72 +2204,79 @@ def test_select_and_move_tv_passes_replace_existing_to_move_files(
     assert any("Existing files will be replaced." in line for line in controller.gui.messages)
 
 
-def test_select_and_move_prefills_episode_names_from_picker(
+def test_organize_resume_shows_picker_for_numbering(
     tmp_path, monkeypatch
 ):
-    """Per-title names typed in the picker (2026-06-13) pre-fill the
-    episode-name step in this file's order (matched to each file by its
-    ``_tNN`` title id), and flow into the saved filename via
-    ``real_names``."""
+    """Organizing/resuming an already-ripped TV disc with no numbers yet
+    (no pre-rip picker, no saved session numbers) shows the SAME per-title
+    picker on the ripped files — not the old comma box.  The numbers/names
+    it returns drive the move, and a title left un-numbered is filed as an
+    extra, so a missing-episode gap or an extra is handled per title."""
     controller, engine = _controller_with_engine()
 
-    f2 = tmp_path / "A1_t02.mkv"
-    f5 = tmp_path / "A1_t05.mkv"
-    f2.write_text("x", encoding="utf-8")
-    f5.write_text("x", encoding="utf-8")
+    f2 = tmp_path / "A1_t02.mkv"   # title id 2 -> episode
+    f5 = tmp_path / "A1_t05.mkv"   # title id 5 -> episode
+    fx = tmp_path / "B2_t09.mkv"   # title id 9 -> extra (left blank)
+    for f in (f2, f5, fx):
+        f.write_text("x", encoding="utf-8")
 
     dest_folder = tmp_path / "TV" / "3rd Rock" / "Season 01"
     extras_folder = dest_folder / "Extras"
     dest_folder.mkdir(parents=True, exist_ok=True)
     extras_folder.mkdir(parents=True, exist_ok=True)
 
-    # Names the user typed on the picker rows, keyed by title id.
-    controller._picker_episode_names = {2: "Pilot", 5: "The Finale"}
-
     captured: dict[str, object] = {}
 
-    def ask_input(label, _prompt, default_value=""):
-        if label == "Episode Numbers":
-            captured["num_default"] = default_value
-            return default_value or "1, 2"  # accept the pre-filled numbers
-        if label == "Episode Names":
-            captured["name_default"] = default_value
-            return default_value  # accept the pre-filled names
-        return default_value
+    def fake_show_disc_tree(disc_titles, is_tv, preview=None, *_a, **_k):
+        captured["picker_is_tv"] = is_tv
+        captured["picker_ids"] = [t.get("id") for t in disc_titles]
+        return ["2", "5", "9"]  # OK with all rows checked
 
-    controller.gui.ask_input = ask_input
+    controller.gui.show_disc_tree = fake_show_disc_tree
+    # Picker result: ids 2 & 5 numbered (episodes 11, 12); id 9 left blank.
+    controller.gui.consume_episode_numbers = lambda: {2: 11, 5: 12}
+    controller.gui.consume_episode_names = lambda: {
+        2: "The Art of Dick", 5: "Frozen Dick",
+    }
     controller.gui.ask_yesno = lambda *_a, **_k: True
     monkeypatch.setattr(
-        controller, "_ask_extras_selection", lambda *_a, **_k: ([], None)
+        controller, "_verify_container_integrity", lambda *_a, **_k: True
     )
 
     def fake_move_files(
         titles_list, main_indices, episode_numbers, real_names,
-        *_a, **_k,
+        extra_indices, *_a, **_k,
     ):
+        captured["main_indices"] = list(main_indices)
+        captured["episode_numbers"] = list(episode_numbers)
         captured["real_names"] = list(real_names)
+        captured["extra_indices"] = list(extra_indices)
         return True, 0, []
 
     monkeypatch.setattr(engine, "move_files", fake_move_files)
 
     ok = controller._select_and_move(
-        titles_list=[(str(f2), 1320.0, 600.0), (str(f5), 1320.0, 600.0)],
+        titles_list=[
+            (str(f2), 1320.0, 600.0),
+            (str(f5), 1320.0, 600.0),
+            (str(fx), 360.0, 150.0),
+        ],
         is_tv=True,
         title="3rd Rock",
         dest_folder=str(dest_folder),
         extras_folder=str(extras_folder),
         season=1,
         year="0000",
-        selected_title_ids=[2, 5],
     )
 
     assert ok is True
-    # Fresh season → episode numbers pre-fill sequentially (1, 2).
-    assert captured["num_default"] == "1, 2"
-    # The name step was pre-filled with the picker names, in file order.
-    assert captured["name_default"] == "Pilot, The Finale"
-    # And those names reach move_files → the final episode filenames.
-    assert captured["real_names"] == ["Pilot", "The Finale"]
+    assert captured["picker_is_tv"] is True
+    assert captured["picker_ids"] == [2, 5, 9]
+    # ids 2,5 numbered -> episodes (indices 0,1); id 9 blank -> extra (idx 2)
+    assert captured["main_indices"] == [0, 1]
+    assert captured["episode_numbers"] == [11, 12]
+    assert captured["real_names"] == ["The Art of Dick", "Frozen Dick"]
+    assert captured["extra_indices"] == [2]
 
 
 def test_picker_driven_move_uses_picker_numbers_no_prompt(

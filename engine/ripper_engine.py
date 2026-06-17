@@ -563,6 +563,9 @@ class RipperEngine:
         self._last_scan_target = None
         self.last_disc_info = {}
         self.last_classification: list = []
+        # The controller sets this before a scan so the title classifier
+        # treats a TV disc as N episodes (no single "main feature").
+        self.content_is_tv: bool = False
         self.last_scan_issue_summary: MakeMKVIssueSummary | None = None
         self.last_process_issue_summary: MakeMKVIssueSummary | None = None
 
@@ -1137,7 +1140,10 @@ class RipperEngine:
                     )
 
         # Classify titles into MAIN / DUPLICATE / EXTRA / UNKNOWN
-        self.last_classification = classify_titles(result)
+        # (EPISODE / EXTRA on a TV disc — the controller sets the flag).
+        self.last_classification = classify_titles(
+            result, is_tv=getattr(self, "content_is_tv", False)
+        )
         if self.last_classification:
             classification_log_cap = 20
             if len(self.last_classification) > classification_log_cap:
