@@ -196,6 +196,7 @@ class TranscodeEngine:
                 getattr(job, "backend_options", {}).get("preset", "Fast 1080p30"),
                 getattr(job, "metadata", {}),
                 executable_path=self.handbrake_exe,
+                settings=getattr(job, "backend_options", {}),
             )
             return builder.build_command()
 
