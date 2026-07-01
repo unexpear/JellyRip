@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import queue as queue_module
+import re
 import shutil
 import subprocess
 import sys as _sys
@@ -15,6 +16,13 @@ from datetime import datetime
 from typing import Any, Callable, Generator, List
 
 _POPEN_FLAGS = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+# MakeMKV robot-mode message line: MSG:code,flags,count,"message","format",...
+# The 4th field ("message") is the fully-resolved human text; the 5th
+# ("format") is the %1/%2 template.  Capture the resolved message with a
+# quote-aware match so commas inside it (e.g. "added (6 cell(s), 0:22:01)")
+# don't truncate it the way a positional comma-split would.
+_MSG_MESSAGE_RE = re.compile(r'^MSG:[^,]*,[^,]*,[^,]*,"([^"]*)"')
 
 # ---------------------------------------------------------------------------
 # Module-level constants (audit #30: named where magic numbers used to live).
@@ -234,15 +242,20 @@ class RipperEngine:
         # so the data isn't lost (tests rely on this).  When the
         # caller DOES supply one, also append to outputs as a
         # belt-and-suspenders trail — the cost is one list append.
+        # Forward the log live to the UI when a logger is supplied (param)
+        # or wired by the controller (attribute); still buffer either way.
+        _live_log = on_log or self._rip_log_cb
+
         def _logger(msg: str) -> None:
             text = str(msg)
             outputs.append(text)
-            if on_log is not None:
-                on_log(text)
+            if _live_log is not None:
+                _live_log(text)
 
-        # Progress: forward when supplied, else no-op (the rip
-        # operation tolerates either).
-        progress_cb = on_progress if on_progress is not None else (lambda _p: None)
+        # Progress: param, else the controller-wired callback, else no-op.
+        # (The controller's run_job(job) calls pass neither, so the wired
+        # attribute is what actually drives the bar during a rip.)
+        progress_cb = on_progress or self._rip_progress_cb or (lambda _p: None)
 
         source = str(job.source).strip()
         if source.lower() == "all":
@@ -561,6 +574,14 @@ class RipperEngine:
         self._last_scan_title_bytes: dict[int, int] = {}
         self._last_scan_timestamp = 0.0
         self._last_scan_target = None
+        # Total expected bytes for the rip currently running (sum of the
+        # selected titles' sizes).  Set by rip_ops when a rip starts and read
+        # by the controller to render the "X.X / Y.Y GB" label; 0 when idle.
+        self._rip_total_bytes = 0
+        # Set by the controller to route a rip's live progress + log to the
+        # UI (size-aware bar + per-title log line).  No-op until wired.
+        self._rip_progress_cb = None
+        self._rip_log_cb = None
         self.last_disc_info = {}
         self.last_classification: list = []
         # The controller sets this before a scan so the title classifier
@@ -1628,11 +1649,10 @@ class RipperEngine:
                 if len(parts) >= 3:
                     on_log(parts[2].strip())
             elif line.startswith("MSG:"):
-                parts = line[4:].split(",", 4)
-                if len(parts) >= 5:
-                    msg = parts[4].strip().strip('"')
-                    if msg:
-                        _emit_makemkv_message(msg)
+                m = _MSG_MESSAGE_RE.match(line)
+                msg = m.group(1).strip() if m else ""
+                if msg:
+                    _emit_makemkv_message(msg)
 
         try:
             proc.wait(timeout=30)
@@ -1663,11 +1683,10 @@ class RipperEngine:
                 line = line_queue.get_nowait()
                 line = line.strip()
                 if line.startswith("MSG:"):
-                    parts = line[4:].split(",", 4)
-                    if len(parts) >= 5:
-                        msg = parts[4].strip().strip('"')
-                        if msg:
-                            _emit_makemkv_message(msg)
+                    m = _MSG_MESSAGE_RE.match(line)
+                    msg = m.group(1).strip() if m else ""
+                    if msg:
+                        _emit_makemkv_message(msg)
         except queue_module.Empty:
             pass
 

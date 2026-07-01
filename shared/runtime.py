@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "1.0.26"
+__version__ = "1.0.27"
 APP_DISPLAY_NAME = "JellyRip"
 """Canonical user-facing product name for the MAIN branch.
 
